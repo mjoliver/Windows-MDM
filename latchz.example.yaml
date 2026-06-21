@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Latchz MDM  —  Example Configuration
+#
+# Copy this file to latchz.yaml and edit to suit your environment.
+# All values can be overridden with environment variables:
+#   latchz.yaml key         →   env var
+#   server.domain         →   LATCHZ_SERVER_DOMAIN
+#   database.dsn          →   LATCHZ_DATABASE_DSN
+#   tls.mode              →   LATCHZ_TLS_MODE
+#   auth.oidc.client_id   →   LATCHZ_AUTH_OIDC_CLIENT_ID
+#   (and so on for all keys — dots become underscores, LATCHZ_ prefix)
+# ─────────────────────────────────────────────────────────────────────────────
+
+server:
+  # Public hostname of your MDM server. Must match the DNS name used for enrollment.
+  domain: mdm.example.com
+
+  # Network address to bind. Defaults to :8443 for TLS modes, :8080 for none.
+  listen: ":443"
+
+  # The email domain your users enroll with.
+  # Windows will look for MDM at: enterpriseenrollment.<enrollment_domain>
+  enrollment_domain: example.com
+
+  # Emergency access token. If you're locked out of the dashboard, hit:
+  #   https://<domain>/emergency?token=<this_value>
+  # Rotate this immediately after use. Keep it secret.
+  emergency_token: "change-me-to-a-random-string"
+
+# ─── TLS ────────────────────────────────────────────────────────────────────
+
+tls:
+  # TLS mode — one of:
+  #   "auto"        Let's Encrypt. Pane manages cert renewal automatically.
+  #                 Requires port 80 open to the internet for ACME HTTP-01.
+  #   "manual"      Provide your own cert and key files.
+  #   "self-signed" Auto-generated cert. For local dev only.
+  #   "none"        No TLS. Use when behind a proxy (Cloud Run, nginx, Caddy).
+  mode: auto
+
+  # cache_dir is where Let's Encrypt certificates are stored (mode=auto only).
+  cache_dir: /var/lib/latchz/certs
+
+  # For mode=manual only:
+  # cert_file: /etc/ssl/pane/fullchain.pem
+  # key_file:  /etc/ssl/pane/privkey.pem
+
+# ─── Database ────────────────────────────────────────────────────────────────
+
+database:
+  # driver: "sqlite" (default) or "postgres"
+  driver: sqlite
+
+  # SQLite: path to the database file
+  dsn: /var/lib/latchz/latchz.db
+
+  # PostgreSQL example:
+  # driver: postgres
+  # dsn: "postgres://latchz:password@localhost:5432/pane?sslmode=require"
+
+# ─── Authentication ──────────────────────────────────────────────────────────
+
+auth:
+  # provider: "oidc" (Google Workspace, Okta, Entra ID, etc.)
+  provider: oidc
+
+  oidc:
+    # Google Workspace example:
+    #   Issuer: https://accounts.google.com
+    #   Create an OAuth 2.0 Client ID at: https://console.cloud.google.com/apis/credentials
+    #   Redirect URI: https://<domain>/auth/callback
+    issuer: https://accounts.google.com
+    client_id: "your-client-id.apps.googleusercontent.com"
+    client_secret: "your-client-secret"
+
+    # Restrict login to users from these email domains.
+    # Leave empty to allow any authenticated Google account.
+    allowed_domains:
+      - example.com

@@ -1,0 +1,19 @@
+server:
+  domain: mdm.example.com
+  listen: ":443"
+  enrollment_domain: example.com
+  master_secret: "your-super-secret-master-key-change-me"
+  support_url: "https://github.com/latchzmdm/latchz/blob/main/docs/self-hosting.md"
+tls:
+  mode: self-signed
+database:
+  driver: sqlite
+  dsn: ./latchz.db
+auth:
+  provider: oidc
+  oidc:
+    issuer: https://accounts.google.com
+    client_id: "your-client-id.apps.googleusercontent.com"
+    client_secret: "your-client-secret"
+    allowed_domains:
+      - example.com

@@ -1,0 +1,75 @@
+name: DDF Policy Catalog Ingestion
+
+on:
+  schedule:
+    # Run at 00:00 every Sunday
+    - cron: '0 0 * * 0'
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  ingest-ddfs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24' # or appropriate version
+
+      - name: Download Microsoft DDFs
+        run: |
+          mkdir -p msft-ddfs
+          # In reality, you might clone the Microsoft Docs repo or download a known release bundle here.
+          # For example: git clone --depth 1 https://github.com/MicrosoftDocs/windows-itpro-docs.git
+          echo "Placeholder for MSFT DDF download logic"
+
+      - name: Run DDF Compiler
+        run: |
+          go run ./cmd/ddf-compiler -in ./msft-ddfs/ -out ./internal/server/catalog.json -report ./parser_anomalies_report.md
+
+      - name: Check for Catalog Changes
+        id: git-check
+        run: |
+          git diff --quiet internal/server/catalog.json || echo "modified=true" >> $GITHUB_OUTPUT
+
+      - name: Commit Updated Catalog
+        if: steps.git-check.outputs.modified == 'true'
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          git add internal/server/catalog.json
+          git commit -m "chore(catalog): auto-update policy catalog from Microsoft DDFs"
+          git push
+
+      - name: Report Parser Anomalies
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -s parser_anomalies_report.md ]; then
+            echo "Anomalies detected in MSFT DDFs. Opening issue."
+            
+            # Check if an issue already exists to avoid spamming
+            EXISTING_ISSUE=$(gh issue list --state open --search "in:title DDF Parser Anomalies Detected" --json number -q '.[0].number')
+            
+            if [ -z "$EXISTING_ISSUE" ]; then
+              gh issue create \
+                --title "⚠️ DDF Parser Anomalies Detected" \
+                --body-file parser_anomalies_report.md \
+                --label "bug,policy-engine" \
+                --assignee "@me"
+            else
+              gh issue comment $EXISTING_ISSUE --body-file parser_anomalies_report.md
+            fi
+            
+            # Optional: Upload the report as a workflow artifact
+            echo "Anomalies reported to GitHub Issues."
+          else
+            echo "No anomalies detected. Parser ran flawlessly."
+          fi
