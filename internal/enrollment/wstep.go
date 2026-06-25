@@ -1,11 +1,13 @@
 package enrollment
 
 import (
+	"context"
 	"crypto/sha1"
 	"database/sql"
 	"encoding/base64"
 	"encoding/pem"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +18,47 @@ import (
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/pki"
 )
+
+// errHardwareIDTaken indicates an enrollment tried to re-use a hardware_id that
+// is already registered to a different user.
+var errHardwareIDTaken = errors.New("hardware_id already enrolled by another user")
+
+// upsertDevice creates or re-enrolls a device by hardware_id. Re-enrollment of
+// an existing hardware_id is only permitted by the same user that originally
+// enrolled it; a different user is rejected (prevents device-record hijack via
+// the attacker-controlled hardware_id).
+func upsertDevice(ctx context.Context, db *sql.DB, info DeviceInfo, userEmail string) (string, error) {
+	var existingID, existingOwner string
+	err := db.QueryRowContext(ctx, dbpkg.Rebind(
+		`SELECT id, COALESCE(enrolled_by, '') FROM devices WHERE hardware_id = ?`), info.HardwareID,
+	).Scan(&existingID, &existingOwner)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		id := uuid.New().String()
+		if _, err := db.ExecContext(ctx, dbpkg.Rebind(`
+			INSERT INTO devices (id, hardware_id, device_name, os_version, manufacturer, model, serial_number, enrolled_by, compliance_status)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+		`), id, info.HardwareID, info.DeviceName, info.OSVersion, info.Manufacturer, info.Model, info.SerialNumber, userEmail); err != nil {
+			return "", err
+		}
+		return id, nil
+	case err != nil:
+		return "", err
+	default:
+		if existingOwner != "" && !strings.EqualFold(existingOwner, userEmail) {
+			return "", errHardwareIDTaken
+		}
+		if _, err := db.ExecContext(ctx, dbpkg.Rebind(`
+			UPDATE devices SET device_name = ?, os_version = ?, manufacturer = ?, model = ?,
+				serial_number = ?, enrolled_by = ?, enrolled_at = CURRENT_TIMESTAMP, is_active = 1
+			WHERE id = ?
+		`), info.DeviceName, info.OSVersion, info.Manufacturer, info.Model, info.SerialNumber, userEmail, existingID); err != nil {
+			return "", err
+		}
+		return existingID, nil
+	}
+}
 
 const (
 	wstepAction                = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment/RSTRC/wstep"
@@ -161,11 +204,10 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 			return
 		}
 
+		// Never log the raw token — it is a bearer credential that authorises
+		// certificate issuance.
 		tokenStr := strings.TrimSpace(env.Header.Security.BinarySecurityToken.Value)
-		slog.Info("wstep: raw security token received", "tokenStr", tokenStr)
-
-		tokenBytes, err := base64.StdEncoding.DecodeString(tokenStr)
-		if err == nil {
+		if tokenBytes, decErr := base64.StdEncoding.DecodeString(tokenStr); decErr == nil {
 			tokenStr = string(tokenBytes)
 		}
 
@@ -199,39 +241,26 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		info.EnrolledUserEmail = userEmail
 
 		// ── Step 4: Create/update device record in DB ─────────────────────
-		deviceID := uuid.New().String()
-		_, err = db.ExecContext(r.Context(), dbpkg.Rebind(`
-			INSERT INTO devices (id, hardware_id, device_name, os_version, manufacturer, model, serial_number, enrolled_by, compliance_status)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-			ON CONFLICT(hardware_id) DO UPDATE SET
-				device_name = excluded.device_name,
-				os_version = excluded.os_version,
-				enrolled_by = excluded.enrolled_by,
-				enrolled_at = CURRENT_TIMESTAMP,
-				is_active = 1
-		`),
-			deviceID, info.HardwareID, info.DeviceName, info.OSVersion,
-			info.Manufacturer, info.Model, info.SerialNumber, userEmail,
-		)
+		// hardware_id is attacker-controlled, so re-enrollment of an existing
+		// hardware_id is only allowed by the SAME user that originally enrolled
+		// it. A different user is rejected rather than allowed to hijack the
+		// existing device record.
+		actualDeviceID, err := upsertDevice(r.Context(), db, info, userEmail)
 		if err != nil {
+			if errors.Is(err, errHardwareIDTaken) {
+				slog.Warn("wstep: hardware_id already enrolled by another user", "hardware_id", info.HardwareID, "enrolling_user", userEmail)
+				writeSoapFault(w, "device already enrolled by another account")
+				return
+			}
 			slog.Error("wstep: saving device to database", "err", err)
 			writeSoapFault(w, "internal error saving device")
 			return
 		}
 
-		// Fetch actual device ID
-		var actualDeviceID string
-		err = db.QueryRowContext(r.Context(),
-			dbpkg.Rebind(`SELECT id FROM devices WHERE hardware_id = ?`), info.HardwareID,
-		).Scan(&actualDeviceID)
-		if err != nil {
-			slog.Error("wstep: fetching device id", "err", err)
-			writeSoapFault(w, "internal error")
-			return
-		}
-
 		// ── Step 5: Sign the CSR with our CA ──────────────────────────────
-		certPEM, err := ca.IssueDeviceCertFromDER(actualDeviceID, info.DeviceName, csrDER)
+		// The certificate Subject is bound to the server-issued device identity
+		// (not the attacker-supplied CSR CommonName).
+		certPEM, err := ca.IssueDeviceCertFromDER(actualDeviceID, userEmail, csrDER)
 		if err != nil {
 			slog.Error("wstep: issuing device certificate", "err", err, "device_id", actualDeviceID)
 			writeSoapFault(w, "certificate issuance failed")

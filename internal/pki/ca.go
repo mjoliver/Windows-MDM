@@ -180,8 +180,10 @@ func (ca *CA) CertDER() []byte {
 }
 
 // IssueDeviceCert signs a device CSR and stores the resulting certificate.
-// Returns the signed certificate PEM.
-func (ca *CA) IssueDeviceCert(deviceID, deviceName string, csrPEM []byte) ([]byte, error) {
+// The certificate Subject is bound to the server-issued deviceID (CommonName)
+// and records the enrolling user (OrganizationalUnit) — it deliberately does
+// NOT trust the attacker-supplied CSR Subject. Returns the signed cert PEM.
+func (ca *CA) IssueDeviceCert(deviceID, enrolledBy string, csrPEM []byte) ([]byte, error) {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil {
 		return nil, fmt.Errorf("invalid CSR PEM")
@@ -199,16 +201,20 @@ func (ca *CA) IssueDeviceCert(deviceID, deviceName string, csrPEM []byte) ([]byt
 		return nil, fmt.Errorf("generating serial: %w", err)
 	}
 
+	subject := pkix.Name{
+		Organization: []string{"Latchz MDM"},
+		CommonName:   deviceID,
+	}
+	if enrolledBy != "" {
+		subject.OrganizationalUnit = []string{enrolledBy}
+	}
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		Subject: pkix.Name{
-			Organization: []string{"Latchz MDM"},
-			CommonName:   csr.Subject.CommonName,
-		},
-		NotBefore:   nowFunc().Add(-10 * time.Minute),
-		NotAfter:    nowFunc().Add(365 * 24 * time.Hour), // 1 year, rotated on re-enrollment
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		Subject:      subject,
+		NotBefore:    nowFunc().Add(-10 * time.Minute),
+		NotAfter:     nowFunc().Add(365 * 24 * time.Hour), // 1 year, rotated on re-enrollment
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, csr.PublicKey, ca.key)
@@ -242,7 +248,7 @@ func (ca *CA) IssueDeviceCert(deviceID, deviceName string, csrPEM []byte) ([]byt
 
 	slog.Info("issued device certificate",
 		"device_id", deviceID,
-		"device_name", deviceName,
+		"enrolled_by", enrolledBy,
 		"thumbprint", thumbprint,
 		"expires", cert.NotAfter.Format(time.RFC3339),
 	)
@@ -250,9 +256,9 @@ func (ca *CA) IssueDeviceCert(deviceID, deviceName string, csrPEM []byte) ([]byt
 }
 
 // IssueDeviceCertFromDER signs device CSR bytes (DER) directly and stores the result.
-func (ca *CA) IssueDeviceCertFromDER(deviceID, deviceName string, csrDER []byte) ([]byte, error) {
+func (ca *CA) IssueDeviceCertFromDER(deviceID, enrolledBy string, csrDER []byte) ([]byte, error) {
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
-	return ca.IssueDeviceCert(deviceID, deviceName, csrPEM)
+	return ca.IssueDeviceCert(deviceID, enrolledBy, csrPEM)
 }
 
 // RevokeDeviceCerts marks all certificates for a device as revoked.

@@ -9,8 +9,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -241,15 +243,11 @@ func (p *Provider) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce that the authenticated user matches the originally intended login_hint
+	// Enforce that the authenticated user matches the originally intended login_hint.
+	// Return 200 OK so the Windows Web Authentication Broker renders the HTML error.
 	if loginHint != "" && !strings.EqualFold(claims.Email, loginHint) {
 		slog.Warn("auth: email mismatch during enrollment", "expected", loginHint, "got", claims.Email)
-
-		msg := fmt.Sprintf("Account mismatch: You entered %s in Windows, but authenticated as %s. Please restart enrollment.", loginHint, claims.Email)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// Return 200 OK so the Windows Web Authentication Broker renders the HTML error
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "<!DOCTYPE html><html><head><title>Enrollment Failed</title></head><body style=\"font-family:sans-serif;padding:20px;\"><h2 style=\"color:#d32f2f;\">Enrollment Failed</h2><p>%s</p></body></html>", msg)
+		renderEnrollMismatch(w, loginHint, claims.Email)
 		return
 	}
 
@@ -259,10 +257,7 @@ func (p *Provider) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			"email", claims.Email,
 			"allowed_domains", p.allowedDomains,
 		)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// Return 200 OK so the Windows Web Authentication Broker renders the HTML error
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(accessDeniedPage(claims.Email)))
+		renderAccessDenied(w, claims.Email)
 		return
 	}
 
@@ -314,17 +309,25 @@ func (p *Provider) handleEnrollmentCallback(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// If no appru was provided, fallback to the legacy window.external.notify method
+	// If no appru was provided, fall back to the legacy window.external.notify method.
 	if appru == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, enrollmentCallbackPageLegacy, email, token)
+		writeHTML(w, http.StatusOK, tmplEnrollLegacy, struct{ Email, Token string }{email, token})
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, enrollmentCallbackPageAppru, email, appru, token)
+	// Validate the return URL before posting the token to it — an attacker-chosen
+	// appru would otherwise exfiltrate the enrollment token (open redirect).
+	safeAppru, ok := p.validateAppru(appru)
+	if !ok {
+		slog.Warn("auth: rejected enrollment return URL (appru)", "appru", appru, "email", email)
+		writeHTML(w, http.StatusBadRequest, tmplEnrollRejected, nil)
+		return
+	}
+
+	writeHTML(w, http.StatusOK, tmplEnrollAppru, struct {
+		Email, Token string
+		Appru        template.URL
+	}{email, token, safeAppru})
 }
 
 // handleDashboardCallback issues a session JWT as an HTTP-only cookie.
@@ -495,49 +498,95 @@ func (p *Provider) upsertUser(ctx context.Context, email, displayName string) (r
 	return role, nil
 }
 
-// ── HTML pages ────────────────────────────────────────────────────────────────
+// ── HTML pages (html/template → contextual auto-escaping, no XSS) ─────────────
 
-// enrollmentCallbackPageLegacy is the fallback if appru is missing.
-const enrollmentCallbackPageLegacy = `<!DOCTYPE html>
+var (
+	tmplEnrollLegacy = template.Must(template.New("enrollLegacy").Parse(`<!DOCTYPE html>
 <html>
 <head><title>Latchz MDM — Enrolling...</title></head>
 <body>
-<p>Enrolling device for <strong>%s</strong>...</p>
+<p>Enrolling device for <strong>{{.Email}}</strong>...</p>
 <script>
   try {
     if (window.external && typeof window.external.notify === 'function') {
-      window.external.notify('%s');
+      window.external.notify('{{.Token}}');
     }
   } catch(e) {
     document.body.innerHTML = '<p>Enrollment token issued. You may close this window.</p>';
   }
 </script>
 </body>
-</html>`
+</html>`))
 
-// enrollmentCallbackPageAppru POSTs the token back to the Windows MDM client.
-const enrollmentCallbackPageAppru = `<!DOCTYPE html>
+	tmplEnrollAppru = template.Must(template.New("enrollAppru").Parse(`<!DOCTYPE html>
 <html>
 <head><title>Latchz MDM — Authenticated</title></head>
 <body onload="document.forms[0].submit()">
-<p>Authentication successful for <strong>%s</strong>. Returning to Windows...</p>
-<form method="POST" action="%s">
-  <!-- Windows MDM client expects 'wresult' to contain the opaque token string -->
-  <input type="hidden" name="wresult" value="%s">
+<p>Authentication successful for <strong>{{.Email}}</strong>. Returning to Windows...</p>
+<form method="POST" action="{{.Appru}}">
+  <input type="hidden" name="wresult" value="{{.Token}}">
   <noscript><input type="submit" value="Continue"></noscript>
 </form>
 </body>
-</html>`
+</html>`))
 
-// accessDeniedPage is shown when a user's email domain is not on the allowlist.
-func accessDeniedPage(email string) string {
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html>
-<head><title>Access Denied — Latchz MDM</title></head>
+	tmplEnrollRejected = template.Must(template.New("enrollRejected").Parse(`<!DOCTYPE html>
+<html><head><title>Enrollment Failed</title></head>
+<body style="font-family:sans-serif;padding:20px;">
+<h2 style="color:#d32f2f;">Enrollment Failed</h2>
+<p>The return address provided by the enrollment client was not recognised. Please restart enrollment.</p>
+</body></html>`))
+
+	tmplEnrollMismatch = template.Must(template.New("mismatch").Parse(`<!DOCTYPE html>
+<html><head><title>Enrollment Failed</title></head>
+<body style="font-family:sans-serif;padding:20px;">
+<h2 style="color:#d32f2f;">Enrollment Failed</h2>
+<p>Account mismatch: you entered <strong>{{.Expected}}</strong> in Windows, but authenticated as <strong>{{.Got}}</strong>. Please restart enrollment.</p>
+</body></html>`))
+
+	tmplAccessDenied = template.Must(template.New("accessDenied").Parse(`<!DOCTYPE html>
+<html><head><title>Access Denied — Latchz MDM</title></head>
 <body>
 <h1>Access Denied</h1>
-<p>The account <strong>%s</strong> is not authorised to access this server.</p>
+<p>The account <strong>{{.}}</strong> is not authorised to access this server.</p>
 <p>Contact your administrator to be invited.</p>
-</body>
-</html>`, email)
+</body></html>`))
+)
+
+// writeHTML renders a template as an HTML response. Templates use html/template
+// so all interpolated values are contextually escaped.
+func writeHTML(w http.ResponseWriter, status int, t *template.Template, data any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_ = t.Execute(w, data)
+}
+
+// validateAppru validates the Windows enrollment return URL. It must be either a
+// known Windows app scheme or an https URL on this server's own origin. The
+// returned value is a normalised, attribute-safe template.URL. This prevents an
+// attacker-chosen appru from exfiltrating the enrollment token to an arbitrary
+// origin (open redirect).
+func (p *Provider) validateAppru(appru string) (template.URL, bool) {
+	u, err := url.Parse(appru)
+	if err != nil {
+		return "", false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "ms-app", "ms-appx-web", "ms-aad-brokerplugin":
+		return template.URL(u.String()), true
+	case "https":
+		if base, err := url.Parse(p.baseURL); err == nil && u.Host != "" && strings.EqualFold(u.Host, base.Host) {
+			return template.URL(u.String()), true
+		}
+	}
+	return "", false
+}
+
+// renderAccessDenied / renderEnrollMismatch are small testable seams.
+func renderAccessDenied(w http.ResponseWriter, email string) {
+	writeHTML(w, http.StatusOK, tmplAccessDenied, email)
+}
+
+func renderEnrollMismatch(w http.ResponseWriter, expected, got string) {
+	writeHTML(w, http.StatusOK, tmplEnrollMismatch, struct{ Expected, Got string }{expected, got})
 }

@@ -194,19 +194,24 @@ func (s *Server) routes() {
 			})
 		})
 
-		// All other API routes require authentication
+		// All other API routes require authentication. Read endpoints are open to
+		// any authenticated user; mutating/destructive endpoints additionally
+		// require an admin role (RBAC).
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
+
+			// admin gates state-changing and destructive operations.
+			admin := s.requireRole("admin", "super_admin")
 
 			r.Get("/me", s.api.HandleMe)
 
 			// Devices
 			r.Get("/devices", s.api.HandleListDevices)
 			r.Get("/devices/{id}", s.api.HandleGetDevice)
-			r.Delete("/devices/{id}", s.api.HandleUnenrollDevice)
-			r.Post("/devices/{id}/lock", s.api.HandleLockDevice)
-			r.Post("/devices/{id}/wipe", s.api.HandleWipeDevice)
-			r.Post("/devices/{id}/sync", s.api.HandleSyncDevice)
+			r.With(admin).Delete("/devices/{id}", s.api.HandleUnenrollDevice)
+			r.With(admin).Post("/devices/{id}/lock", s.api.HandleLockDevice)
+			r.With(admin).Post("/devices/{id}/wipe", s.api.HandleWipeDevice)
+			r.With(admin).Post("/devices/{id}/sync", s.api.HandleSyncDevice)
 			r.Get("/devices/{id}/commands", s.api.HandleGetDeviceCommands)
 
 			// Policy catalog (order matters: specific before param)
@@ -216,18 +221,18 @@ func (s *Server) routes() {
 
 			// Configuration profiles
 			r.Get("/profiles", s.api.HandleListProfiles)
-			r.Post("/profiles", s.api.HandleCreateProfile)
+			r.With(admin).Post("/profiles", s.api.HandleCreateProfile)
 			r.Get("/profiles/{id}", s.api.HandleGetProfile)
-			r.Put("/profiles/{id}", s.api.HandleUpdateProfile)
-			r.Delete("/profiles/{id}", s.api.HandleDeleteProfile)
+			r.With(admin).Put("/profiles/{id}", s.api.HandleUpdateProfile)
+			r.With(admin).Delete("/profiles/{id}", s.api.HandleDeleteProfile)
 
 			// Device groups
 			r.Get("/groups", s.api.HandleListGroups)
-			r.Post("/groups", s.api.HandleCreateGroup)
-			r.Put("/groups/{id}", s.api.HandleUpdateGroup)
-			r.Delete("/groups/{id}", s.api.HandleDeleteGroup)
-			r.Put("/groups/{id}/devices", s.api.HandleAssignDeviceToGroup)
-			r.Put("/groups/{id}/profiles", s.api.HandleAssignProfileToGroup)
+			r.With(admin).Post("/groups", s.api.HandleCreateGroup)
+			r.With(admin).Put("/groups/{id}", s.api.HandleUpdateGroup)
+			r.With(admin).Delete("/groups/{id}", s.api.HandleDeleteGroup)
+			r.With(admin).Put("/groups/{id}/devices", s.api.HandleAssignDeviceToGroup)
+			r.With(admin).Put("/groups/{id}/profiles", s.api.HandleAssignProfileToGroup)
 
 			// Compliance
 			r.Get("/compliance", s.api.HandleFleetCompliance)
