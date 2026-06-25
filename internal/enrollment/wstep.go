@@ -18,12 +18,12 @@ import (
 )
 
 const (
-	wstepAction         = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment/RSTRC/wstep"
-	wstepNS             = "http://docs.oasis-open.org/ws-sx/ws-trust/200512"
-	wstepTokenType      = "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentToken"
-	wstepCertValueType  = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"
-	wstepCSRValueType   = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment#PKCS10"
-	wstepKeyIdValueType = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#ThumbprintSHA1"
+	wstepAction                = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment/RSTRC/wstep"
+	wstepNS                    = "http://docs.oasis-open.org/ws-sx/ws-trust/200512"
+	wstepTokenType             = "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentToken"
+	wstepCertValueType         = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"
+	wstepCSRValueType          = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment#PKCS10"
+	wstepKeyIdValueType        = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#ThumbprintSHA1"
 	wstepProvisionDocValueType = "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentProvisionDoc"
 	wstepEncodingType          = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#base64binary"
 
@@ -119,6 +119,10 @@ const (
 		`</s:Envelope>`
 )
 
+// nowFunc returns the current time; overridable in tests for deterministic
+// WSTEP response timestamps.
+var nowFunc = time.Now
+
 // DeviceInfo holds metadata extracted from the WSTEP AdditionalContext.
 type DeviceInfo struct {
 	DeviceType        string
@@ -159,7 +163,7 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 
 		tokenStr := strings.TrimSpace(env.Header.Security.BinarySecurityToken.Value)
 		slog.Info("wstep: raw security token received", "tokenStr", tokenStr)
-		
+
 		tokenBytes, err := base64.StdEncoding.DecodeString(tokenStr)
 		if err == nil {
 			tokenStr = string(tokenBytes)
@@ -263,7 +267,7 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		provisioningB64 := base64.StdEncoding.EncodeToString([]byte(provisioningXML))
 
 		// ── Step 7: Build & Send WSTEP response (Template Bomb) ───────────
-		now := time.Now().UTC()
+		now := nowFunc().UTC()
 		expires := now.Add(5 * time.Minute)
 
 		contextAttr := ""

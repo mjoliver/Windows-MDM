@@ -59,9 +59,20 @@ type DatabaseConfig struct {
 
 // AuthConfig selects and configures the identity provider.
 type AuthConfig struct {
-	// Provider is one of: "oidc", "ldap", "builtin"
+	// Provider is one of: "oidc", "builtin". ("ldap" is reserved but not implemented.)
 	Provider string     `mapstructure:"provider"`
 	OIDC     OIDCConfig `mapstructure:"oidc"`
+
+	// JWTSecret signs dashboard session JWTs and enrollment tokens. It MUST be a
+	// stable, high-entropy value (>=32 bytes) in production so sessions survive
+	// restarts and are valid across horizontally-scaled instances. If empty, a
+	// random per-process secret is generated (dev only) and a warning is logged.
+	JWTSecret string `mapstructure:"jwt_secret"`
+
+	// BootstrapAdmin is the email granted super_admin on creation. This replaces
+	// the insecure "first login becomes super_admin" behaviour: only this address
+	// (or users promoted via the admin CLI) gets elevated privileges.
+	BootstrapAdmin string `mapstructure:"bootstrap_admin"`
 }
 
 // OIDCConfig holds OpenID Connect provider settings.
@@ -95,6 +106,8 @@ func Load(cfgFile string) (*Config, error) {
 	v.SetDefault("database.driver", "sqlite")
 	v.SetDefault("database.dsn", "./latchz.db")
 	v.SetDefault("auth.provider", "oidc")
+	v.SetDefault("auth.jwt_secret", "")
+	v.SetDefault("auth.bootstrap_admin", "")
 	v.SetDefault("auth.oidc.issuer", "")
 	v.SetDefault("auth.oidc.client_id", "")
 	v.SetDefault("auth.oidc.client_secret", "")
@@ -111,6 +124,8 @@ func Load(cfgFile string) (*Config, error) {
 	_ = v.BindEnv("database.driver", "LATCHZ_DATABASE_DRIVER")
 	_ = v.BindEnv("database.dsn", "LATCHZ_DATABASE_DSN")
 	_ = v.BindEnv("auth.provider", "LATCHZ_AUTH_PROVIDER")
+	_ = v.BindEnv("auth.jwt_secret", "LATCHZ_AUTH_JWT_SECRET")
+	_ = v.BindEnv("auth.bootstrap_admin", "LATCHZ_AUTH_BOOTSTRAP_ADMIN")
 	_ = v.BindEnv("auth.oidc.issuer", "LATCHZ_AUTH_OIDC_ISSUER")
 	_ = v.BindEnv("auth.oidc.client_id", "LATCHZ_AUTH_OIDC_CLIENT_ID")
 	_ = v.BindEnv("auth.oidc.client_secret", "LATCHZ_AUTH_OIDC_CLIENT_SECRET")

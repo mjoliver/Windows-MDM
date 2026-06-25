@@ -20,12 +20,19 @@ type sessionStore struct {
 	sessions map[string]*Session
 }
 
-var store = &sessionStore{
-	sessions: make(map[string]*Session),
+// newSessionStore creates an empty session store. Each mdm.Handler owns one so
+// state does not leak across servers (or across tests).
+func newSessionStore() *sessionStore {
+	return &sessionStore{sessions: make(map[string]*Session)}
 }
 
 // Session tracks the state of a single OMA-DM management session.
+//
+// A single OMA-DM session can span multiple TCP connections (and thus multiple
+// concurrent HTTP requests). All mutable fields below are guarded by mu; callers
+// must hold it for the duration of request processing for a given session.
 type Session struct {
+	mu        sync.Mutex
 	DeviceID  string
 	SessionID string
 	NextMsgID int

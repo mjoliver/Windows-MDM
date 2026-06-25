@@ -21,11 +21,12 @@ type Handler struct {
 	db     *sql.DB
 	ca     *x509.CertPool // root CA pool for mTLS device auth
 	domain string
+	store  *sessionStore
 }
 
 // NewHandler creates an OMA-DM handler.
 func NewHandler(db *sql.DB, caPool *x509.CertPool, domain string) *Handler {
-	return &Handler{db: db, ca: caPool, domain: domain}
+	return &Handler{db: db, ca: caPool, domain: domain, store: newSessionStore()}
 }
 
 // HandleOMADM is the main OMA-DM endpoint. Devices POST here on every check-in.
@@ -74,8 +75,13 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get or create the session
-	sess := store.get(deviceID, sessionID, isFirst)
+	// Get or create the session, and serialize all processing for it. A single
+	// OMA-DM session may be driven by concurrent connections; holding the session
+	// lock prevents concurrent mutation of CmdMap / the ID counters (which would
+	// otherwise crash the whole process on a detected concurrent map write).
+	sess := h.store.get(deviceID, sessionID, isFirst)
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
 
 	slog.Info("mdm: check-in received",
 		"device_id", deviceID,
@@ -223,7 +229,7 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 
 	// If we had no commands, session is done
 	if len(outboundCmds) == 0 {
-		store.remove(deviceID, sessionID)
+		h.store.remove(deviceID, sessionID)
 	}
 }
 

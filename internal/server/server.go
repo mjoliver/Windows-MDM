@@ -40,11 +40,21 @@ type Server struct {
 
 // New creates and configures the server and all its routes.
 func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
-	// Generate a random JWT secret from a fresh key on each start.
-	// In production, set PANE_AUTH_JWT_SECRET to a stable value.
-	jwtSecret := make([]byte, 64)
-	if _, err := rand.Read(jwtSecret); err != nil {
-		return nil, fmt.Errorf("generating jwt secret: %w", err)
+	// JWT secret signs session + enrollment tokens. Prefer a stable, operator-
+	// supplied secret (auth.jwt_secret / LATCHZ_AUTH_JWT_SECRET) so sessions
+	// survive restarts and are valid across horizontally-scaled instances.
+	// Only fall back to a random per-process secret in dev, with a loud warning.
+	var jwtSecret []byte
+	if s := cfg.Auth.JWTSecret; s != "" {
+		jwtSecret = []byte(s)
+	} else {
+		jwtSecret = make([]byte, 64)
+		if _, err := rand.Read(jwtSecret); err != nil {
+			return nil, fmt.Errorf("generating jwt secret: %w", err)
+		}
+		slog.Warn("auth.jwt_secret is not set — using a random per-process secret. " +
+			"Sessions will be invalidated on restart and will not work across multiple instances. " +
+			"Set LATCHZ_AUTH_JWT_SECRET to a stable 32+ byte value in production.")
 	}
 
 	base := "https://" + cfg.Server.Domain
@@ -90,6 +100,12 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	return s, nil
 }
 
+// Handler exposes the configured router so tests can drive the full route
+// table with httptest without standing up a TLS listener.
+func (s *Server) Handler() http.Handler {
+	return s.mux
+}
+
 // routes registers all HTTP handlers.
 func (s *Server) routes() {
 	r := s.mux
@@ -108,7 +124,7 @@ func (s *Server) routes() {
 		// Generic discovery (some Windows versions use this path)
 		r.Get("/Enrollment.svc", s.enrollment.HandleDiscovery)
 	})
-	
+
 	// Legacy / Alternate default autodiscovery path
 	r.Route("/EnrollmentServer", func(r chi.Router) {
 		r.Post("/Discovery.svc", s.enrollment.HandleDiscovery)

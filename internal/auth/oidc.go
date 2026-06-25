@@ -32,6 +32,10 @@ const (
 	sessionCookieName = "pane_session"
 )
 
+// nowFunc returns the current time; overridable in tests for deterministic
+// token issuance/expiry.
+var nowFunc = time.Now
+
 // Provider handles OIDC authentication for both the admin dashboard
 // and the device enrollment flow.
 type Provider struct {
@@ -52,8 +56,8 @@ type Provider struct {
 // Claims are embedded in both enrollment tokens and session tokens.
 type Claims struct {
 	jwt.RegisteredClaims
-	Email  string `json:"email"`
-	Role   string `json:"role,omitempty"`
+	Email string `json:"email"`
+	Role  string `json:"role,omitempty"`
 	// TokenType distinguishes enrollment tokens from session tokens
 	TokenType string `json:"tt"`
 }
@@ -106,10 +110,10 @@ func (p *Provider) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	appru := r.URL.Query().Get("appru")
 	loginHint := r.URL.Query().Get("login_hint")
-	
+
 	// State encodes: uuid : flowType : appru (b64) : loginHint (b64)
-	state := uuid.New().String() + ":" + flowType + ":" + 
-		base64.RawURLEncoding.EncodeToString([]byte(appru)) + ":" + 
+	state := uuid.New().String() + ":" + flowType + ":" +
+		base64.RawURLEncoding.EncodeToString([]byte(appru)) + ":" +
 		base64.RawURLEncoding.EncodeToString([]byte(loginHint))
 
 	// Store state in a short-lived cookie for CSRF protection
@@ -166,7 +170,7 @@ func (p *Provider) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	flowType := "dashboard"
 	appru := ""
 	loginHint := ""
-	
+
 	if len(parts) >= 2 {
 		flowType = parts[1]
 	}
@@ -227,7 +231,7 @@ func (p *Provider) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Enforce that the authenticated user matches the originally intended login_hint
 	if loginHint != "" && !strings.EqualFold(claims.Email, loginHint) {
 		slog.Warn("auth: email mismatch during enrollment", "expected", loginHint, "got", claims.Email)
-		
+
 		msg := fmt.Sprintf("Account mismatch: You entered %s in Windows, but authenticated as %s. Please restart enrollment.", loginHint, claims.Email)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// Return 200 OK so the Windows Web Authentication Broker renders the HTML error
@@ -334,7 +338,7 @@ func (p *Provider) handleDashboardCallback(w http.ResponseWriter, r *http.Reques
 
 // issueEnrollmentToken creates a short-lived JWT used as the WS-Trust security token.
 func (p *Provider) issueEnrollmentToken(email string) (string, error) {
-	now := time.Now()
+	now := nowFunc()
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   email,
@@ -351,7 +355,7 @@ func (p *Provider) issueEnrollmentToken(email string) (string, error) {
 
 // issueSessionToken creates a JWT for dashboard sessions stored as a cookie.
 func (p *Provider) issueSessionToken(email, role string) (string, error) {
-	now := time.Now()
+	now := nowFunc()
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   email,

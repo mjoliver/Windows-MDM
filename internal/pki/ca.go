@@ -25,6 +25,10 @@ import (
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 )
 
+// nowFunc returns the current time; overridable in tests for deterministic
+// certificate validity windows.
+var nowFunc = time.Now
+
 // CA holds the active root certificate and private key.
 type CA struct {
 	cert    *x509.Certificate
@@ -108,8 +112,8 @@ func (ca *CA) generate(masterSecret string) (*CA, error) {
 			Organization: []string{"Latchz MDM"},
 			CommonName:   "Latchz Root CA",
 		},
-		NotBefore:             time.Now().Add(-10 * time.Minute), // small back-date for clock skew
-		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour), // 10 years
+		NotBefore:             nowFunc().Add(-10 * time.Minute),         // small back-date for clock skew
+		NotAfter:              nowFunc().Add(10 * 365 * 24 * time.Hour), // 10 years
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -200,8 +204,8 @@ func (ca *CA) IssueDeviceCert(deviceID, deviceName string, csrPEM []byte) ([]byt
 			Organization: []string{"Latchz MDM"},
 			CommonName:   csr.Subject.CommonName,
 		},
-		NotBefore:   time.Now().Add(-10 * time.Minute),
-		NotAfter:    time.Now().Add(365 * 24 * time.Hour), // 1 year, rotated on re-enrollment
+		NotBefore:   nowFunc().Add(-10 * time.Minute),
+		NotAfter:    nowFunc().Add(365 * 24 * time.Hour), // 1 year, rotated on re-enrollment
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
