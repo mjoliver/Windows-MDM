@@ -7,7 +7,11 @@ pane.yaml
 # Build output
 pane
 pane.exe
+latchz
+latchz.exe
 dist/
+cover.out
+last_soap_response.xml
 
 # Database files
 *.db

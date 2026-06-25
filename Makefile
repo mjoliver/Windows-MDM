@@ -1,43 +1,64 @@
-# Pane MDM - Build system
+# Latchz MDM - Build system (POSIX / cross-platform)
 # Usage:
-#   make          → build everything (web + go)
-#   make dev      → run go server (web already built)
-#   make web      → build React dashboard only
-#   make clean    → remove build artifacts
+#   make            → build everything (web + go)
+#   make dev        → run the go server
+#   make web        → build React dashboard only
+#   make test       → run Go tests
+#   make test-race  → run Go tests with the race detector
+#   make cover      → run Go tests with a coverage profile + summary
+#   make vet fmt-check → static checks
+#   make clean      → remove build artifacts
 
-BINARY    := pane
+BINARY    := latchz
 WEB_SRC   := web
 WEB_DIST  := internal/server/web_dist
-GO_PKG    := ./cmd/pane
+GO_PKG    := ./cmd/latchz
 
-.PHONY: all web go clean dev
+.PHONY: all web go build dev test test-race cover vet fmt-check tidy clean
 
 all: web go
 
 ## Build the React dashboard and copy into the Go embed directory
 web:
 	cd $(WEB_SRC) && npm install && npm run build
-	if exist $(WEB_DIST) rmdir /s /q $(WEB_DIST)
-	xcopy /e /i /q $(WEB_SRC)\dist $(WEB_DIST)
+	rm -rf $(WEB_DIST)
+	cp -r $(WEB_SRC)/dist $(WEB_DIST)
 
-## Build the Go binary (assumes web is already built)
+## Build the Go binary (assumes web is already built / embedded)
 go:
-	go build -o $(BINARY).exe $(GO_PKG)
+	go build -o $(BINARY) $(GO_PKG)
 
-## Build everything - web first, then go
 build: web go
 
 ## Run the server in development mode
 dev:
 	go run $(GO_PKG) serve
 
+## Run the Go test suite
+test:
+	go test ./...
+
+## Run the Go test suite with the race detector
+test-race:
+	go test -race ./...
+
+## Run tests with coverage and print a per-package + total summary
+cover:
+	go test -coverprofile=cover.out -covermode=atomic ./...
+	go tool cover -func=cover.out | tail -n 1
+
+vet:
+	go vet ./...
+
+## Fail if any Go file is not gofmt-clean
+fmt-check:
+	@unformatted=$$(gofmt -l internal cmd); \
+	if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
+
+tidy:
+	go mod tidy
+
 ## Remove build output
 clean:
-	if exist $(BINARY).exe del $(BINARY).exe
-	if exist $(WEB_SRC)\dist rmdir /s /q $(WEB_SRC)\dist
-	if exist $(WEB_DIST) rmdir /s /q $(WEB_DIST)
-
-## Show what would be included in the binary
-size:
-	go build -o $(BINARY).exe $(GO_PKG)
-	dir $(BINARY).exe
+	rm -f $(BINARY) cover.out
+	rm -rf $(WEB_SRC)/dist
