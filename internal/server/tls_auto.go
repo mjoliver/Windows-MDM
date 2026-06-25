@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -64,11 +65,15 @@ func (s *Server) runAutoTLS(ctx context.Context, tlsCfg *tls.Config, acmeHandler
 		Handler: acmeHandler,
 	}
 
-	// :443 — main HTTPS server
+	// :443 — main HTTPS server. Timeouts bound slow-client (Slowloris) attacks.
 	https443 := &http.Server{
-		Addr:      ":443",
-		Handler:   s.mux,
-		TLSConfig: tlsCfg,
+		Addr:              ":443",
+		Handler:           s.mux,
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	slog.Info("Latchz MDM starting",

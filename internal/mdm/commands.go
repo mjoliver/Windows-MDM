@@ -2,6 +2,7 @@ package mdm
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -124,13 +125,35 @@ func EnqueueReboot(dbConn *sql.DB, deviceID string) (int64, error) {
 }
 
 func enqueue(dbConn *sql.DB, deviceID, commandType, omaURI, payload string) (int64, error) {
-	var lastInsertID int64
+	// Dedup: if an equivalent command for this (device, uri, type) is already
+	// pending, update its payload instead of piling up duplicates (repeated
+	// Sync / profile re-apply would otherwise grow the queue without bound).
+	var existingID int64
 	err := dbConn.QueryRow(db.Rebind(`
+		SELECT id FROM command_queue
+		WHERE device_id = ? AND oma_uri = ? AND command_type = ? AND status = 'pending'
+		LIMIT 1
+	`), deviceID, omaURI, commandType).Scan(&existingID)
+	switch {
+	case err == nil:
+		if _, uerr := dbConn.Exec(db.Rebind(`
+			UPDATE command_queue SET payload = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?
+		`), nullableString(payload), existingID); uerr != nil {
+			return 0, fmt.Errorf("updating pending command: %w", uerr)
+		}
+		return existingID, nil
+	case errors.Is(err, sql.ErrNoRows):
+		// no pending duplicate — insert below
+	default:
+		return 0, fmt.Errorf("checking pending command: %w", err)
+	}
+
+	var lastInsertID int64
+	if err := dbConn.QueryRow(db.Rebind(`
 		INSERT INTO command_queue (device_id, command_type, oma_uri, payload)
 		VALUES (?, ?, ?, ?)
 		RETURNING id
-	`), deviceID, commandType, omaURI, nullableString(payload)).Scan(&lastInsertID)
-	if err != nil {
+	`), deviceID, commandType, omaURI, nullableString(payload)).Scan(&lastInsertID); err != nil {
 		return 0, fmt.Errorf("enqueueing command: %w", err)
 	}
 	return lastInsertID, nil

@@ -100,6 +100,21 @@ func TestValidateEnrollmentToken_RejectsWrongSecret(t *testing.T) {
 	}
 }
 
+func TestValidateEnrollmentToken_SingleUse(t *testing.T) {
+	database := testutil.DB(t)
+	p := &Provider{db: database.DB, jwtSecret: []byte("0123456789012345678901234567890123")}
+	tok, err := p.issueEnrollmentToken("alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ValidateEnrollmentToken(tok); err != nil {
+		t.Fatalf("first redemption should succeed: %v", err)
+	}
+	if _, err := p.ValidateEnrollmentToken(tok); err == nil {
+		t.Fatal("second redemption (replay) must be rejected")
+	}
+}
+
 func TestUpsertUser_BootstrapAdmin(t *testing.T) {
 	database := testutil.DB(t)
 	p := &Provider{db: database.DB, bootstrapAdmin: "admin@example.com"}

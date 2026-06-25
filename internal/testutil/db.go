@@ -19,7 +19,7 @@ const MasterSecret = "test-master-secret-0123456789-abcdefghijklmnop"
 // pooled connections all see the same database.
 func DB(t testing.TB) *db.DB {
 	t.Helper()
-	dsn := filepath.Join(t.TempDir(), "test.db") + "?_pragma=busy_timeout(5000)"
+	dsn := filepath.Join(t.TempDir(), "test.db")
 	database, err := db.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("testutil: opening test db: %v", err)

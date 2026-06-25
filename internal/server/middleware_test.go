@@ -6,9 +6,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
+
+func TestRateLimiter(t *testing.T) {
+	rl := newRateLimiter(2, time.Minute)
+	if !rl.allow("ip1") || !rl.allow("ip1") {
+		t.Fatal("first 2 requests should be allowed")
+	}
+	if rl.allow("ip1") {
+		t.Fatal("3rd request from same client should be blocked")
+	}
+	if !rl.allow("ip2") {
+		t.Fatal("a different client should not be affected")
+	}
+}
 
 // stubAuth implements the authenticator interface for middleware tests.
 type stubAuth struct {

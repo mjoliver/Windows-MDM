@@ -101,13 +101,16 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		"results", len(incoming.SyncBody.Results),
 	)
 
-	// ── Step 3: Update checkin timestamp and status ──────────────────────
-	// ── Step 3: Update checkin timestamp and status ──────────────────────
+	// ── Step 3: Update check-in timestamp ────────────────────────────────
+	// Only the last_checkin is updated here. Compliance status is computed from
+	// the device's actual reported values (see refreshDeviceCompliance) — a
+	// check-in must NOT blanket-mark the device compliant. (Also: Rebind so the
+	// query works on Postgres, not just SQLite.)
 	if _, err := h.db.Exec(
-		`UPDATE devices SET last_checkin = ?, compliance_status = 'compliant' WHERE id = ?`,
+		dbpkg.Rebind(`UPDATE devices SET last_checkin = ? WHERE id = ?`),
 		time.Now().UTC(), deviceID,
 	); err != nil {
-		slog.Error("mdm: failed to update device status", "device_id", deviceID, "err", err)
+		slog.Error("mdm: failed to update device check-in time", "device_id", deviceID, "err", err)
 	}
 
 	// ── Step 4: Process Status responses (command result ACKs) ────────────
@@ -123,10 +126,13 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 	var osVersion, osBuild sql.NullString
 	_ = h.db.QueryRow(dbpkg.Rebind(`SELECT os_version, os_build FROM devices WHERE id = ?`), deviceID).Scan(&osVersion, &osBuild)
 
-	if isFirst || !osVersion.Valid || osVersion.String == "" || !osBuild.Valid || osBuild.String == "" {
-		// On the first session, or until we have full info, interrogation it
-		slog.Info("mdm: device info incomplete — interrogating", "device_id", deviceID)
+	infoIncomplete := !osVersion.Valid || osVersion.String == "" || !osBuild.Valid || osBuild.String == ""
+	if (isFirst || infoIncomplete) && sess.Interrogations < maxInterrogations {
+		// On the first session, or until we have full info, interrogate the device.
+		// Bounded so a device that never reports complete info isn't re-queried forever.
+		slog.Info("mdm: device info incomplete — interrogating", "device_id", deviceID, "round", sess.Interrogations+1)
 		outboundCmds = append(outboundCmds, buildFirstCheckInCommands(sess)...)
+		sess.Interrogations++
 	}
 
 	// Load any pending commands from the queue
@@ -352,7 +358,37 @@ func (h *Handler) processStatuses(deviceID string, sess *Session, statuses []Sta
 		if err := markCommandResult(h.db, queueID, s.Data, ""); err != nil {
 			slog.Error("mdm: failed to mark command result", "queue_id", queueID, "err", err)
 		}
+
+		// If a remote wipe succeeded, finalise the device teardown: mark it
+		// inactive and revoke its certificate (the device factory-resets and
+		// loses its enrollment, so it must not remain a trusted, active device).
+		if isSuccessStatus(s.Data) {
+			h.finalizeWipeIfApplicable(deviceID, queueID)
+		}
 	}
+}
+
+// finalizeWipeIfApplicable deactivates the device and revokes its certs once a
+// queued remote-wipe command has been confirmed executed.
+func (h *Handler) finalizeWipeIfApplicable(deviceID string, queueID int) {
+	var omaURI string
+	if err := h.db.QueryRow(dbpkg.Rebind(`SELECT oma_uri FROM command_queue WHERE id = ?`), queueID).Scan(&omaURI); err != nil {
+		return
+	}
+	if omaURI != OMAExecWipe {
+		return
+	}
+	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE devices SET is_active = 0 WHERE id = ?`), deviceID); err != nil {
+		slog.Error("mdm: deactivating wiped device", "device_id", deviceID, "err", err)
+	}
+	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE certificates SET revoked = 1 WHERE device_id = ?`), deviceID); err != nil {
+		slog.Error("mdm: revoking wiped device certs", "device_id", deviceID, "err", err)
+	}
+	slog.Info("mdm: remote wipe confirmed — device deactivated and certs revoked", "device_id", deviceID)
+}
+
+func isSuccessStatus(code string) bool {
+	return code == StatusOK || code == StatusCreated || code == StatusAccepted
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

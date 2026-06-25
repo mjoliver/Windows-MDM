@@ -18,10 +18,14 @@ COPY --from=web-builder /app/web/dist ./internal/server/web_dist
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o latchz ./cmd/latchz
 
 # --- Stage 3: Final Minimal Image ---
-FROM alpine:latest
-RUN apk add --no-cache ca-certificates tzdata
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata \
+    && adduser -D -u 10001 -h /app latchz
 WORKDIR /app
-COPY --from=go-builder /app/latchz .
+COPY --from=go-builder --chown=latchz:latchz /app/latchz .
+
+# Run as a non-root user.
+USER latchz
 
 # Expose port (Cloud Run defaults to 8080)
 EXPOSE 8080

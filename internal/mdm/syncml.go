@@ -169,7 +169,9 @@ const (
 	OMADevDetailOSPlatform   = "./DevDetail/Ext/Microsoft/OSPlatform"
 	OMADevDetailOSBuild      = "./DevDetail/Ext/Microsoft/OSBuild"
 	OMADevDetailComputerName = "./DevDetail/Ext/Microsoft/DNSComputerName"
-	OMADevDetailFreeStorage  = "./DevDetail/Ext/Microsoft/LocalTime"
+	// OMADevDetailLocalTime is the device local time node (the constant was
+	// previously mislabelled "FreeStorage" while pointing at LocalTime).
+	OMADevDetailLocalTime = "./DevDetail/Ext/Microsoft/LocalTime"
 
 	// DMClient — management server configuration
 	OMADMClientPollFrequency = "./Vendor/MSFT/DMClient/Provider/PaneMDM/Poll/IntervalForRemainingScheduledRetries"

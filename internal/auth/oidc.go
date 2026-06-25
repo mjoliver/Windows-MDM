@@ -387,9 +387,9 @@ func (p *Provider) issueSessionToken(email, role string) (string, error) {
 		SignedString(p.jwtSecret)
 }
 
-// ValidateEnrollmentToken validates the JWT presented by a device during WSTEP.
-// Returns the user email if valid.
-func (p *Provider) ValidateEnrollmentToken(tokenStr string) (string, error) {
+// parseEnrollmentToken validates the JWT signature/expiry/type without
+// consuming it. Pure (no side effects) so it is unit-testable.
+func (p *Provider) parseEnrollmentToken(tokenStr string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
@@ -397,19 +397,49 @@ func (p *Provider) ValidateEnrollmentToken(tokenStr string) (string, error) {
 		return p.jwtSecret, nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("parsing token: %w", err)
+		return nil, fmt.Errorf("parsing token: %w", err)
 	}
-
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
-		return "", errors.New("invalid token claims")
+		return nil, errors.New("invalid token claims")
 	}
-
 	if claims.TokenType != "enroll" {
-		return "", errors.New("not an enrollment token")
+		return nil, errors.New("not an enrollment token")
 	}
+	return claims, nil
+}
 
+// ValidateEnrollmentToken validates the JWT presented by a device during WSTEP
+// and consumes it (single-use): a token can be redeemed at most once, so a
+// captured token cannot be replayed to enroll additional devices.
+func (p *Provider) ValidateEnrollmentToken(tokenStr string) (string, error) {
+	claims, err := p.parseEnrollmentToken(tokenStr)
+	if err != nil {
+		return "", err
+	}
+	if err := p.consumeToken(claims.ID); err != nil {
+		return "", err
+	}
 	return claims.Email, nil
+}
+
+// consumeToken records a one-time use of the token's jti, rejecting replays.
+func (p *Provider) consumeToken(jti string) error {
+	if p.db == nil {
+		return nil // unit-test path without a database
+	}
+	if jti == "" {
+		return errors.New("enrollment token missing id (jti)")
+	}
+	res, err := p.db.Exec(dbpkg.Rebind(
+		`INSERT INTO consumed_enrollment_tokens (jti) VALUES (?) ON CONFLICT(jti) DO NOTHING`), jti)
+	if err != nil {
+		return fmt.Errorf("recording token use: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errors.New("enrollment token already used")
+	}
+	return nil
 }
 
 // ValidateSessionToken validates a dashboard session cookie JWT.

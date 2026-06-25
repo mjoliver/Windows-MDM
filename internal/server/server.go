@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
@@ -148,6 +149,11 @@ func (s *Server) routes() {
 	r.Use(middleware.RealIP)
 	r.Use(s.loggingMiddleware)
 	r.Use(middleware.Recoverer)
+	r.Use(securityHeaders)
+
+	// Throttle sensitive unauthenticated endpoints.
+	authLimiter := newRateLimiter(20, time.Minute)
+	emergencyLimiter := newRateLimiter(5, time.Minute)
 
 	// ── MDM Enrollment endpoints ──────────────────────────────────────────
 	// These are hit by the Windows MDM client during enrollment (MS-MDE2)
@@ -166,8 +172,12 @@ func (s *Server) routes() {
 
 	// Auth provider login/callback/logout endpoints (the page Windows opens for
 	// user auth, and the dashboard login). The provider is always configured —
-	// the server refuses to start otherwise.
-	s.auth.MountRoutes(r)
+	// the server refuses to start otherwise. Rate-limited to slow credential
+	// stuffing / brute force.
+	r.Group(func(gr chi.Router) {
+		gr.Use(authLimiter.middleware)
+		s.auth.MountRoutes(gr)
+	})
 
 	// MS-XCEP: certificate enrollment policy
 	r.Post("/xcep", s.enrollment.HandleXCEP(s.ca))
@@ -243,8 +253,9 @@ func (s *Server) routes() {
 		})
 	})
 
-	// Emergency access (rescue for lockouts)
-	r.Get("/emergency", s.handleEmergencyAccess)
+	// Emergency access (rescue for lockouts) — strictly rate-limited to make the
+	// token infeasible to brute-force.
+	r.With(emergencyLimiter.middleware).Get("/emergency", s.handleEmergencyAccess)
 
 	// ── Admin dashboard (React SPA) ───────────────────────────────────────
 	// TODO Phase 4: embed React build and serve here
@@ -475,7 +486,27 @@ func respondJSON(w http.ResponseWriter, status int, body string) {
 
 // ── Remaining handlers ────────────────────────────────────────────────────────
 
+// securityHeaders sets baseline response hardening headers on every response.
+// A strict CSP is intentionally NOT set globally because the enrollment callback
+// pages rely on inline scripts required by the Windows WebAuthBroker; the SPA
+// gets its own CSP in handleDashboard.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	// CSP scoped to the SPA. 'unsafe-inline' for styles covers React inline
+	// style attributes; scripts are restricted to same-origin bundle files.
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "+
+			"script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
 	webHandler().ServeHTTP(w, r)
 }
 
@@ -485,17 +516,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEmergencyAccess(w http.ResponseWriter, r *http.Request) {
+	expected := s.cfg.Server.EmergencyToken
 	token := r.URL.Query().Get("token")
-	if token == "" || token != s.cfg.Server.EmergencyToken {
+	// Disabled unless an emergency token is configured. Use a constant-time
+	// comparison to avoid leaking the token via timing.
+	if expected == "" || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
 		http.Error(w, "invalid or missing emergency token", http.StatusUnauthorized)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"emergency access granted"}`))
-}
-
-func (s *Server) notImpl(w http.ResponseWriter) {
-	http.Error(w, "not yet implemented", http.StatusNotImplemented)
 }
 
 // ── Context keys ──────────────────────────────────────────────────────────────

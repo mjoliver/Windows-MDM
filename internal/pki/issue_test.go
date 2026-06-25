@@ -29,6 +29,11 @@ func TestIssueDeviceCert_BindsSubjectToDeviceID(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// FK enforcement is on: the device row must exist before issuing its cert.
+	if _, err := database.Exec(`INSERT INTO devices (id, hardware_id, is_active) VALUES ('device-uuid-123', 'HW-X', 1)`); err != nil {
+		t.Fatal(err)
+	}
+
 	// Attacker puts a chosen CommonName in their CSR.
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{

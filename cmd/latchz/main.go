@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/google/subcommands"
+	"github.com/google/uuid"
 	"github.com/latchzmdm/latchz/internal/config"
 	"github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/pki"
@@ -121,31 +122,39 @@ func (a *adminCmd) SetFlags(f *flag.FlagSet) {
 
 func (a *adminCmd) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
 	if a.email == "" {
-		fmt.Fprintln(os.Stderr, "pane admin: -email is required")
+		fmt.Fprintln(os.Stderr, "latchz admin: -email is required")
+		return subcommands.ExitUsageError
+	}
+	switch a.role {
+	case "super_admin", "admin", "user":
+	default:
+		fmt.Fprintf(os.Stderr, "latchz admin: invalid role %q (use super_admin, admin, or user)\n", a.role)
 		return subcommands.ExitUsageError
 	}
 
 	cfg, err := config.Load(a.configFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pane admin: config error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "latchz admin: config error: %v\n", err)
 		return subcommands.ExitFailure
 	}
 
 	database, err := db.Open(cfg.Database.Driver, cfg.Database.DSN)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pane admin: database error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "latchz admin: database error: %v\n", err)
 		return subcommands.ExitFailure
 	}
 	defer database.Close()
 
-	// Upsert: create user if not exists, then set role
-	_, err = database.ExecContext(ctx, `
+	// Upsert: create the user if absent, then set their role. IDs are generated
+	// in Go and placeholders are rebound so this works on both SQLite and
+	// Postgres (the previous query used sqlite-only randomblob() + ? params).
+	_, err = database.ExecContext(ctx, db.Rebind(`
 		INSERT INTO users (id, email, role, auth_provider)
-		VALUES (lower(hex(randomblob(16))), ?, ?, 'builtin')
+		VALUES (?, ?, ?, 'builtin')
 		ON CONFLICT(email) DO UPDATE SET role = excluded.role
-	`, a.email, a.role)
+	`), uuid.New().String(), a.email, a.role)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pane admin: failed to update user: %v\n", err)
+		fmt.Fprintf(os.Stderr, "latchz admin: failed to update user: %v\n", err)
 		return subcommands.ExitFailure
 	}
 
