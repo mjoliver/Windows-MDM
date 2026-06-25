@@ -1,16 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Shield } from 'lucide-react'
-
-// safeHttpUrl returns the URL only if it is http(s); otherwise null. This blocks
-// javascript:/data: scheme injection via the server-provided support_url.
-function safeHttpUrl(raw: string): string | null {
-  try {
-    const u = new URL(raw, window.location.origin)
-    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null
-  } catch {
-    return null
-  }
-}
+import { safeHttpUrl } from '../format'
 
 export function LoginPage() {
   const [supportUrl, setSupportUrl] = useState<string | null>(null)

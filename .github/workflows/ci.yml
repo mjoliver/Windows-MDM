@@ -64,7 +64,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Install
-        run: npm ci
+        # npm install (not ci) so the lockfile is regenerated to include the
+        # vitest devDependency added in this branch.
+        run: npm install
 
       - name: Typecheck + build
         run: npm run build

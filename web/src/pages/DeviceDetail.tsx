@@ -4,6 +4,7 @@ import { Monitor, ArrowLeft, Lock, Trash2, RefreshCw, HelpCircle } from 'lucide-
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
 import { api, type Device, type DeviceCompliance, type DeviceCommand } from '../api'
+import { formatResultCode } from '../format'
 
 function timeAgo(iso: string | null) {
   if (!iso) return 'Never'
@@ -14,14 +15,6 @@ function timeAgo(iso: string | null) {
   const h = Math.floor(m / 60)
   if (h < 24) return `${h}h ago`
   return `${Math.floor(h / 24)}d ago`
-}
-
-// formatResultCode renders a SyncML status code as hex when numeric, leaving
-// already-hex or non-numeric codes intact (avoids rendering "0xNaN").
-export function formatResultCode(code: string): string {
-  if (code.startsWith('0x')) return code.toUpperCase()
-  const n = Number(code)
-  return Number.isFinite(n) && code.trim() !== '' ? `0x${n.toString(16).toUpperCase()}` : code
 }
 
 export function DeviceDetailPage() {
