@@ -1,6 +1,52 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoad_FileAndEnvOverride(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "latchz.yaml")
+	contents := `
+server:
+  domain: file.example.com
+  master_secret: "0123456789abcdef0"
+auth:
+  provider: oidc
+  oidc:
+    issuer: https://accounts.google.com
+    client_id: id
+    client_secret: secret
+    allowed_domains: [example.com]
+`
+	if err := os.WriteFile(cfgPath, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Environment variables override file values.
+	t.Setenv("LATCHZ_SERVER_DOMAIN", "env.example.com")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.Domain != "env.example.com" {
+		t.Fatalf("env should override file domain, got %q", cfg.Server.Domain)
+	}
+	if cfg.Auth.OIDC.Issuer != "https://accounts.google.com" {
+		t.Fatalf("issuer not loaded from file: %q", cfg.Auth.OIDC.Issuer)
+	}
+
+	// Cloud Run's PORT maps to the listen address.
+	t.Setenv("PORT", "9090")
+	cfg2, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.Server.Listen != ":9090" {
+		t.Fatalf("PORT should set listen, got %q", cfg2.Server.Listen)
+	}
+}
 
 func validBase() *Config {
 	return &Config{
