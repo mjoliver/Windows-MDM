@@ -126,6 +126,9 @@ func (h *Handler) HandleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	actor := emailFromCtx(r)
 
+	// Capture members BEFORE deletion so their now-removed policies are retracted.
+	affected := h.queryDeviceIDs(r, `SELECT device_id FROM device_group_members WHERE group_id = ?`, id)
+
 	res, err := h.db.ExecContext(r.Context(), db.Rebind(`DELETE FROM device_groups WHERE id = ?`), id)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, "failed to delete group")
@@ -136,8 +139,10 @@ func (h *Handler) HandleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	go policy.ResyncDevices(h.db, affected)
+
 	h.audit(r, actor, "group.delete", "group", id, "")
-	slog.Info("group deleted", "group_id", id, "actor", actor)
+	slog.Info("group deleted", "group_id", id, "actor", actor, "affected_devices", len(affected))
 	respondOK(w, map[string]string{"status": "deleted"})
 }
 
@@ -193,9 +198,12 @@ func (h *Handler) HandleAssignDeviceToGroup(w http.ResponseWriter, r *http.Reque
 	h.audit(r, actor, "group.members."+body.Action, "group", groupID,
 		fmt.Sprintf(`{"device_count":%d}`, affected))
 
-	// After adding devices, apply all group profiles to them
+	// Adding devices applies the group's profiles; removing them retracts those
+	// settings from the removed devices.
 	if body.Action == "add" {
 		go policy.ApplyGroup(h.db, groupID)
+	} else {
+		go policy.ResyncDevices(h.db, body.DeviceIDs)
 	}
 
 	respondOK(w, map[string]interface{}{"status": "ok", "affected": affected})
@@ -241,10 +249,10 @@ func (h *Handler) HandleAssignProfileToGroup(w http.ResponseWriter, r *http.Requ
 	h.audit(r, actor, "group.profiles."+body.Action, "group", groupID,
 		fmt.Sprintf(`{"profile_count":%d}`, len(body.ProfileIDs)))
 
-	// Re-apply policies to all devices in this group
-	if body.Action == "add" {
-		go policy.ApplyGroup(h.db, groupID)
-	}
+	// Re-apply (or retract on removal) policies for all devices in this group.
+	// ApplyGroup re-resolves each device, which both applies new settings and
+	// retracts ones no longer governed.
+	go policy.ApplyGroup(h.db, groupID)
 
 	respondOK(w, map[string]string{"status": "ok"})
 }

@@ -100,6 +100,12 @@ func EnqueueExec(dbConn *sql.DB, deviceID, omaURI, payload string) (int64, error
 	return enqueue(dbConn, deviceID, "Exec", formatDeviceURI(omaURI), payload)
 }
 
+// EnqueueDelete adds a Delete command, used to retract a previously-applied
+// policy node from the device.
+func EnqueueDelete(dbConn *sql.DB, deviceID, omaURI string) (int64, error) {
+	return enqueue(dbConn, deviceID, "Delete", formatDeviceURI(omaURI), "")
+}
+
 // formatDeviceURI ensures that Policy CSP URIs have the required ./Device/ prefix
 // before they are sent to the Windows client.
 func formatDeviceURI(uri string) string {

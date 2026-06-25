@@ -12,7 +12,6 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -354,54 +353,20 @@ func (p *Provider) handleDashboardCallback(w http.ResponseWriter, r *http.Reques
 
 // issueEnrollmentToken creates a short-lived JWT used as the WS-Trust security token.
 func (p *Provider) issueEnrollmentToken(email string) (string, error) {
-	now := nowFunc()
-	claims := Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   email,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(enrollmentTokenExpiry)),
-			ID:        uuid.New().String(),
-		},
-		Email:     email,
-		TokenType: "enroll",
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
-		SignedString(p.jwtSecret)
+	return signClaims(p.jwtSecret, newEnrollmentClaims(email, nowFunc()))
 }
 
 // issueSessionToken creates a JWT for dashboard sessions stored as a cookie.
 func (p *Provider) issueSessionToken(email, role string) (string, error) {
-	now := nowFunc()
-	claims := Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   email,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(sessionTokenExpiry)),
-			ID:        uuid.New().String(),
-		},
-		Email:     email,
-		Role:      role,
-		TokenType: "session",
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
-		SignedString(p.jwtSecret)
+	return signClaims(p.jwtSecret, newSessionClaims(email, role, nowFunc()))
 }
 
 // parseEnrollmentToken validates the JWT signature/expiry/type without
 // consuming it. Pure (no side effects) so it is unit-testable.
 func (p *Provider) parseEnrollmentToken(tokenStr string) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-		}
-		return p.jwtSecret, nil
-	})
+	claims, err := parseHMACToken(p.jwtSecret, tokenStr)
 	if err != nil {
-		return nil, fmt.Errorf("parsing token: %w", err)
-	}
-	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid {
-		return nil, errors.New("invalid token claims")
+		return nil, err
 	}
 	if claims.TokenType != "enroll" {
 		return nil, errors.New("not an enrollment token")
@@ -417,53 +382,22 @@ func (p *Provider) ValidateEnrollmentToken(tokenStr string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := p.consumeToken(claims.ID); err != nil {
+	if err := consumeJTI(p.db, claims.ID); err != nil {
 		return "", err
 	}
 	return claims.Email, nil
 }
 
-// consumeToken records a one-time use of the token's jti, rejecting replays.
-func (p *Provider) consumeToken(jti string) error {
-	if p.db == nil {
-		return nil // unit-test path without a database
-	}
-	if jti == "" {
-		return errors.New("enrollment token missing id (jti)")
-	}
-	res, err := p.db.Exec(dbpkg.Rebind(
-		`INSERT INTO consumed_enrollment_tokens (jti) VALUES (?) ON CONFLICT(jti) DO NOTHING`), jti)
-	if err != nil {
-		return fmt.Errorf("recording token use: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return errors.New("enrollment token already used")
-	}
-	return nil
-}
-
 // ValidateSessionToken validates a dashboard session cookie JWT.
 // Returns (email, role) if valid.
 func (p *Provider) ValidateSessionToken(tokenStr string) (email, role string, err error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
-		}
-		return p.jwtSecret, nil
-	})
+	claims, err := parseHMACToken(p.jwtSecret, tokenStr)
 	if err != nil {
-		return "", "", fmt.Errorf("parsing session token: %w", err)
+		return "", "", err
 	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid {
-		return "", "", errors.New("invalid session")
-	}
-
 	if claims.TokenType != "session" {
 		return "", "", errors.New("not a session token")
 	}
-
 	return claims.Email, claims.Role, nil
 }
 
@@ -591,25 +525,10 @@ func writeHTML(w http.ResponseWriter, status int, t *template.Template, data any
 	_ = t.Execute(w, data)
 }
 
-// validateAppru validates the Windows enrollment return URL. It must be either a
-// known Windows app scheme or an https URL on this server's own origin. The
-// returned value is a normalised, attribute-safe template.URL. This prevents an
-// attacker-chosen appru from exfiltrating the enrollment token to an arbitrary
-// origin (open redirect).
+// validateAppru validates the Windows enrollment return URL against the server's
+// own origin (see appruAllowed).
 func (p *Provider) validateAppru(appru string) (template.URL, bool) {
-	u, err := url.Parse(appru)
-	if err != nil {
-		return "", false
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "ms-app", "ms-appx-web", "ms-aad-brokerplugin":
-		return template.URL(u.String()), true
-	case "https":
-		if base, err := url.Parse(p.baseURL); err == nil && u.Host != "" && strings.EqualFold(u.Host, base.Host) {
-			return template.URL(u.String()), true
-		}
-	}
-	return "", false
+	return appruAllowed(appru, p.baseURL)
 }
 
 // renderAccessDenied / renderEnrollMismatch are small testable seams.

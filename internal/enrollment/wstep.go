@@ -3,6 +3,7 @@ package enrollment
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/pem"
@@ -18,6 +19,33 @@ import (
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/pki"
 )
+
+// verifiedRenewalDevice authenticates a non-interactive certificate renewal: the
+// device presents its existing client certificate over mTLS (no enrollment
+// token). The cert must chain to our CA and map to a known, non-revoked device.
+func verifiedRenewalDevice(r *http.Request, ca *pki.CA, db *sql.DB) (deviceID, email string, ok bool) {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return "", "", false
+	}
+	cert := r.TLS.PeerCertificates[0]
+	if _, err := cert.Verify(x509.VerifyOptions{
+		Roots:     ca.TLSPool(),
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return "", "", false
+	}
+	thumb := fmt.Sprintf("%x", sha1Bytes(cert.Raw))
+	var did, em string
+	err := db.QueryRow(dbpkg.Rebind(`
+		SELECT c.device_id, COALESCE(d.enrolled_by, '')
+		FROM certificates c JOIN devices d ON d.id = c.device_id
+		WHERE c.thumbprint = ? AND c.cert_type = 'device' AND c.revoked = 0
+	`), thumb).Scan(&did, &em)
+	if err != nil {
+		return "", "", false
+	}
+	return did, em, true
+}
 
 // errHardwareIDTaken indicates an enrollment tried to re-use a hardware_id that
 // is already registered to a different user.
@@ -197,24 +225,36 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 			return
 		}
 
-		// ── Step 1: Validate the enrollment token ─────────────────────────
-		if env.Header.Security == nil || env.Header.Security.BinarySecurityToken == nil {
-			slog.Error("wstep: missing security token in header (device not authenticated)")
+		// ── Step 1: Authenticate the request ──────────────────────────────
+		// Two paths:
+		//   - Initial enrollment: a WS-Security enrollment token (from login).
+		//   - Renewal (ROBO): the device re-keys non-interactively presenting its
+		//     existing client certificate (mTLS), with no enrollment token. We
+		//     authenticate by that certificate and re-issue for the same device.
+		var userEmail string
+		var renewalDeviceID string
+		hasToken := env.Header.Security != nil && env.Header.Security.BinarySecurityToken != nil
+
+		if hasToken {
+			// Never log the raw token — it is a bearer credential.
+			tokenStr := strings.TrimSpace(env.Header.Security.BinarySecurityToken.Value)
+			if tokenBytes, decErr := base64.StdEncoding.DecodeString(tokenStr); decErr == nil {
+				tokenStr = string(tokenBytes)
+			}
+			email, err := validateToken(tokenStr)
+			if err != nil {
+				slog.Warn("wstep: invalid enrollment token", "err", err)
+				writeSoapFault(w, "invalid enrollment token")
+				return
+			}
+			userEmail = email
+		} else if deviceID, email, ok := verifiedRenewalDevice(r, ca, db); ok {
+			renewalDeviceID = deviceID
+			userEmail = email
+			slog.Info("wstep: certificate renewal", "device_id", deviceID)
+		} else {
+			slog.Warn("wstep: no enrollment token and no valid client certificate")
 			writeSoapFault(w, "missing security token")
-			return
-		}
-
-		// Never log the raw token — it is a bearer credential that authorises
-		// certificate issuance.
-		tokenStr := strings.TrimSpace(env.Header.Security.BinarySecurityToken.Value)
-		if tokenBytes, decErr := base64.StdEncoding.DecodeString(tokenStr); decErr == nil {
-			tokenStr = string(tokenBytes)
-		}
-
-		userEmail, err := validateToken(tokenStr)
-		if err != nil {
-			slog.Warn("wstep: invalid enrollment token", "err", err)
-			writeSoapFault(w, "invalid enrollment token")
 			return
 		}
 
@@ -241,20 +281,25 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		info.EnrolledUserEmail = userEmail
 
 		// ── Step 4: Create/update device record in DB ─────────────────────
-		// hardware_id is attacker-controlled, so re-enrollment of an existing
-		// hardware_id is only allowed by the SAME user that originally enrolled
-		// it. A different user is rejected rather than allowed to hijack the
-		// existing device record.
-		actualDeviceID, err := upsertDevice(r.Context(), db, info, userEmail)
-		if err != nil {
-			if errors.Is(err, errHardwareIDTaken) {
-				slog.Warn("wstep: hardware_id already enrolled by another user", "hardware_id", info.HardwareID, "enrolling_user", userEmail)
-				writeSoapFault(w, "device already enrolled by another account")
+		// On renewal the device is already known (authenticated by its cert), so
+		// we reuse its id. On initial enrollment, hardware_id is attacker-
+		// controlled, so re-enrollment of an existing hardware_id is only allowed
+		// by the SAME user that originally enrolled it (no hijack).
+		var actualDeviceID string
+		if renewalDeviceID != "" {
+			actualDeviceID = renewalDeviceID
+		} else {
+			actualDeviceID, err = upsertDevice(r.Context(), db, info, userEmail)
+			if err != nil {
+				if errors.Is(err, errHardwareIDTaken) {
+					slog.Warn("wstep: hardware_id already enrolled by another user", "hardware_id", info.HardwareID, "enrolling_user", userEmail)
+					writeSoapFault(w, "device already enrolled by another account")
+					return
+				}
+				slog.Error("wstep: saving device to database", "err", err)
+				writeSoapFault(w, "internal error saving device")
 				return
 			}
-			slog.Error("wstep: saving device to database", "err", err)
-			writeSoapFault(w, "internal error saving device")
-			return
 		}
 
 		// ── Step 5: Sign the CSR with our CA ──────────────────────────────

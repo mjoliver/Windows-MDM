@@ -4,8 +4,10 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -128,7 +130,13 @@ func buildAuthenticator(cfg *config.Config, database *sql.DB, jwtSecret []byte) 
 			"allowed_domains", cfg.Auth.OIDC.AllowedDomains,
 		)
 		return p, nil
-	// case "builtin": wired in a later change (builtin username/password auth).
+	case "builtin":
+		p, err := auth.NewBuiltin(database, jwtSecret, base, cfg.Auth.BootstrapAdmin)
+		if err != nil {
+			return nil, fmt.Errorf("initialising builtin auth provider: %w", err)
+		}
+		slog.Info("builtin auth provider initialised", "bootstrap_admin", cfg.Auth.BootstrapAdmin)
+		return p, nil
 	default:
 		return nil, fmt.Errorf("no usable auth provider configured (provider=%q) — refusing to start", cfg.Auth.Provider)
 	}
@@ -279,6 +287,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("building auto-TLS config: %w", err)
 		}
+		tlsCfg.VerifyPeerCertificate = s.verifyPeerCert
 		return s.runAutoTLS(ctx, tlsCfg, acmeHandler)
 	}
 
@@ -386,10 +395,11 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 		slog.Warn("using self-signed TLS certificate (not suitable for production)",
 			"domain", s.cfg.Server.Domain)
 		return &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-			ClientCAs:    s.ca.TLSPool(),
-			ClientAuth:   tls.VerifyClientCertIfGiven,
+			Certificates:          []tls.Certificate{cert},
+			MinVersion:            tls.VersionTLS12,
+			ClientCAs:             s.ca.TLSPool(),
+			ClientAuth:            tls.VerifyClientCertIfGiven,
+			VerifyPeerCertificate: s.verifyPeerCert,
 		}, nil
 
 	case "manual":
@@ -401,10 +411,11 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 			return nil, fmt.Errorf("loading TLS cert/key: %w", err)
 		}
 		return &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-			ClientCAs:    s.ca.TLSPool(),
-			ClientAuth:   tls.VerifyClientCertIfGiven,
+			Certificates:          []tls.Certificate{cert},
+			MinVersion:            tls.VersionTLS12,
+			ClientCAs:             s.ca.TLSPool(),
+			ClientAuth:            tls.VerifyClientCertIfGiven,
+			VerifyPeerCertificate: s.verifyPeerCert,
 		}, nil
 
 	case "auto":
@@ -485,6 +496,31 @@ func respondJSON(w http.ResponseWriter, status int, body string) {
 }
 
 // ── Remaining handlers ────────────────────────────────────────────────────────
+
+// verifyPeerCert is a tls.Config VerifyPeerCertificate hook that rejects a
+// presented client certificate at the handshake if it has been revoked. Client
+// certs are optional (VerifyClientCertIfGiven), so an absent/unknown cert is
+// allowed here and authorisation is left to the application layer.
+func (s *Server) verifyPeerCert(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+	if len(rawCerts) == 0 {
+		return nil
+	}
+	cert, err := x509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return nil // malformed; the app layer will reject it
+	}
+	thumb := fmt.Sprintf("%x", sha1.Sum(cert.Raw))
+	var revoked int
+	err = s.db.DB.QueryRow(db.Rebind(
+		`SELECT revoked FROM certificates WHERE thumbprint = ? AND cert_type = 'device'`), thumb).Scan(&revoked)
+	if err == sql.ErrNoRows || err != nil {
+		return nil
+	}
+	if revoked == 1 {
+		return fmt.Errorf("client certificate has been revoked")
+	}
+	return nil
+}
 
 // securityHeaders sets baseline response hardening headers on every response.
 // A strict CSP is intentionally NOT set globally because the enrollment callback

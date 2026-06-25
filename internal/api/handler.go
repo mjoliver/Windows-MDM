@@ -103,6 +103,24 @@ func roleFromCtx(r *http.Request) string {
 	return v
 }
 
+// queryDeviceIDs runs a query returning a single device-id column and collects
+// the results (used to find devices affected by a profile/group change).
+func (h *Handler) queryDeviceIDs(r *http.Request, query string, args ...interface{}) []string {
+	rows, err := h.db.QueryContext(r.Context(), dbpkg.Rebind(query), args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // enqueueRef gives api handlers access to mdm command queue without circular imports
 var enqueueRef = struct {
 	Lock   func(db *sql.DB, deviceID string) (int64, error)

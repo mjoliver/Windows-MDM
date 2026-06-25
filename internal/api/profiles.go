@@ -219,6 +219,14 @@ func (h *Handler) HandleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	actor := emailFromCtx(r)
 
+	// Capture devices governed by this profile BEFORE deleting, so its settings
+	// can be retracted from them afterwards.
+	affected := h.queryDeviceIDs(r, `
+		SELECT DISTINCT dgm.device_id
+		FROM device_group_members dgm
+		JOIN group_profiles gp ON gp.group_id = dgm.group_id
+		WHERE gp.profile_id = ?`, id)
+
 	res, err := h.db.ExecContext(r.Context(), dbpkg.Rebind(`DELETE FROM profiles WHERE id = ?`), id)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, "failed to delete profile")
@@ -229,8 +237,11 @@ func (h *Handler) HandleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Retract the now-removed settings from affected devices.
+	go policy.ResyncDevices(h.db, affected)
+
 	h.audit(r, actor, "profile.delete", "profile", id, "")
-	slog.Info("profile deleted", "profile_id", id, "actor", actor)
+	slog.Info("profile deleted", "profile_id", id, "actor", actor, "affected_devices", len(affected))
 	respondOK(w, map[string]string{"status": "deleted"})
 }
 

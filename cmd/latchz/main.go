@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/subcommands"
 	"github.com/google/uuid"
+	"github.com/latchzmdm/latchz/internal/auth"
 	"github.com/latchzmdm/latchz/internal/config"
 	"github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/pki"
@@ -98,6 +99,7 @@ type adminCmd struct {
 	configFile string
 	email      string
 	role       string
+	password   string
 }
 
 func (*adminCmd) Name() string     { return "admin" }
@@ -118,6 +120,7 @@ func (a *adminCmd) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&a.configFile, "config", "", "Path to config file")
 	f.StringVar(&a.email, "email", "", "Email address to promote")
 	f.StringVar(&a.role, "role", "super_admin", "Role to assign (super_admin, admin, user)")
+	f.StringVar(&a.password, "password", "", "Set a builtin-auth password for this user")
 }
 
 func (a *adminCmd) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
@@ -156,6 +159,21 @@ func (a *adminCmd) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "latchz admin: failed to update user: %v\n", err)
 		return subcommands.ExitFailure
+	}
+
+	if a.password != "" {
+		hash, herr := auth.HashPassword(a.password)
+		if herr != nil {
+			fmt.Fprintf(os.Stderr, "latchz admin: hashing password: %v\n", herr)
+			return subcommands.ExitFailure
+		}
+		if _, err := database.ExecContext(ctx, db.Rebind(
+			`UPDATE users SET password_hash = ?, auth_provider = 'builtin' WHERE email = ?`,
+		), hash, a.email); err != nil {
+			fmt.Fprintf(os.Stderr, "latchz admin: failed to set password: %v\n", err)
+			return subcommands.ExitFailure
+		}
+		fmt.Printf("✓ password set for %s\n", a.email)
 	}
 
 	fmt.Printf("✓ %s has been assigned role %q\n", a.email, a.role)
