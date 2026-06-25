@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -316,7 +315,7 @@ func (p *Provider) handleEnrollmentCallback(w http.ResponseWriter, r *http.Reque
 
 	// Validate the return URL before posting the token to it — an attacker-chosen
 	// appru would otherwise exfiltrate the enrollment token (open redirect).
-	safeAppru, ok := p.validateAppru(appru)
+	safeAppru, ok := appruAllowed(appru, p.baseURL)
 	if !ok {
 		slog.Warn("auth: rejected enrollment return URL (appru)", "appru", appru, "email", email)
 		writeHTML(w, http.StatusBadRequest, tmplEnrollRejected, nil)
@@ -361,53 +360,20 @@ func (p *Provider) issueSessionToken(email, role string) (string, error) {
 	return signClaims(p.jwtSecret, newSessionClaims(email, role, nowFunc()))
 }
 
-// parseEnrollmentToken validates the JWT signature/expiry/type without
-// consuming it. Pure (no side effects) so it is unit-testable.
-func (p *Provider) parseEnrollmentToken(tokenStr string) (*Claims, error) {
-	claims, err := parseHMACToken(p.jwtSecret, tokenStr)
-	if err != nil {
-		return nil, err
-	}
-	if claims.TokenType != "enroll" {
-		return nil, errors.New("not an enrollment token")
-	}
-	return claims, nil
-}
-
 // ValidateEnrollmentToken validates the JWT presented by a device during WSTEP
-// and consumes it (single-use): a token can be redeemed at most once, so a
-// captured token cannot be replayed to enroll additional devices.
+// and consumes it (single-use). Shared with the builtin provider.
 func (p *Provider) ValidateEnrollmentToken(tokenStr string) (string, error) {
-	claims, err := p.parseEnrollmentToken(tokenStr)
-	if err != nil {
-		return "", err
-	}
-	if err := consumeJTI(p.db, claims.ID); err != nil {
-		return "", err
-	}
-	return claims.Email, nil
+	return validateEnrollmentToken(p.jwtSecret, p.db, tokenStr)
 }
 
 // ValidateSessionToken validates a dashboard session cookie JWT.
-// Returns (email, role) if valid.
 func (p *Provider) ValidateSessionToken(tokenStr string) (email, role string, err error) {
-	claims, err := parseHMACToken(p.jwtSecret, tokenStr)
-	if err != nil {
-		return "", "", err
-	}
-	if claims.TokenType != "session" {
-		return "", "", errors.New("not a session token")
-	}
-	return claims.Email, claims.Role, nil
+	return validateSessionToken(p.jwtSecret, tokenStr)
 }
 
 // SessionFromRequest extracts and validates the session token from the cookie.
 func (p *Provider) SessionFromRequest(r *http.Request) (email, role string, err error) {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
-		return "", "", errors.New("no session cookie")
-	}
-	return p.ValidateSessionToken(cookie.Value)
+	return sessionFromRequest(p.jwtSecret, r)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -523,12 +489,6 @@ func writeHTML(w http.ResponseWriter, status int, t *template.Template, data any
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_ = t.Execute(w, data)
-}
-
-// validateAppru validates the Windows enrollment return URL against the server's
-// own origin (see appruAllowed).
-func (p *Provider) validateAppru(appru string) (template.URL, bool) {
-	return appruAllowed(appru, p.baseURL)
 }
 
 // renderAccessDenied / renderEnrollMismatch are small testable seams.

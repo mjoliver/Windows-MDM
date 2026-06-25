@@ -6,9 +6,9 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -54,51 +54,63 @@ func (p *BuiltinProvider) MountRoutes(r chi.Router) {
 }
 
 func (p *BuiltinProvider) SessionFromRequest(r *http.Request) (email, role string, err error) {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
-		return "", "", errors.New("no session cookie")
-	}
-	claims, err := parseHMACToken(p.jwtSecret, cookie.Value)
-	if err != nil {
-		return "", "", err
-	}
-	if claims.TokenType != "session" {
-		return "", "", errors.New("not a session token")
-	}
-	return claims.Email, claims.Role, nil
+	return sessionFromRequest(p.jwtSecret, r)
 }
 
 func (p *BuiltinProvider) ValidateEnrollmentToken(tokenStr string) (string, error) {
-	claims, err := parseHMACToken(p.jwtSecret, tokenStr)
-	if err != nil {
-		return "", err
-	}
-	if claims.TokenType != "enroll" {
-		return "", errors.New("not an enrollment token")
-	}
-	if err := consumeJTI(p.db, claims.ID); err != nil {
-		return "", err
-	}
-	return claims.Email, nil
+	return validateEnrollmentToken(p.jwtSecret, p.db, tokenStr)
 }
 
 // ── HTTP handlers ─────────────────────────────────────────────────────────────
 
+const csrfCookieName = "latchz_csrf"
+
 type builtinLoginData struct {
-	Flow, Appru, Email, Error string
+	Flow, Appru, Email, Error, CSRF string
 }
 
 func (p *BuiltinProvider) handleLoginForm(w http.ResponseWriter, r *http.Request) {
-	writeHTML(w, http.StatusOK, tmplBuiltinLogin, builtinLoginData{
+	p.renderLoginForm(w, r, http.StatusOK, builtinLoginData{
 		Flow:  r.URL.Query().Get("flow"),
 		Appru: r.URL.Query().Get("appru"),
 		Email: r.URL.Query().Get("login_hint"),
 	})
 }
 
+// renderLoginForm renders the login form with a CSRF double-submit token. It
+// REUSES the existing CSRF cookie when present (so concurrent tabs / re-renders
+// share one valid token) and only mints+sets a new one when absent.
+func (p *BuiltinProvider) renderLoginForm(w http.ResponseWriter, r *http.Request, status int, data builtinLoginData) {
+	csrf := ""
+	if c, err := r.Cookie(csrfCookieName); err == nil && c.Value != "" {
+		csrf = c.Value
+	}
+	if csrf == "" {
+		csrf = randomToken()
+		http.SetCookie(w, &http.Cookie{
+			Name:     csrfCookieName,
+			Value:    csrf,
+			Path:     "/auth",
+			MaxAge:   600,
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+		})
+	}
+	data.CSRF = csrf
+	writeHTML(w, status, tmplBuiltinLogin, data)
+}
+
 func (p *BuiltinProvider) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	// CSRF: the form-field token must match the SameSite=Strict cookie. A
+	// cross-site POST cannot read the cookie nor set a matching field (and the
+	// Strict cookie isn't even sent cross-site), so login CSRF is blocked.
+	if !validCSRFToken(r) {
+		http.Error(w, "invalid or missing CSRF token", http.StatusForbidden)
 		return
 	}
 	email := strings.TrimSpace(strings.ToLower(r.PostForm.Get("email")))
@@ -108,7 +120,7 @@ func (p *BuiltinProvider) handleLoginSubmit(w http.ResponseWriter, r *http.Reque
 
 	role, ok := p.authenticate(r.Context(), email, password)
 	if !ok {
-		writeHTML(w, http.StatusUnauthorized, tmplBuiltinLogin, builtinLoginData{
+		p.renderLoginForm(w, r, http.StatusUnauthorized, builtinLoginData{
 			Flow: flow, Appru: appru, Email: email, Error: "Invalid email or password.",
 		})
 		return
@@ -126,6 +138,7 @@ func (p *BuiltinProvider) handleLoginSubmit(w http.ResponseWriter, r *http.Reque
 		}
 		safe, ok := appruAllowed(appru, p.baseURL)
 		if !ok {
+			slog.Warn("auth: rejected enrollment return URL (appru)", "appru", appru, "email", email)
 			writeHTML(w, http.StatusBadRequest, tmplEnrollRejected, nil)
 			return
 		}
@@ -156,6 +169,23 @@ func (p *BuiltinProvider) handleLoginSubmit(w http.ResponseWriter, r *http.Reque
 func (p *BuiltinProvider) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true})
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// randomToken returns a URL-safe random token (used for CSRF).
+func randomToken() string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// validCSRFToken checks the double-submit CSRF token: the form field must match
+// the SameSite=Strict cookie (constant-time).
+func validCSRFToken(r *http.Request) bool {
+	cookie, err := r.Cookie(csrfCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(r.PostForm.Get("csrf"))) == 1
 }
 
 // authenticate verifies a builtin user's password and returns their role.
@@ -220,6 +250,7 @@ var tmplBuiltinLogin = template.Must(template.New("builtinLogin").Parse(`<!DOCTY
 <h2>Latchz MDM</h2>
 {{if .Error}}<p style="color:#d32f2f;">{{.Error}}</p>{{end}}
 <form method="POST" action="/auth/login">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
   <input type="hidden" name="flow" value="{{.Flow}}">
   <input type="hidden" name="appru" value="{{.Appru}}">
   <p><input name="email" type="email" placeholder="email" value="{{.Email}}" style="width:100%;padding:8px;box-sizing:border-box;"></p>

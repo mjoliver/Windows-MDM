@@ -16,7 +16,7 @@ func TestValidateAppru(t *testing.T) {
 		"https://mdm.example.com/return?a=b",
 	}
 	for _, a := range allowed {
-		if _, ok := p.validateAppru(a); !ok {
+		if _, ok := appruAllowed(a, p.baseURL); !ok {
 			t.Errorf("expected appru %q to be allowed", a)
 		}
 	}
@@ -30,7 +30,7 @@ func TestValidateAppru(t *testing.T) {
 		"data:text/html,x",
 	}
 	for _, a := range rejected {
-		if _, ok := p.validateAppru(a); ok {
+		if _, ok := appruAllowed(a, p.baseURL); ok {
 			t.Errorf("expected appru %q to be rejected", a)
 		}
 	}

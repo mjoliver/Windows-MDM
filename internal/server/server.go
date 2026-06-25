@@ -4,7 +4,6 @@ package server
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha1"
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
@@ -24,6 +23,7 @@ import (
 	"github.com/latchzmdm/latchz/internal/auth"
 	"github.com/latchzmdm/latchz/internal/config"
 	"github.com/latchzmdm/latchz/internal/db"
+	"github.com/latchzmdm/latchz/internal/devauth"
 	"github.com/latchzmdm/latchz/internal/enrollment"
 	"github.com/latchzmdm/latchz/internal/mdm"
 	"github.com/latchzmdm/latchz/internal/pki"
@@ -148,13 +148,29 @@ func (s *Server) Handler() http.Handler {
 	return s.mux
 }
 
+// behindProxy reports whether the server runs behind a trusted reverse proxy and
+// may therefore trust forwarded client-IP headers. True when explicitly
+// configured (server.trusted_proxy), or implied by TLS being terminated upstream
+// (tls.mode=none) or a forwarded client cert being trusted. Operators whose
+// origin terminates TLS itself but sits behind an L7 proxy/load balancer that
+// sets X-Forwarded-For must set server.trusted_proxy so the rate limiters key on
+// the real client IP rather than collapsing every client into one bucket.
+func (s *Server) behindProxy() bool {
+	return s.cfg.Server.TrustedProxy || s.cfg.TLS.Mode == "none" || s.cfg.TLS.TrustProxyClientCert
+}
+
 // routes registers all HTTP handlers.
 func (s *Server) routes() {
 	r := s.mux
 
 	// Standard middleware
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// Only trust client-supplied forwarding headers (X-Forwarded-For / X-Real-IP)
+	// when actually behind a trusted terminating proxy. Otherwise a client could
+	// spoof its source IP to evade the rate limiters below.
+	if s.behindProxy() {
+		r.Use(middleware.RealIP)
+	}
 	r.Use(s.loggingMiddleware)
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
@@ -509,10 +525,9 @@ func (s *Server) verifyPeerCert(rawCerts [][]byte, _ [][]*x509.Certificate) erro
 	if err != nil {
 		return nil // malformed; the app layer will reject it
 	}
-	thumb := fmt.Sprintf("%x", sha1.Sum(cert.Raw))
 	var revoked int
 	err = s.db.DB.QueryRow(db.Rebind(
-		`SELECT revoked FROM certificates WHERE thumbprint = ? AND cert_type = 'device'`), thumb).Scan(&revoked)
+		`SELECT revoked FROM certificates WHERE thumbprint = ? AND cert_type = 'device'`), devauth.Thumbprint(cert)).Scan(&revoked)
 	if err == sql.ErrNoRows || err != nil {
 		return nil
 	}

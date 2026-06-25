@@ -3,7 +3,6 @@ package enrollment
 import (
 	"context"
 	"crypto/sha1"
-	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/pem"
@@ -17,35 +16,9 @@ import (
 
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
+	"github.com/latchzmdm/latchz/internal/devauth"
 	"github.com/latchzmdm/latchz/internal/pki"
 )
-
-// verifiedRenewalDevice authenticates a non-interactive certificate renewal: the
-// device presents its existing client certificate over mTLS (no enrollment
-// token). The cert must chain to our CA and map to a known, non-revoked device.
-func verifiedRenewalDevice(r *http.Request, ca *pki.CA, db *sql.DB) (deviceID, email string, ok bool) {
-	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		return "", "", false
-	}
-	cert := r.TLS.PeerCertificates[0]
-	if _, err := cert.Verify(x509.VerifyOptions{
-		Roots:     ca.TLSPool(),
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}); err != nil {
-		return "", "", false
-	}
-	thumb := fmt.Sprintf("%x", sha1Bytes(cert.Raw))
-	var did, em string
-	err := db.QueryRow(dbpkg.Rebind(`
-		SELECT c.device_id, COALESCE(d.enrolled_by, '')
-		FROM certificates c JOIN devices d ON d.id = c.device_id
-		WHERE c.thumbprint = ? AND c.cert_type = 'device' AND c.revoked = 0
-	`), thumb).Scan(&did, &em)
-	if err != nil {
-		return "", "", false
-	}
-	return did, em, true
-}
 
 // errHardwareIDTaken indicates an enrollment tried to re-use a hardware_id that
 // is already registered to a different user.
@@ -248,10 +221,18 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 				return
 			}
 			userEmail = email
-		} else if deviceID, email, ok := verifiedRenewalDevice(r, ca, db); ok {
-			renewalDeviceID = deviceID
-			userEmail = email
-			slog.Info("wstep: certificate renewal", "device_id", deviceID)
+		} else if id, rerr := devauth.Resolve(db, ca.TLSPool(), r, ""); rerr == nil {
+			// Renewal MINTS a new certificate, so it requires real proof-of-
+			// possession of the existing key. We therefore accept renewal only over
+			// DIRECT mTLS (the TLS handshake proves possession) — note the empty
+			// proxy-header argument above. A device certificate is public, so
+			// trusting a proxy-forwarded cert here would let anyone holding a copy
+			// of it mint a fresh cert. (Read-only OMA-DM check-in still accepts the
+			// trusted-proxy header; certificate issuance does not.) Renewal behind a
+			// TLS-terminating proxy requires mTLS passthrough to the origin.
+			renewalDeviceID = id.DeviceID
+			userEmail = id.EnrolledBy
+			slog.Info("wstep: certificate renewal (mTLS)", "device_id", id.DeviceID)
 		} else {
 			slog.Warn("wstep: no enrollment token and no valid client certificate")
 			writeSoapFault(w, "missing security token")

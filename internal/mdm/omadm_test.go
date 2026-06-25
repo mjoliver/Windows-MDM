@@ -55,6 +55,43 @@ func TestHandleOMADM_FirstCheckIn(t *testing.T) {
 	}
 }
 
+func TestHandleOMADM_WipeFinalizesOnDelivery(t *testing.T) {
+	database := testutil.DB(t)
+	ca := testutil.CA(t, database)
+	deviceID := testutil.SeedDevice(t, database, "HW-WIPE2")
+	cert := testutil.IssueClientCert(t, ca, deviceID, "PaneMDMClient")
+	if _, err := EnqueueWipe(database.DB, deviceID); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(database.DB, ca.TLSPool(), "mdm.example.com", "")
+
+	syncml := `<?xml version="1.0"?>
+<SyncML xmlns="SYNCML:SYNCML1.2">
+  <SyncHdr><VerDTD>1.2</VerDTD><VerProto>DM/1.2</VerProto><SessionID>9</SessionID><MsgID>1</MsgID>
+    <Source><LocURI>HW-WIPE2</LocURI></Source><Target><LocURI>https://mdm.example.com/omadm</LocURI></Target></SyncHdr>
+  <SyncBody><Alert><CmdID>1</CmdID><Data>1201</Data></Alert><Final/></SyncBody>
+</SyncML>`
+	req := httptest.NewRequest("POST", "/omadm", strings.NewReader(syncml))
+	req.TLS = testutil.ClientTLSState(cert)
+	w := httptest.NewRecorder()
+	h.HandleOMADM(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status %d", w.Code)
+	}
+
+	// The wipe was delivered → device deactivated and cert revoked, without
+	// waiting for an (often never-arriving) ACK.
+	var active, revoked int
+	database.QueryRow(`SELECT is_active FROM devices WHERE id = ?`, deviceID).Scan(&active)
+	database.QueryRow(`SELECT revoked FROM certificates WHERE device_id = ?`, deviceID).Scan(&revoked)
+	if active != 0 {
+		t.Fatal("device should be deactivated after wipe delivery")
+	}
+	if revoked != 1 {
+		t.Fatal("device cert should be revoked after wipe delivery")
+	}
+}
+
 func TestHandleOMADM_RejectsUnauthenticated(t *testing.T) {
 	database := testutil.DB(t)
 	ca := testutil.CA(t, database)

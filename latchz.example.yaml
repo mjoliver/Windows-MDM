@@ -33,6 +33,14 @@ server:
   # than committing it. Losing or changing it invalidates the stored CA.
   master_secret: "CHANGE-ME-use-a-long-random-value"
 
+  # Set to true if the server sits behind a trusted reverse proxy / load balancer
+  # that sets X-Forwarded-For, so rate limiting and logs use the real client IP.
+  # Leave false for direct internet exposure (forwarded headers are then ignored,
+  # since a client could spoof them). Implied by tls.mode=none and
+  # tls.trust_proxy_client_cert; set it explicitly if your origin terminates TLS
+  # itself but is fronted by an L7 proxy.
+  # trusted_proxy: true
+
 # ─── TLS ────────────────────────────────────────────────────────────────────
 
 tls:
@@ -59,6 +67,12 @@ tls:
   # client-supplied value).
   # trust_proxy_client_cert: true
   # client_cert_header: "X-Forwarded-Client-Cert"   # e.g. nginx $ssl_client_escaped_cert
+  #
+  # NOTE: certificate RENEWAL (ROBO) always requires DIRECT mTLS to the origin
+  # (the TLS handshake proves the device still holds its key). It does NOT use the
+  # forwarded-cert header, because that header carries only a public certificate.
+  # If you need non-interactive renewal behind a proxy, pass mTLS through to the
+  # origin for the /wstep endpoint.
 
 # ─── Database ────────────────────────────────────────────────────────────────
 

@@ -2,20 +2,17 @@ package mdm
 
 import (
 	"bytes"
-	"crypto/sha1"
 	"crypto/x509"
 	"database/sql"
-	"encoding/pem"
 	"encoding/xml"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
+	"github.com/latchzmdm/latchz/internal/devauth"
 )
 
 // Handler handles OMA-DM SyncML check-ins from enrolled devices.
@@ -143,11 +140,25 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		outboundCmds = append(outboundCmds, buildSyncMLCommands(sess, pending)...)
 		// Mark as sent
 		ids := make([]int, len(pending))
+		wipeDelivered := false
 		for i, c := range pending {
 			ids[i] = c.ID
+			if c.CommandType == "Exec" && c.OMAURI == OMAExecWipe {
+				wipeDelivered = true
+			}
 		}
 		if err := markCommandsSent(h.db, ids); err != nil {
 			slog.Error("mdm: marking commands sent", "device_id", deviceID, "err", err)
+		}
+		// Finalise teardown the moment the wipe is delivered: deactivate the
+		// device and revoke its certificate. This is deliberate and fail-closed —
+		// a wipe means "remove this device", and for a lost/compromised device we
+		// want its access cut immediately rather than contingent on it cooperating
+		// with (and ACKing) the wipe (a reset device rarely reports back anyway).
+		// Tradeoff: if the wipe fails or is never received, the device must
+		// re-enroll to be managed again (it cannot retry over the revoked cert).
+		if wipeDelivered {
+			h.finalizeWipe(deviceID)
 		}
 	}
 
@@ -250,83 +261,15 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 // ── Device authentication ─────────────────────────────────────────────────────
 
 // authenticateDevice identifies the device strictly by a verified client
-// certificate. The certificate must chain to our CA and map to a non-revoked
-// device certificate. There is NO hardware-ID fallback: a hardware_id is not a
-// secret, so trusting it would let anyone impersonate any enrolled device.
-//
-// The certificate comes from one of:
-//   - direct mTLS: r.TLS.PeerCertificates (already chain-verified by the TLS
-//     stack, which uses VerifyClientCertIfGiven with our CA pool), or
-//   - a trusted terminating proxy that forwards it in proxyCertHeader.
+// certificate (direct mTLS or a trusted-proxy-forwarded cert). There is NO
+// hardware-ID fallback: a hardware_id is not a secret. Resolution rules live in
+// the shared devauth package so the OMA-DM and WSTEP-renewal paths stay in sync.
 func (h *Handler) authenticateDevice(r *http.Request) (string, error) {
-	clientCert, err := h.clientCert(r)
+	id, err := devauth.Resolve(h.db, h.ca, r, h.proxyCertHeader)
 	if err != nil {
 		return "", err
 	}
-
-	// Re-verify the chain to our CA (defence in depth; mandatory for the proxy
-	// header path where the TLS stack did not verify it for us).
-	if h.ca == nil {
-		return "", errorf("no CA configured for device authentication")
-	}
-	if _, err := clientCert.Verify(x509.VerifyOptions{
-		Roots:     h.ca,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}); err != nil {
-		return "", errorf("client certificate does not chain to our CA: %v", err)
-	}
-
-	// Look up the device by certificate thumbprint; reject revoked certs.
-	thumbprint := certThumbprint(clientCert)
-	var deviceID string
-	err = h.db.QueryRow(dbpkg.Rebind(`
-		SELECT device_id FROM certificates
-		WHERE thumbprint = ? AND cert_type = 'device' AND revoked = 0
-	`), thumbprint).Scan(&deviceID)
-	if err == sql.ErrNoRows {
-		return "", errorf("no active device for certificate thumbprint %s (revoked or unknown)", thumbprint)
-	}
-	if err != nil {
-		return "", errorf("database error looking up device: %v", err)
-	}
-	return deviceID, nil
-}
-
-// clientCert extracts the device client certificate from the TLS peer chain or,
-// if a trusted proxy is configured, from the forwarded header.
-func (h *Handler) clientCert(r *http.Request) (*x509.Certificate, error) {
-	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-		return r.TLS.PeerCertificates[0], nil
-	}
-	if h.proxyCertHeader != "" {
-		raw := r.Header.Get(h.proxyCertHeader)
-		if raw == "" {
-			return nil, errorf("client certificate required: trusted-proxy header %q is empty", h.proxyCertHeader)
-		}
-		return parseProxyClientCert(raw)
-	}
-	return nil, errorf("client certificate required")
-}
-
-// parseProxyClientCert decodes a client certificate forwarded by a terminating
-// proxy. It accepts a raw PEM string or a URL-encoded PEM (e.g. nginx
-// $ssl_client_escaped_cert). The raw form is tried first so that base64 '+'
-// characters are not mangled by URL-decoding.
-func parseProxyClientCert(raw string) (*x509.Certificate, error) {
-	candidates := []string{raw}
-	if decoded, err := url.QueryUnescape(raw); err == nil && decoded != raw {
-		candidates = append(candidates, decoded)
-	}
-	for _, c := range candidates {
-		block, _ := pem.Decode([]byte(c))
-		if block == nil {
-			continue
-		}
-		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-			return cert, nil
-		}
-	}
-	return nil, errorf("trusted-proxy client cert header is not a valid certificate")
+	return id.DeviceID, nil
 }
 
 // ── Status processing ─────────────────────────────────────────────────────────
@@ -358,49 +301,23 @@ func (h *Handler) processStatuses(deviceID string, sess *Session, statuses []Sta
 		if err := markCommandResult(h.db, queueID, s.Data, ""); err != nil {
 			slog.Error("mdm: failed to mark command result", "queue_id", queueID, "err", err)
 		}
-
-		// If a remote wipe succeeded, finalise the device teardown: mark it
-		// inactive and revoke its certificate (the device factory-resets and
-		// loses its enrollment, so it must not remain a trusted, active device).
-		if isSuccessStatus(s.Data) {
-			h.finalizeWipeIfApplicable(deviceID, queueID)
-		}
 	}
 }
 
-// finalizeWipeIfApplicable deactivates the device and revokes its certs once a
-// queued remote-wipe command has been confirmed executed.
-func (h *Handler) finalizeWipeIfApplicable(deviceID string, queueID int) {
-	var omaURI string
-	if err := h.db.QueryRow(dbpkg.Rebind(`SELECT oma_uri FROM command_queue WHERE id = ?`), queueID).Scan(&omaURI); err != nil {
-		return
-	}
-	if omaURI != OMAExecWipe {
-		return
-	}
+// finalizeWipe deactivates the device and revokes its certificates after a
+// remote-wipe command has been delivered. The device will factory-reset and
+// lose its enrollment, so it must not remain a trusted, active device.
+func (h *Handler) finalizeWipe(deviceID string) {
 	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE devices SET is_active = 0 WHERE id = ?`), deviceID); err != nil {
 		slog.Error("mdm: deactivating wiped device", "device_id", deviceID, "err", err)
 	}
 	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE certificates SET revoked = 1 WHERE device_id = ?`), deviceID); err != nil {
 		slog.Error("mdm: revoking wiped device certs", "device_id", deviceID, "err", err)
 	}
-	slog.Info("mdm: remote wipe confirmed — device deactivated and certs revoked", "device_id", deviceID)
-}
-
-func isSuccessStatus(code string) bool {
-	return code == StatusOK || code == StatusCreated || code == StatusAccepted
+	slog.Info("mdm: remote wipe delivered — device deactivated and certs revoked", "device_id", deviceID)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-func certThumbprint(cert *x509.Certificate) string {
-	h := sha1.Sum(cert.Raw)
-	return fmt.Sprintf("%x", h[:])
-}
-
-func errorf(format string, args ...interface{}) error {
-	return fmt.Errorf(format, args...)
-}
 
 // xmlInner extracts the inner XML between the opening and closing tags of element.
 func xmlInner(data []byte, element string) string {

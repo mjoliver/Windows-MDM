@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -13,6 +14,44 @@ import (
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 )
+
+// validateEnrollmentToken parses + type-checks an enrollment JWT and consumes it
+// (single-use). Shared by both auth providers so their enrollment-token rules
+// (and replay protection) cannot diverge.
+func validateEnrollmentToken(secret []byte, db *sql.DB, tokenStr string) (string, error) {
+	claims, err := parseHMACToken(secret, tokenStr)
+	if err != nil {
+		return "", err
+	}
+	if claims.TokenType != "enroll" {
+		return "", errors.New("not an enrollment token")
+	}
+	if err := consumeJTI(db, claims.ID); err != nil {
+		return "", err
+	}
+	return claims.Email, nil
+}
+
+// validateSessionToken parses + type-checks a dashboard session JWT.
+func validateSessionToken(secret []byte, tokenStr string) (email, role string, err error) {
+	claims, err := parseHMACToken(secret, tokenStr)
+	if err != nil {
+		return "", "", err
+	}
+	if claims.TokenType != "session" {
+		return "", "", errors.New("not a session token")
+	}
+	return claims.Email, claims.Role, nil
+}
+
+// sessionFromRequest validates the session cookie on a request.
+func sessionFromRequest(secret []byte, r *http.Request) (email, role string, err error) {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return "", "", errors.New("no session cookie")
+	}
+	return validateSessionToken(secret, cookie.Value)
+}
 
 // Shared token primitives used by both the OIDC and builtin auth providers, so
 // session/enrollment token behaviour (and single-use enforcement) is identical.

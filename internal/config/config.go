@@ -32,6 +32,13 @@ type ServerConfig struct {
 	// SupportURL is the URL shown on the login page as the "setup guide" link.
 	// Leave empty to hide the link entirely.
 	SupportURL string `mapstructure:"support_url"`
+
+	// TrustedProxy indicates the server sits behind a trusted reverse proxy /
+	// load balancer that sets X-Forwarded-For. Enable it so rate limiting and
+	// request logging key on the real client IP. Leave false for direct exposure
+	// (then forwarding headers are ignored, since a client could spoof them).
+	// Implied by tls.mode=none and tls.trust_proxy_client_cert.
+	TrustedProxy bool `mapstructure:"trusted_proxy"`
 }
 
 // TLSConfig controls how TLS certificates are obtained.
@@ -108,6 +115,7 @@ func Load(cfgFile string) (*Config, error) {
 	v.SetDefault("server.master_secret", "")
 	v.SetDefault("server.emergency_token", "")
 	v.SetDefault("server.support_url", "")
+	v.SetDefault("server.trusted_proxy", false)
 	v.SetDefault("tls.mode", "self-signed")
 	v.SetDefault("tls.cache_dir", "./certs")
 	v.SetDefault("tls.cert_file", "")
@@ -131,6 +139,7 @@ func Load(cfgFile string) (*Config, error) {
 	_ = v.BindEnv("server.master_secret", "LATCHZ_SERVER_MASTER_SECRET")
 	_ = v.BindEnv("server.emergency_token", "LATCHZ_SERVER_EMERGENCY_TOKEN")
 	_ = v.BindEnv("server.support_url", "LATCHZ_SERVER_SUPPORT_URL")
+	_ = v.BindEnv("server.trusted_proxy", "LATCHZ_SERVER_TRUSTED_PROXY")
 	_ = v.BindEnv("tls.mode", "LATCHZ_TLS_MODE")
 	_ = v.BindEnv("tls.trust_proxy_client_cert", "LATCHZ_TLS_TRUST_PROXY_CLIENT_CERT")
 	_ = v.BindEnv("tls.client_cert_header", "LATCHZ_TLS_CLIENT_CERT_HEADER")

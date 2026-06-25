@@ -52,10 +52,22 @@ func TestBuiltin_LoginFlow(t *testing.T) {
 		t.Fatalf("authenticate = (%q,%v), want super_admin,true", role, ok)
 	}
 
-	// Full login POST issues a session cookie that SessionFromRequest accepts.
-	form := url.Values{"email": {"admin@example.com"}, "password": {"pw"}}
+	// A POST without a matching CSRF token is rejected.
+	noCSRF := httptest.NewRequest("POST", "/auth/login",
+		strings.NewReader(url.Values{"email": {"admin@example.com"}, "password": {"pw"}}.Encode()))
+	noCSRF.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	wNoCSRF := httptest.NewRecorder()
+	p.handleLoginSubmit(wNoCSRF, noCSRF)
+	if wNoCSRF.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 without CSRF token, got %d", wNoCSRF.Code)
+	}
+
+	// Full login POST (with matching CSRF double-submit) issues a session cookie.
+	const csrf = "test-csrf-token-value"
+	form := url.Values{"email": {"admin@example.com"}, "password": {"pw"}, "csrf": {csrf}}
 	req := httptest.NewRequest("POST", "/auth/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf})
 	w := httptest.NewRecorder()
 	p.handleLoginSubmit(w, req)
 	if w.Code != 302 {
