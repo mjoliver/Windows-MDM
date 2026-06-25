@@ -16,23 +16,23 @@ import (
 
 // Profile is the JSON representation of a configuration profile.
 type Profile struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	CreatedBy   string         `json:"created_by"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	CreatedBy   string          `json:"created_by"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 	Settings    []PolicySetting `json:"settings,omitempty"`
 }
 
 // PolicySetting is one policy entry within a profile.
 type PolicySetting struct {
-	CatalogID     int    `json:"catalog_id"`
-	OMAURI        string `json:"oma_uri"`
-	DisplayName   string `json:"display_name"`
-	Description   string `json:"description"`
-	DataType      string `json:"data_type"`
-	DesiredValue  string `json:"desired_value"`
+	CatalogID     int         `json:"catalog_id"`
+	OMAURI        string      `json:"oma_uri"`
+	DisplayName   string      `json:"display_name"`
+	Description   string      `json:"description"`
+	DataType      string      `json:"data_type"`
+	DesiredValue  string      `json:"desired_value"`
 	AllowedValues interface{} `json:"allowed_values,omitempty"`
 }
 

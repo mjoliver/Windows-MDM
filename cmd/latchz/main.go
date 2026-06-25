@@ -163,9 +163,9 @@ var Version = "dev"
 
 type versionCmd struct{}
 
-func (*versionCmd) Name() string     { return "version" }
-func (*versionCmd) Synopsis() string { return "Print version information." }
-func (*versionCmd) Usage() string    { return "version\n" }
+func (*versionCmd) Name() string             { return "version" }
+func (*versionCmd) Synopsis() string         { return "Print version information." }
+func (*versionCmd) Usage() string            { return "version\n" }
 func (*versionCmd) SetFlags(_ *flag.FlagSet) {}
 func (*versionCmd) Execute(_ context.Context, _ *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
 	fmt.Printf("pane %s\n", Version)

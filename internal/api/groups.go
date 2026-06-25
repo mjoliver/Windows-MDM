@@ -15,12 +15,12 @@ import (
 
 // Group is the JSON representation of a device group.
 type Group struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	CreatedAt   time.Time `json:"created_at"`
-	DeviceCount int       `json:"device_count"`
-	ProfileCount int      `json:"profile_count"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	CreatedAt    time.Time `json:"created_at"`
+	DeviceCount  int       `json:"device_count"`
+	ProfileCount int       `json:"profile_count"`
 }
 
 // HandleListGroups returns all device groups with member and profile counts.

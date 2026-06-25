@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	xcepNS       = "http://schemas.microsoft.com/windows/pki/2009/01/enrollmentpolicy"
-	xcepAction   = "http://schemas.microsoft.com/windows/pki/2009/01/enrollmentpolicy/IPolicy/GetPoliciesResponse"
+	xcepNS     = "http://schemas.microsoft.com/windows/pki/2009/01/enrollmentpolicy"
+	xcepAction = "http://schemas.microsoft.com/windows/pki/2009/01/enrollmentpolicy/IPolicy/GetPoliciesResponse"
 
 	// Key usage values
 	keySpecKeyExchange = 1
@@ -52,9 +52,9 @@ func (h *Handler) HandleXCEP(ca *pki.CA) http.HandlerFunc {
 		caThumbprint := fmt.Sprintf("%x", sha1OfPEM(caCertPEM))
 
 		resp := SOAPEnvelope{
-			XMLName:  xml.Name{Local: "s:Envelope"},
-			XmlnsS:   soapNS,
-			XmlnsA:   addrNS,
+			XMLName:   xml.Name{Local: "s:Envelope"},
+			XmlnsS:    soapNS,
+			XmlnsA:    addrNS,
 			XmlnsXCEP: xcepNS,
 			Header: SOAPHeader{
 				Action:    xcepAction,
@@ -76,8 +76,8 @@ func (h *Handler) HandleXCEP(ca *pki.CA) http.HandlerFunc {
 										CommonName:   "PaneMDMClient",
 										PolicySchema: 3,
 										CertificateValidity: XCEPValidity{
-											ValidityPeriodSeconds: 365 * 24 * 3600,      // 1 year
-											RenewalPeriodSeconds:  30 * 24 * 3600,        // renew 30 days before expiry
+											ValidityPeriodSeconds: 365 * 24 * 3600, // 1 year
+											RenewalPeriodSeconds:  30 * 24 * 3600,  // renew 30 days before expiry
 										},
 										Permission: XCEPPermission{
 											Enroll:     true,

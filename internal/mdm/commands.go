@@ -66,7 +66,7 @@ func markCommandResult(dbConn *sql.DB, queueID int, resultCode, resultData strin
 	if resultCode != StatusOK && resultCode != StatusCreated && resultCode != StatusAccepted {
 		status = "failed"
 	}
-	
+
 	if resultData != "" {
 		_, err := dbConn.Exec(db.Rebind(`
 			UPDATE command_queue
@@ -75,7 +75,7 @@ func markCommandResult(dbConn *sql.DB, queueID int, resultCode, resultData strin
 		`), status, resultCode, resultData, queueID)
 		return err
 	}
-	
+
 	_, err := dbConn.Exec(db.Rebind(`
 		UPDATE command_queue
 		SET status = ?, result_code = ?, completed_at = CURRENT_TIMESTAMP
@@ -159,13 +159,13 @@ func buildSyncMLCommands(session *Session, pending []PendingCommand) []interface
 			if isNumeric(cmd.Payload) {
 				format = "int"
 			}
-			
+
 			item.Meta = &Meta{
 				Format: &MetaFormat{
 					Xmlns: metInfNS,
 					Value: format,
 				},
-				Type:   "text/plain",
+				Type: "text/plain",
 			}
 		}
 

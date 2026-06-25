@@ -13,8 +13,8 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	_ "github.com/lib/pq"        // Postgres driver
-	_ "modernc.org/sqlite"       // SQLite driver (CGo-free)
+	_ "github.com/lib/pq"  // Postgres driver
+	_ "modernc.org/sqlite" // SQLite driver (CGo-free)
 )
 
 //go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
