@@ -1,5 +1,16 @@
 # Latchz MDM — Holistic Review & Test-Coverage Plan
 
+> **Remediation status (branch `security-hardening`):** All Critical/High/Medium
+> findings below have been fixed, plus the requested net-new features (builtin
+> username/password auth, certificate renewal/ROBO, policy retraction, TLS-layer
+> revocation). Each fix ships with regression tests; Go coverage went 0 → ~35%
+> (security-critical paths 55–89%), and a CI workflow (gofmt/vet/build/`-race`+
+> coverage, plus a web typecheck/lint/test job) was added. See this branch's git
+> history for the per-phase commits. Two items are intentionally deferred and
+> noted here: server-side session revocation (stateless JWT + cookie-clear today)
+> and frontend RBAC-by-role hiding of destructive controls (backend RBAC is
+> enforced).
+
 **Scope:** Whole codebase (Go backend `./internal` + `./cmd`, React/TS `./web`, config/deploy/Docker).
 **Method:** Every core file read line-by-line, plus a 123-agent review workflow (10 subsystem finders → adversarial verification of each finding → completeness critics → test planners). 102 issues confirmed against the real code (9 critical / 15 high / 13 medium / 45 low / 13 info); 5 candidate findings refuted on verification.
 
