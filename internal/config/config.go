@@ -47,6 +47,15 @@ type TLSConfig struct {
 	// CacheDir is where Let's Encrypt certs are stored (mode=auto only).
 	// Defaults to ./certs
 	CacheDir string `mapstructure:"cache_dir"`
+
+	// TrustProxyClientCert enables authenticating OMA-DM devices via a client
+	// certificate forwarded by a trusted terminating proxy (for tls.mode=none,
+	// e.g. behind a load balancer doing mTLS). ONLY enable this when the proxy
+	// strips any client-supplied value of ClientCertHeader and sets it itself.
+	TrustProxyClientCert bool `mapstructure:"trust_proxy_client_cert"`
+	// ClientCertHeader is the header carrying the URL-encoded PEM client cert
+	// (e.g. nginx $ssl_client_escaped_cert). Default: X-Forwarded-Client-Cert.
+	ClientCertHeader string `mapstructure:"client_cert_header"`
 }
 
 // DatabaseConfig selects the database backend.
@@ -103,6 +112,8 @@ func Load(cfgFile string) (*Config, error) {
 	v.SetDefault("tls.cache_dir", "./certs")
 	v.SetDefault("tls.cert_file", "")
 	v.SetDefault("tls.key_file", "")
+	v.SetDefault("tls.trust_proxy_client_cert", false)
+	v.SetDefault("tls.client_cert_header", "X-Forwarded-Client-Cert")
 	v.SetDefault("database.driver", "sqlite")
 	v.SetDefault("database.dsn", "./latchz.db")
 	v.SetDefault("auth.provider", "oidc")
@@ -121,6 +132,8 @@ func Load(cfgFile string) (*Config, error) {
 	_ = v.BindEnv("server.emergency_token", "LATCHZ_SERVER_EMERGENCY_TOKEN")
 	_ = v.BindEnv("server.support_url", "LATCHZ_SERVER_SUPPORT_URL")
 	_ = v.BindEnv("tls.mode", "LATCHZ_TLS_MODE")
+	_ = v.BindEnv("tls.trust_proxy_client_cert", "LATCHZ_TLS_TRUST_PROXY_CLIENT_CERT")
+	_ = v.BindEnv("tls.client_cert_header", "LATCHZ_TLS_CLIENT_CERT_HEADER")
 	_ = v.BindEnv("database.driver", "LATCHZ_DATABASE_DRIVER")
 	_ = v.BindEnv("database.dsn", "LATCHZ_DATABASE_DSN")
 	_ = v.BindEnv("auth.provider", "LATCHZ_AUTH_PROVIDER")
@@ -171,8 +184,30 @@ func Load(cfgFile string) (*Config, error) {
 	return &cfg, nil
 }
 
+// minMasterSecretLen mirrors pki.MinMasterSecretLen (kept local to avoid a
+// config->pki import). The master secret protects the Root CA private key.
+const minMasterSecretLen = 16
+
 func (c *Config) validate() error {
-	if c.Auth.Provider == "oidc" {
+	// The vault key (master secret) is mandatory and must not be trivially short.
+	if c.Server.MasterSecret == "" {
+		return fmt.Errorf("server.master_secret (LATCHZ_SERVER_MASTER_SECRET) is required: it encrypts the Root CA private key")
+	}
+	if len(c.Server.MasterSecret) < minMasterSecretLen {
+		return fmt.Errorf("server.master_secret must be at least %d characters (use a high-entropy random value)", minMasterSecretLen)
+	}
+
+	// A short or unset JWT secret is allowed (random per-process dev fallback),
+	// but if provided it must be strong enough to be a real signing key.
+	if c.Auth.JWTSecret != "" && len(c.Auth.JWTSecret) < 32 {
+		return fmt.Errorf("auth.jwt_secret must be at least 32 characters when set")
+	}
+
+	// Fail closed on the authentication provider: only fully-implemented,
+	// fully-configured providers are accepted. An unset/unknown provider must
+	// never silently disable authentication.
+	switch c.Auth.Provider {
+	case "oidc":
 		if c.Auth.OIDC.Issuer == "" {
 			return fmt.Errorf("auth.oidc.issuer is required when provider is oidc")
 		}
@@ -182,6 +217,21 @@ func (c *Config) validate() error {
 		if c.Auth.OIDC.ClientSecret == "" {
 			return fmt.Errorf("auth.oidc.client_secret is required when provider is oidc")
 		}
+		// Require an explicit email-domain allowlist: an empty list would let
+		// any account at the IdP (e.g. any Google account) sign in.
+		if len(c.Auth.OIDC.AllowedDomains) == 0 {
+			return fmt.Errorf("auth.oidc.allowed_domains must list at least one domain (an empty list would allow any account at the identity provider)")
+		}
+	case "builtin":
+		if c.Auth.BootstrapAdmin == "" {
+			return fmt.Errorf("auth.bootstrap_admin is required when provider is builtin (the initial admin account)")
+		}
+	case "ldap":
+		return fmt.Errorf("auth.provider %q is not implemented", c.Auth.Provider)
+	case "":
+		return fmt.Errorf("auth.provider is required (one of: oidc, builtin) — refusing to start without authentication")
+	default:
+		return fmt.Errorf("auth.provider %q is invalid (one of: oidc, builtin)", c.Auth.Provider)
 	}
 	return nil
 }

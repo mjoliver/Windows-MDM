@@ -26,16 +26,30 @@ import (
 	"github.com/latchzmdm/latchz/internal/pki"
 )
 
+// authenticator is the auth-provider contract the server depends on. Concrete
+// implementations (OIDC, builtin) mount their own login endpoints and validate
+// sessions + enrollment tokens. Keeping this an interface lets the server fail
+// closed when no provider is configured rather than wiring a permissive bypass.
+type authenticator interface {
+	// MountRoutes registers the provider's login/callback/logout endpoints.
+	MountRoutes(r chi.Router)
+	// SessionFromRequest validates the session cookie and returns the identity.
+	SessionFromRequest(r *http.Request) (email, role string, err error)
+	// ValidateEnrollmentToken validates a device enrollment token and returns
+	// the authenticated user's email.
+	ValidateEnrollmentToken(token string) (email string, err error)
+}
+
 // Server is the Pane HTTPS server.
 type Server struct {
-	cfg          *config.Config
-	db           *db.DB
-	ca           *pki.CA
-	authProvider *auth.Provider
-	enrollment   *enrollment.Handler
-	mdm          *mdm.Handler
-	api          *api.Handler
-	mux          *chi.Mux
+	cfg        *config.Config
+	db         *db.DB
+	ca         *pki.CA
+	auth       authenticator
+	enrollment *enrollment.Handler
+	mdm        *mdm.Handler
+	api        *api.Handler
+	mux        *chi.Mux
 }
 
 // New creates and configures the server and all its routes.
@@ -57,21 +71,53 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 			"Set LATCHZ_AUTH_JWT_SECRET to a stable 32+ byte value in production.")
 	}
 
-	base := "https://" + cfg.Server.Domain
+	authProvider, err := buildAuthenticator(cfg, database.DB, jwtSecret)
+	if err != nil {
+		return nil, err
+	}
 
-	// Initialise the OIDC auth provider (only when provider=oidc)
-	var authProvider *auth.Provider
-	if cfg.Auth.Provider == "oidc" {
-		var err error
-		authProvider, err = auth.New(
+	// Trusted-proxy client-cert header (only honoured when explicitly enabled,
+	// for tls.mode=none behind a terminating mTLS proxy).
+	proxyCertHeader := ""
+	if cfg.TLS.TrustProxyClientCert {
+		proxyCertHeader = cfg.TLS.ClientCertHeader
+	}
+
+	enrollHandler := enrollment.NewHandler(cfg.Server.Domain, cfg.Server.EnrollmentDomain)
+	mdmHandler := mdm.NewHandler(database.DB, ca.TLSPool(), cfg.Server.Domain, proxyCertHeader)
+	apiHandler := api.NewHandler(database.DB)
+
+	s := &Server{
+		cfg:        cfg,
+		db:         database,
+		ca:         ca,
+		auth:       authProvider,
+		enrollment: enrollHandler,
+		mdm:        mdmHandler,
+		api:        apiHandler,
+		mux:        chi.NewRouter(),
+	}
+	s.routes()
+	return s, nil
+}
+
+// buildAuthenticator constructs the configured auth provider. It fails closed:
+// an unset or unimplemented provider returns an error rather than a no-auth
+// server. Config validation already rejects these, but this is defence in depth.
+func buildAuthenticator(cfg *config.Config, database *sql.DB, jwtSecret []byte) (authenticator, error) {
+	base := "https://" + cfg.Server.Domain
+	switch cfg.Auth.Provider {
+	case "oidc":
+		p, err := auth.New(
 			context.Background(),
-			database.DB,
+			database,
 			cfg.Auth.OIDC.Issuer,
 			cfg.Auth.OIDC.ClientID,
 			cfg.Auth.OIDC.ClientSecret,
 			base,
 			cfg.Auth.OIDC.AllowedDomains,
 			jwtSecret,
+			cfg.Auth.BootstrapAdmin,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("initialising OIDC provider: %w", err)
@@ -80,24 +126,11 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 			"issuer", cfg.Auth.OIDC.Issuer,
 			"allowed_domains", cfg.Auth.OIDC.AllowedDomains,
 		)
+		return p, nil
+	// case "builtin": wired in a later change (builtin username/password auth).
+	default:
+		return nil, fmt.Errorf("no usable auth provider configured (provider=%q) — refusing to start", cfg.Auth.Provider)
 	}
-
-	enrollHandler := enrollment.NewHandler(cfg.Server.Domain, cfg.Server.EnrollmentDomain)
-	mdmHandler := mdm.NewHandler(database.DB, ca.TLSPool(), cfg.Server.Domain)
-	apiHandler := api.NewHandler(database.DB)
-
-	s := &Server{
-		cfg:          cfg,
-		db:           database,
-		ca:           ca,
-		authProvider: authProvider,
-		enrollment:   enrollHandler,
-		mdm:          mdmHandler,
-		api:          apiHandler,
-		mux:          chi.NewRouter(),
-	}
-	s.routes()
-	return s, nil
 }
 
 // Handler exposes the configured router so tests can drive the full route
@@ -131,16 +164,10 @@ func (s *Server) routes() {
 		r.Get("/Discovery.svc", s.enrollment.HandleDiscovery)
 	})
 
-	// OIDC auth callback (the login page Windows opens for user auth)
-	if s.authProvider != nil {
-		r.Get("/auth/login", s.authProvider.HandleLogin)
-		r.Get("/auth/callback", s.authProvider.HandleCallback)
-		r.Post("/auth/logout", s.authProvider.HandleLogout)
-	} else {
-		r.Get("/auth/login", s.handleAuthLogin)
-		r.Get("/auth/callback", s.handleAuthCallback)
-		r.Post("/auth/logout", s.handleAuthLogout)
-	}
+	// Auth provider login/callback/logout endpoints (the page Windows opens for
+	// user auth, and the dashboard login). The provider is always configured —
+	// the server refuses to start otherwise.
+	s.auth.MountRoutes(r)
 
 	// MS-XCEP: certificate enrollment policy
 	r.Post("/xcep", s.enrollment.HandleXCEP(s.ca))
@@ -148,14 +175,10 @@ func (s *Server) routes() {
 	// Root CA download (so admins can install the CA cert on trusted devices)
 	r.Get("/pki/ca.pem", s.enrollment.HandleCADownload(s.ca))
 
-	// MS-WSTEP: certificate enrollment (device gets its client cert here)
-	var validateToken func(string) (string, error)
-	if s.authProvider != nil {
-		validateToken = s.authProvider.ValidateEnrollmentToken
-	} else {
-		validateToken = func(t string) (string, error) { return "builtin@pane.local", nil }
-	}
-	r.Post("/wstep", s.enrollment.HandleWSTEP(s.ca, s.db.DB, validateToken))
+	// MS-WSTEP: certificate enrollment (device gets its client cert here). The
+	// enrollment token is always validated by the real auth provider — there is
+	// no accept-any-token bypass.
+	r.Post("/wstep", s.enrollment.HandleWSTEP(s.ca, s.db.DB, s.auth.ValidateEnrollmentToken))
 
 	// ── OMA-DM endpoint ─────────────────────────────────────────────────────
 	// Enrolled devices check in here periodically (SyncML over HTTPS + mTLS)
@@ -235,6 +258,7 @@ func (s *Server) Run(ctx context.Context) error {
 		tlsCfg, acmeHandler, err := buildAutoTLSConfig(
 			s.cfg.Server.Domain,
 			s.cfg.TLS.CacheDir,
+			s.ca.TLSPool(),
 		)
 		if err != nil {
 			return fmt.Errorf("building auto-TLS config: %w", err)
@@ -400,17 +424,15 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.authProvider == nil {
-			// No auth configured — allow in dev (log a warning)
-			slog.Warn("requireAuth: no auth provider configured, allowing request", "path", r.URL.Path)
-			next.ServeHTTP(w, r)
+		// Fail closed: if no auth provider is wired, reject rather than allow.
+		// (The server refuses to start without one; this is defence in depth.)
+		if s.auth == nil {
+			respondJSON(w, http.StatusServiceUnavailable, `{"error":"authentication not configured"}`)
 			return
 		}
-		email, role, err := s.authProvider.SessionFromRequest(r)
+		email, role, err := s.auth.SessionFromRequest(r)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":"unauthenticated"}`))
+			respondJSON(w, http.StatusUnauthorized, `{"error":"unauthenticated"}`)
 			return
 		}
 		// Attach email + role to request context for downstream handlers
@@ -421,38 +443,32 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
-// ── Remaining handlers ────────────────────────────────────────────────────────
+// requireRole wraps requireAuth and additionally enforces that the session
+// carries one of the allowed roles. Use on destructive/privileged endpoints.
+func (s *Server) requireRole(allowed ...string) func(http.Handler) http.Handler {
+	allow := make(map[string]bool, len(allowed))
+	for _, r := range allowed {
+		allow[r] = true
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			role := roleFromContext(r.Context())
+			if !allow[role] {
+				respondJSON(w, http.StatusForbidden, `{"error":"forbidden: insufficient role"}`)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
-// handleAuthLogin / Callback / Logout are fallbacks when no auth provider is configured.
-func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
-	// Provide a bypass for the Windows MDM Federated WebView during local testing.
-	// This JavaScript instantly sets the MS-MDE2 enrollment token and closes the window.
-	html := `<!DOCTYPE html>
-<html>
-<head><title>Latchz MDM Enrollment</title></head>
-<body>
-	<h2>Authenticating...</h2>
-	<script>
-		try {
-			// Set the token payload
-			window.external.Property("token") = "dev_token:test@mjo.gg";
-			// Force the WebView to close and execute WSTEP
-			window.external.FinalNext();
-		} catch (e) {
-			document.body.innerHTML += "<br>Wait, please close this window manually.";
-		}
-	</script>
-</body>
-</html>`
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
+func respondJSON(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
 }
-func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "auth: no provider configured", http.StatusServiceUnavailable)
-}
-func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/", http.StatusFound)
-}
+
+// ── Remaining handlers ────────────────────────────────────────────────────────
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	webHandler().ServeHTTP(w, r)

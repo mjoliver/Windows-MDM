@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
@@ -51,6 +52,10 @@ type Provider struct {
 
 	// baseURL is our public server URL, used for the OAuth2 redirect URI.
 	baseURL string
+
+	// bootstrapAdmin is the only email granted super_admin on first creation.
+	// This replaces the insecure "first login becomes super_admin" behaviour.
+	bootstrapAdmin string
 }
 
 // Claims are embedded in both enrollment tokens and session tokens.
@@ -64,7 +69,7 @@ type Claims struct {
 
 // New creates an OIDC auth provider.
 // The jwtSecret is used to sign enrollment tokens and session JWTs.
-func New(ctx context.Context, db *sql.DB, issuer, clientID, clientSecret, baseURL string, allowedDomains []string, jwtSecret []byte) (*Provider, error) {
+func New(ctx context.Context, db *sql.DB, issuer, clientID, clientSecret, baseURL string, allowedDomains []string, jwtSecret []byte, bootstrapAdmin string) (*Provider, error) {
 	if len(jwtSecret) < 32 {
 		return nil, fmt.Errorf("jwtSecret must be at least 32 bytes")
 	}
@@ -92,7 +97,15 @@ func New(ctx context.Context, db *sql.DB, issuer, clientID, clientSecret, baseUR
 		db:             db,
 		allowedDomains: allowedDomains,
 		baseURL:        baseURL,
+		bootstrapAdmin: bootstrapAdmin,
 	}, nil
+}
+
+// MountRoutes registers the OIDC login/callback/logout endpoints on the router.
+func (p *Provider) MountRoutes(r chi.Router) {
+	r.Get("/auth/login", p.HandleLogin)
+	r.Get("/auth/callback", p.HandleCallback)
+	r.Post("/auth/logout", p.HandleLogout)
 }
 
 // ── HTTP handlers ─────────────────────────────────────────────────────────────
@@ -451,17 +464,15 @@ func (p *Provider) isEmailAllowed(email string) bool {
 }
 
 // upsertUser ensures the user exists in the database.
-// On first login, creates the user with 'user' role.
-// If this is the very first user ever, grants 'super_admin' (bootstrap).
+// New users are created with the 'user' role, EXCEPT the configured
+// bootstrap admin, who is created as 'super_admin'. Roles of existing users are
+// never changed here (promotion happens via the admin CLI). This deliberately
+// avoids the old "first login over the internet becomes super_admin" behaviour.
 func (p *Provider) upsertUser(ctx context.Context, email, displayName string) (role string, err error) {
-	// Check if any users exist (bootstrap detection)
-	var count int
-	_ = p.db.QueryRowContext(ctx, dbpkg.Rebind(`SELECT COUNT(*) FROM users`)).Scan(&count)
-
 	defaultRole := "user"
-	if count == 0 {
+	if p.bootstrapAdmin != "" && strings.EqualFold(email, p.bootstrapAdmin) {
 		defaultRole = "super_admin"
-		slog.Info("bootstrap: first user login — granting super_admin", "email", email)
+		slog.Info("bootstrap admin login — granting super_admin", "email", email)
 	}
 
 	_, err = p.db.ExecContext(ctx, dbpkg.Rebind(`

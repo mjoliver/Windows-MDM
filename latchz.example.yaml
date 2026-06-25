@@ -27,6 +27,12 @@ server:
   # Rotate this immediately after use. Keep it secret.
   emergency_token: "change-me-to-a-random-string"
 
+  # REQUIRED. Encrypts the Root CA private key at rest (argon2id-derived key).
+  # Use a high-entropy random value of at least 16 characters; prefer supplying
+  # it via the LATCHZ_SERVER_MASTER_SECRET env var / a secret manager rather
+  # than committing it. Losing or changing it invalidates the stored CA.
+  master_secret: "CHANGE-ME-use-a-long-random-value"
+
 # ─── TLS ────────────────────────────────────────────────────────────────────
 
 tls:
@@ -45,6 +51,15 @@ tls:
   # cert_file: /etc/ssl/pane/fullchain.pem
   # key_file:  /etc/ssl/pane/privkey.pem
 
+  # Device (OMA-DM) authentication requires a client certificate. With mode=auto
+  # / manual / self-signed the server requests it directly over mTLS. With
+  # mode=none (TLS terminated by a proxy/load balancer), enable the following so
+  # devices can be authenticated via a client cert the proxy forwards. ONLY turn
+  # this on if the proxy does mTLS and OVERWRITES this header (never trust a
+  # client-supplied value).
+  # trust_proxy_client_cert: true
+  # client_cert_header: "X-Forwarded-Client-Cert"   # e.g. nginx $ssl_client_escaped_cert
+
 # ─── Database ────────────────────────────────────────────────────────────────
 
 database:
@@ -61,8 +76,21 @@ database:
 # ─── Authentication ──────────────────────────────────────────────────────────
 
 auth:
-  # provider: "oidc" (Google Workspace, Okta, Entra ID, etc.)
+  # provider: "oidc" (Google Workspace, Okta, Entra ID, etc.) or "builtin"
+  # (local username/password). An unset/unknown provider is rejected — the
+  # server refuses to start without real authentication.
   provider: oidc
+
+  # REQUIRED in production. Stable, high-entropy (>=32 char) secret that signs
+  # dashboard session + enrollment JWTs. If unset, a random per-process secret
+  # is generated, which invalidates sessions on restart and breaks multi-instance
+  # deployments. Prefer the LATCHZ_AUTH_JWT_SECRET env var.
+  jwt_secret: "CHANGE-ME-use-a-long-random-32-byte-value"
+
+  # Email granted super_admin when first created. This is the ONLY way an account
+  # becomes admin automatically (there is no "first login becomes admin"). Other
+  # users are created as 'user'; promote them with: latchz admin -email <addr>.
+  bootstrap_admin: "you@example.com"
 
   oidc:
     # Google Workspace example:
@@ -73,7 +101,8 @@ auth:
     client_id: "your-client-id.apps.googleusercontent.com"
     client_secret: "your-client-secret"
 
-    # Restrict login to users from these email domains.
-    # Leave empty to allow any authenticated Google account.
+    # REQUIRED for oidc: restrict login to these email domains. Must list at
+    # least one — an empty list would let ANY account at the IdP (e.g. any
+    # Google account) sign in to your dashboard.
     allowed_domains:
       - example.com

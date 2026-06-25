@@ -58,13 +58,10 @@ func (s *serveCmd) SetFlags(f *flag.FlagSet) {
 func (s *serveCmd) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
 	cfg, err := config.Load(s.configFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pane: configuration error: %v\n", err)
+		// config.Load validates required security settings (master secret,
+		// auth provider, allowed domains) and fails closed on misconfiguration.
+		fmt.Fprintf(os.Stderr, "latchz: configuration error: %v\n", err)
 		return subcommands.ExitFailure
-	}
-
-	if cfg.Server.MasterSecret == "" {
-		fmt.Fprintln(os.Stderr, "pane: critical security error - PANE_SERVER_MASTER_SECRET environment variable must be set to initialize the database encryption vault")
-		return subcommands.ExitUsageError
 	}
 
 	database, err := db.Open(cfg.Database.Driver, cfg.Database.DSN)

@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
@@ -19,10 +18,12 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
+	"golang.org/x/crypto/argon2"
 )
 
 // nowFunc returns the current time; overridable in tests for deterministic
@@ -276,11 +277,35 @@ func newID() string {
 	return uuid.New().String()
 }
 
-// ── AES-256-GCM Helpers ───────────────────────────────────────────────────────
+// ── Vault key encryption (AES-256-GCM with an argon2id-derived key) ───────────
+//
+// The AES key is derived from the operator's master secret with argon2id using a
+// random per-record salt (NOT a bare SHA-256, which is instant to brute-force).
+// Stored format: "v2:" + hex(salt || nonce || ciphertext).
+
+const (
+	vaultFormatV2 = "v2"
+	kdfSaltLen    = 16
+	kdfTime       = 2
+	kdfMemoryKiB  = 64 * 1024 // 64 MiB
+	kdfThreads    = 4
+	kdfKeyLen     = 32 // AES-256
+
+	// MinMasterSecretLen is the minimum acceptable master-secret length. argon2id
+	// raises the cost of a weak secret, but we still refuse trivially short ones.
+	MinMasterSecretLen = 16
+)
+
+func deriveVaultKey(masterSecret string, salt []byte) []byte {
+	return argon2.IDKey([]byte(masterSecret), salt, kdfTime, kdfMemoryKiB, kdfThreads, kdfKeyLen)
+}
 
 func encryptKey(data []byte, masterSecret string) (string, error) {
-	hash := sha256.Sum256([]byte(masterSecret))
-	block, err := aes.NewCipher(hash[:])
+	salt := make([]byte, kdfSaltLen)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(deriveVaultKey(masterSecret, salt))
 	if err != nil {
 		return "", err
 	}
@@ -292,17 +317,24 @@ func encryptKey(data []byte, masterSecret string) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-	ciphertext := gcm.Seal(nonce, nonce, data, nil)
-	return hex.EncodeToString(ciphertext), nil
+	blob := gcm.Seal(append(salt, nonce...), nonce, data, nil)
+	return vaultFormatV2 + ":" + hex.EncodeToString(blob), nil
 }
 
-func decryptKey(encryptedHex string, masterSecret string) ([]byte, error) {
-	encrypted, err := hex.DecodeString(encryptedHex)
+func decryptKey(encoded string, masterSecret string) ([]byte, error) {
+	version, hexBlob, ok := strings.Cut(encoded, ":")
+	if !ok || version != vaultFormatV2 {
+		return nil, fmt.Errorf("unsupported CA key vault format (re-provision the CA on a fresh database)")
+	}
+	blob, err := hex.DecodeString(hexBlob)
 	if err != nil {
 		return nil, fmt.Errorf("invalid hex string: %w", err)
 	}
-	hash := sha256.Sum256([]byte(masterSecret))
-	block, err := aes.NewCipher(hash[:])
+	if len(blob) < kdfSaltLen {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	salt, rest := blob[:kdfSaltLen], blob[kdfSaltLen:]
+	block, err := aes.NewCipher(deriveVaultKey(masterSecret, salt))
 	if err != nil {
 		return nil, err
 	}
@@ -310,10 +342,10 @@ func decryptKey(encryptedHex string, masterSecret string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(encrypted) < gcm.NonceSize() {
+	if len(rest) < gcm.NonceSize() {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
-	nonce, ciphertext := encrypted[:gcm.NonceSize()], encrypted[gcm.NonceSize():]
+	nonce, ciphertext := rest[:gcm.NonceSize()], rest[gcm.NonceSize():]
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 

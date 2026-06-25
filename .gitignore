@@ -1,8 +1,9 @@
 # Personal notes — not for the public repo
 ARCHITECTURE.md
 
-# Local config with real secrets
+# Local config with real secrets (use latchz.example.yaml as the template)
 pane.yaml
+latchz.yaml
 
 # Build output
 pane
@@ -22,7 +23,7 @@ last_soap_response.xml
 *.pem
 *.key
 *.crt
-!pane.example.yaml
+!latchz.example.yaml
 
 # IDE
 .vscode/

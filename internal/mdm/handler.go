@@ -5,11 +5,13 @@ import (
 	"crypto/sha1"
 	"crypto/x509"
 	"database/sql"
+	"encoding/pem"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -22,11 +24,17 @@ type Handler struct {
 	ca     *x509.CertPool // root CA pool for mTLS device auth
 	domain string
 	store  *sessionStore
+
+	// proxyCertHeader, when non-empty, names a request header carrying a
+	// URL-encoded PEM client certificate forwarded by a trusted terminating
+	// proxy (tls.mode=none). Empty means only direct mTLS is accepted.
+	proxyCertHeader string
 }
 
-// NewHandler creates an OMA-DM handler.
-func NewHandler(db *sql.DB, caPool *x509.CertPool, domain string) *Handler {
-	return &Handler{db: db, ca: caPool, domain: domain, store: newSessionStore()}
+// NewHandler creates an OMA-DM handler. proxyCertHeader is "" unless a trusted
+// proxy is configured to forward the device client certificate.
+func NewHandler(db *sql.DB, caPool *x509.CertPool, domain, proxyCertHeader string) *Handler {
+	return &Handler{db: db, ca: caPool, domain: domain, store: newSessionStore(), proxyCertHeader: proxyCertHeader}
 }
 
 // HandleOMADM is the main OMA-DM endpoint. Devices POST here on every check-in.
@@ -235,94 +243,84 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 
 // ── Device authentication ─────────────────────────────────────────────────────
 
-// authenticateDevice verifies the device's mTLS client certificate against our CA.
-// Returns the device ID from the database.
+// authenticateDevice identifies the device strictly by a verified client
+// certificate. The certificate must chain to our CA and map to a non-revoked
+// device certificate. There is NO hardware-ID fallback: a hardware_id is not a
+// secret, so trusting it would let anyone impersonate any enrolled device.
+//
+// The certificate comes from one of:
+//   - direct mTLS: r.TLS.PeerCertificates (already chain-verified by the TLS
+//     stack, which uses VerifyClientCertIfGiven with our CA pool), or
+//   - a trusted terminating proxy that forwards it in proxyCertHeader.
 func (h *Handler) authenticateDevice(r *http.Request) (string, error) {
-	// Get peer certificates from TLS
-	var peerCerts []*x509.Certificate
-	if r.TLS != nil {
-		peerCerts = r.TLS.PeerCertificates
+	clientCert, err := h.clientCert(r)
+	if err != nil {
+		return "", err
 	}
 
-	if len(peerCerts) == 0 {
-		// If no cert presented (or behind a reverse proxy like Cloud Run),
-		// try to identify by source URI from body (Hardware ID).
-		return h.lookupDeviceByRequest(r)
+	// Re-verify the chain to our CA (defence in depth; mandatory for the proxy
+	// header path where the TLS stack did not verify it for us).
+	if h.ca == nil {
+		return "", errorf("no CA configured for device authentication")
+	}
+	if _, err := clientCert.Verify(x509.VerifyOptions{
+		Roots:     h.ca,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return "", errorf("client certificate does not chain to our CA: %v", err)
 	}
 
-	// Verify the cert chain against our CA
-	if h.ca != nil {
-		opts := x509.VerifyOptions{
-			Roots:     h.ca,
-			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		}
-		if _, err := peerCerts[0].Verify(opts); err != nil {
-			return "", errorf("certificate verification failed: %v", err)
-		}
-	}
-
-	// Look up device by certificate thumbprint
-	thumbprint := certThumbprint(peerCerts[0])
+	// Look up the device by certificate thumbprint; reject revoked certs.
+	thumbprint := certThumbprint(clientCert)
 	var deviceID string
-	err := h.db.QueryRow(dbpkg.Rebind(`
+	err = h.db.QueryRow(dbpkg.Rebind(`
 		SELECT device_id FROM certificates
 		WHERE thumbprint = ? AND cert_type = 'device' AND revoked = 0
 	`), thumbprint).Scan(&deviceID)
-
 	if err == sql.ErrNoRows {
-		return "", errorf("no device found for certificate thumbprint %s", thumbprint)
+		return "", errorf("no active device for certificate thumbprint %s (revoked or unknown)", thumbprint)
 	}
 	if err != nil {
 		return "", errorf("database error looking up device: %v", err)
 	}
-
 	return deviceID, nil
 }
 
-// lookupDeviceByRequest finds a device from the SyncML body source URI.
-// Used in development when mTLS is not configured end-to-end.
-func (h *Handler) lookupDeviceByRequest(r *http.Request) (string, error) {
-	// 1. Try to get HWID from query parameter (for Cloud Run no-mTLS fallback)
-	if hwid := r.URL.Query().Get("hwid"); hwid != "" {
-		var deviceID string
-		err := h.db.QueryRow(
-			dbpkg.Rebind(`SELECT id FROM devices WHERE hardware_id = ? AND is_active = 1`), hwid,
-		).Scan(&deviceID)
-		if err == nil {
-			slog.Warn("mdm: device auth via query param hwid (no mTLS)", "device_id", deviceID, "hwid", hwid)
-			return deviceID, nil
+// clientCert extracts the device client certificate from the TLS peer chain or,
+// if a trusted proxy is configured, from the forwarded header.
+func (h *Handler) clientCert(r *http.Request) (*x509.Certificate, error) {
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		return r.TLS.PeerCertificates[0], nil
+	}
+	if h.proxyCertHeader != "" {
+		raw := r.Header.Get(h.proxyCertHeader)
+		if raw == "" {
+			return nil, errorf("client certificate required: trusted-proxy header %q is empty", h.proxyCertHeader)
+		}
+		return parseProxyClientCert(raw)
+	}
+	return nil, errorf("client certificate required")
+}
+
+// parseProxyClientCert decodes a client certificate forwarded by a terminating
+// proxy. It accepts a raw PEM string or a URL-encoded PEM (e.g. nginx
+// $ssl_client_escaped_cert). The raw form is tried first so that base64 '+'
+// characters are not mangled by URL-decoding.
+func parseProxyClientCert(raw string) (*x509.Certificate, error) {
+	candidates := []string{raw}
+	if decoded, err := url.QueryUnescape(raw); err == nil && decoded != raw {
+		candidates = append(candidates, decoded)
+	}
+	for _, c := range candidates {
+		block, _ := pem.Decode([]byte(c))
+		if block == nil {
+			continue
+		}
+		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+			return cert, nil
 		}
 	}
-
-	// 2. Peek at the body to get the Source/LocURI
-	body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
-	r.Body = io.NopCloser(bytes.NewReader(body)) // restore
-
-	var msg SyncML
-	if err := xml.Unmarshal(body, &msg); err != nil {
-		return "", errorf("no client cert and SyncML parse failed")
-	}
-
-	hardwareID := msg.SyncHdr.Source.LocURI
-	if hardwareID == "" {
-		return "", errorf("no client cert and no source URI in SyncML")
-	}
-
-	var deviceID string
-	err := h.db.QueryRow(
-		dbpkg.Rebind(`SELECT id FROM devices WHERE hardware_id = ? AND is_active = 1`), hardwareID,
-	).Scan(&deviceID)
-	if err == sql.ErrNoRows {
-		return "", errorf("device not found for hardware_id %s (not enrolled?)", hardwareID)
-	}
-	if err != nil {
-		return "", errorf("database error: %v", err)
-	}
-
-	slog.Warn("mdm: device auth via hardware ID (no mTLS) — only acceptable in dev mode",
-		"device_id", deviceID, "hardware_id", hardwareID,
-	)
-	return deviceID, nil
+	return nil, errorf("trusted-proxy client cert header is not a valid certificate")
 }
 
 // ── Status processing ─────────────────────────────────────────────────────────
