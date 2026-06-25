@@ -62,6 +62,16 @@ export function ProfileDetailPage() {
     if (entry.data_type === 'boolean' && fallback === '') fallback = '0'
     if (entry.data_type === 'integer' && fallback === '') fallback = '0'
 
+    let allowed: PolicySetting['allowed_values'] = undefined
+    if (entry.allowed_values) {
+      try {
+        allowed = JSON.parse(entry.allowed_values)
+      } catch {
+        // Malformed catalog JSON must not crash the Add handler.
+        allowed = undefined
+      }
+    }
+
     setSettings([...settings, {
       catalog_id: entry.id,
       oma_uri: entry.oma_uri,
@@ -69,7 +79,7 @@ export function ProfileDetailPage() {
       description: entry.description || '',
       data_type: entry.data_type,
       desired_value: fallback,
-      allowed_values: entry.allowed_values ? JSON.parse(entry.allowed_values) : undefined
+      allowed_values: allowed
     }])
   }
 

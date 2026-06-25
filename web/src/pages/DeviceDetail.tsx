@@ -16,6 +16,14 @@ function timeAgo(iso: string | null) {
   return `${Math.floor(h / 24)}d ago`
 }
 
+// formatResultCode renders a SyncML status code as hex when numeric, leaving
+// already-hex or non-numeric codes intact (avoids rendering "0xNaN").
+export function formatResultCode(code: string): string {
+  if (code.startsWith('0x')) return code.toUpperCase()
+  const n = Number(code)
+  return Number.isFinite(n) && code.trim() !== '' ? `0x${n.toString(16).toUpperCase()}` : code
+}
+
 export function DeviceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -199,7 +207,7 @@ export function DeviceDetailPage() {
                                 background: cmd.status === 'failed' ? 'rgba(242,184,181,0.1)' : 'rgba(180,225,151,0.1)',
                                 color: cmd.status === 'failed' ? 'var(--md-sys-color-error)' : 'var(--md-sys-color-success)'
                               }}>
-                                {cmd.result_code.startsWith('0x') ? cmd.result_code.toUpperCase() : `0x${parseInt(cmd.result_code).toString(16).toUpperCase()}`}
+                                {formatResultCode(cmd.result_code)}
                               </span>
                             ) : '—'}
                           </td>

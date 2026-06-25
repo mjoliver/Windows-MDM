@@ -26,6 +26,10 @@ const post = <T>(path: string, body?: unknown) => req<T>('POST', path, body)
 const put  = <T>(path: string, body?: unknown) => req<T>('PUT', path, body)
 const del  = <T>(path: string, body?: unknown) => req<T>('DELETE', path, body)
 
+// enc encodes a path segment so an id containing / ? # .. cannot retarget the
+// request (path injection).
+const enc = encodeURIComponent
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface Me {
@@ -148,34 +152,34 @@ export const api = {
   // Devices
   devices: {
     list:    ()          => get<Device[]>('/devices'),
-    get:     (id: string) => get<{ device: Device; pending_commands: number }>(`/devices/${id}`),
-    unenroll:(id: string) => del<{ status: string }>(`/devices/${id}`),
-    lock:    (id: string) => post<{ status: string; queue_id: number }>(`/devices/${id}/lock`),
-    wipe:    (id: string) => post<{ status: string }>(`/devices/${id}/wipe`, { confirm: true }),
-    sync:    (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${id}/sync`),
-    getCommands: (id: string) => get<{ commands: DeviceCommand[] }>(`/devices/${id}/commands`),
+    get:     (id: string) => get<{ device: Device; pending_commands: number }>(`/devices/${enc(id)}`),
+    unenroll:(id: string) => del<{ status: string }>(`/devices/${enc(id)}`),
+    lock:    (id: string) => post<{ status: string; queue_id: number }>(`/devices/${enc(id)}/lock`),
+    wipe:    (id: string) => post<{ status: string }>(`/devices/${enc(id)}/wipe`, { confirm: true }),
+    sync:    (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/sync`),
+    getCommands: (id: string) => get<{ commands: DeviceCommand[] }>(`/devices/${enc(id)}/commands`),
   },
 
   // Profiles
   profiles: {
     list:   () => get<Profile[]>('/profiles'),
-    get:    (id: string) => get<Profile>(`/profiles/${id}`),
+    get:    (id: string) => get<Profile>(`/profiles/${enc(id)}`),
     create: (data: { name: string; description: string }) => post<Profile>('/profiles', data),
     update: (id: string, data: Partial<Profile & { settings: PolicySetting[] }>) =>
-      put<Profile>(`/profiles/${id}`, data),
-    delete: (id: string) => del<{ status: string }>(`/profiles/${id}`),
+      put<Profile>(`/profiles/${enc(id)}`, data),
+    delete: (id: string) => del<{ status: string }>(`/profiles/${enc(id)}`),
   },
 
   // Groups
   groups: {
     list:   () => get<Group[]>('/groups'),
     create: (data: { name: string; description: string }) => post<Group>('/groups', data),
-    update: (id: string, data: { name: string; description: string }) => put(`/groups/${id}`, data),
-    delete: (id: string) => del(`/groups/${id}`),
+    update: (id: string, data: { name: string; description: string }) => put(`/groups/${enc(id)}`, data),
+    delete: (id: string) => del(`/groups/${enc(id)}`),
     assignDevices: (id: string, deviceIds: string[], action: 'add'|'remove') =>
-      put(`/groups/${id}/devices`, { device_ids: deviceIds, action }),
+      put(`/groups/${enc(id)}/devices`, { device_ids: deviceIds, action }),
     assignProfiles: (id: string, profileIds: string[], action: 'add'|'remove') =>
-      put(`/groups/${id}/profiles`, { profile_ids: profileIds, action }),
+      put(`/groups/${enc(id)}/profiles`, { profile_ids: profileIds, action }),
   },
 
   // Catalog
@@ -194,6 +198,6 @@ export const api = {
   // Compliance
   compliance: {
     fleet:  () => get<FleetCompliance>('/compliance'),
-    device: (id: string) => get<DeviceCompliance>(`/compliance/${id}`),
+    device: (id: string) => get<DeviceCompliance>(`/compliance/${enc(id)}`),
   },
 }
