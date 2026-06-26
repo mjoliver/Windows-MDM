@@ -1,5 +1,5 @@
-/// <reference types="vitest/config" />
-import { defineConfig } from 'vite'
+// defineConfig from vitest/config augments vite's config type with `test`.
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
