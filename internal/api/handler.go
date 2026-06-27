@@ -131,3 +131,18 @@ var enqueueRef = struct {
 	Wipe:   mdm.EnqueueWipe,
 	Reboot: mdm.EnqueueReboot,
 }
+
+// policyOps holds injectable policy functions for testing.
+// By default they call the real policy package functions.
+var policyOps = struct {
+	ApplyDevice func(db *sql.DB, deviceID string)
+	ApplyGroup  func(db *sql.DB, groupID string)
+	ApplyProfile func(db *sql.DB, profileID string)
+}{
+	ApplyDevice:  func(db *sql.DB, deviceID string)  { /* default no-op for tests */ },
+	ApplyGroup:   func(db *sql.DB, groupID string)   { /* default no-op for tests */ },
+	ApplyProfile: func(db *sql.DB, profileID string) { /* default no-op for tests */ },
+}
+
+// keep imports used
+var _ = mdm.EnqueueGet

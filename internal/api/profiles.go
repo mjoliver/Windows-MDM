@@ -11,7 +11,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
-	"github.com/latchzmdm/latchz/internal/policy"
 )
 
 // Profile is the JSON representation of a configuration profile.
@@ -206,7 +205,7 @@ func (h *Handler) HandleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Re-apply policy to all devices in groups that use this profile
-	go policy.ApplyProfile(h.db, id)
+	go policyOps.ApplyProfile(h.db, id)
 
 	p, _ := h.loadProfile(r, id)
 	slog.Info("profile updated", "profile_id", id, "actor", actor)
