@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Shield } from 'lucide-react'
+import { safeHttpUrl } from '../format'
 
 export function LoginPage() {
   const [supportUrl, setSupportUrl] = useState<string | null>(null)
@@ -7,7 +8,7 @@ export function LoginPage() {
   useEffect(() => {
     fetch('/api/config')
       .then(r => r.json())
-      .then(d => { if (d.support_url) setSupportUrl(d.support_url) })
+      .then(d => { if (d.support_url) setSupportUrl(safeHttpUrl(d.support_url)) })
       .catch(() => {})
   }, [])
   return (

@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
@@ -19,11 +18,17 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
+	"golang.org/x/crypto/argon2"
 )
+
+// nowFunc returns the current time; overridable in tests for deterministic
+// certificate validity windows.
+var nowFunc = time.Now
 
 // CA holds the active root certificate and private key.
 type CA struct {
@@ -108,8 +113,8 @@ func (ca *CA) generate(masterSecret string) (*CA, error) {
 			Organization: []string{"Latchz MDM"},
 			CommonName:   "Latchz Root CA",
 		},
-		NotBefore:             time.Now().Add(-10 * time.Minute), // small back-date for clock skew
-		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour), // 10 years
+		NotBefore:             nowFunc().Add(-10 * time.Minute),         // small back-date for clock skew
+		NotAfter:              nowFunc().Add(10 * 365 * 24 * time.Hour), // 10 years
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -175,8 +180,10 @@ func (ca *CA) CertDER() []byte {
 }
 
 // IssueDeviceCert signs a device CSR and stores the resulting certificate.
-// Returns the signed certificate PEM.
-func (ca *CA) IssueDeviceCert(deviceID, deviceName string, csrPEM []byte) ([]byte, error) {
+// The certificate Subject is bound to the server-issued deviceID (CommonName)
+// and records the enrolling user (OrganizationalUnit) — it deliberately does
+// NOT trust the attacker-supplied CSR Subject. Returns the signed cert PEM.
+func (ca *CA) IssueDeviceCert(deviceID, enrolledBy string, csrPEM []byte) ([]byte, error) {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil {
 		return nil, fmt.Errorf("invalid CSR PEM")
@@ -194,16 +201,20 @@ func (ca *CA) IssueDeviceCert(deviceID, deviceName string, csrPEM []byte) ([]byt
 		return nil, fmt.Errorf("generating serial: %w", err)
 	}
 
+	subject := pkix.Name{
+		Organization: []string{"Latchz MDM"},
+		CommonName:   deviceID,
+	}
+	if enrolledBy != "" {
+		subject.OrganizationalUnit = []string{enrolledBy}
+	}
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		Subject: pkix.Name{
-			Organization: []string{"Latchz MDM"},
-			CommonName:   csr.Subject.CommonName,
-		},
-		NotBefore:   time.Now().Add(-10 * time.Minute),
-		NotAfter:    time.Now().Add(365 * 24 * time.Hour), // 1 year, rotated on re-enrollment
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		Subject:      subject,
+		NotBefore:    nowFunc().Add(-10 * time.Minute),
+		NotAfter:     nowFunc().Add(365 * 24 * time.Hour), // 1 year, rotated on re-enrollment
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, csr.PublicKey, ca.key)
@@ -237,7 +248,7 @@ func (ca *CA) IssueDeviceCert(deviceID, deviceName string, csrPEM []byte) ([]byt
 
 	slog.Info("issued device certificate",
 		"device_id", deviceID,
-		"device_name", deviceName,
+		"enrolled_by", enrolledBy,
 		"thumbprint", thumbprint,
 		"expires", cert.NotAfter.Format(time.RFC3339),
 	)
@@ -245,9 +256,9 @@ func (ca *CA) IssueDeviceCert(deviceID, deviceName string, csrPEM []byte) ([]byt
 }
 
 // IssueDeviceCertFromDER signs device CSR bytes (DER) directly and stores the result.
-func (ca *CA) IssueDeviceCertFromDER(deviceID, deviceName string, csrDER []byte) ([]byte, error) {
+func (ca *CA) IssueDeviceCertFromDER(deviceID, enrolledBy string, csrDER []byte) ([]byte, error) {
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
-	return ca.IssueDeviceCert(deviceID, deviceName, csrPEM)
+	return ca.IssueDeviceCert(deviceID, enrolledBy, csrPEM)
 }
 
 // RevokeDeviceCerts marks all certificates for a device as revoked.
@@ -272,11 +283,35 @@ func newID() string {
 	return uuid.New().String()
 }
 
-// ── AES-256-GCM Helpers ───────────────────────────────────────────────────────
+// ── Vault key encryption (AES-256-GCM with an argon2id-derived key) ───────────
+//
+// The AES key is derived from the operator's master secret with argon2id using a
+// random per-record salt (NOT a bare SHA-256, which is instant to brute-force).
+// Stored format: "v2:" + hex(salt || nonce || ciphertext).
+
+const (
+	vaultFormatV2 = "v2"
+	kdfSaltLen    = 16
+	kdfTime       = 2
+	kdfMemoryKiB  = 64 * 1024 // 64 MiB
+	kdfThreads    = 4
+	kdfKeyLen     = 32 // AES-256
+
+	// MinMasterSecretLen is the minimum acceptable master-secret length. argon2id
+	// raises the cost of a weak secret, but we still refuse trivially short ones.
+	MinMasterSecretLen = 16
+)
+
+func deriveVaultKey(masterSecret string, salt []byte) []byte {
+	return argon2.IDKey([]byte(masterSecret), salt, kdfTime, kdfMemoryKiB, kdfThreads, kdfKeyLen)
+}
 
 func encryptKey(data []byte, masterSecret string) (string, error) {
-	hash := sha256.Sum256([]byte(masterSecret))
-	block, err := aes.NewCipher(hash[:])
+	salt := make([]byte, kdfSaltLen)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(deriveVaultKey(masterSecret, salt))
 	if err != nil {
 		return "", err
 	}
@@ -288,17 +323,24 @@ func encryptKey(data []byte, masterSecret string) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-	ciphertext := gcm.Seal(nonce, nonce, data, nil)
-	return hex.EncodeToString(ciphertext), nil
+	blob := gcm.Seal(append(salt, nonce...), nonce, data, nil)
+	return vaultFormatV2 + ":" + hex.EncodeToString(blob), nil
 }
 
-func decryptKey(encryptedHex string, masterSecret string) ([]byte, error) {
-	encrypted, err := hex.DecodeString(encryptedHex)
+func decryptKey(encoded string, masterSecret string) ([]byte, error) {
+	version, hexBlob, ok := strings.Cut(encoded, ":")
+	if !ok || version != vaultFormatV2 {
+		return nil, fmt.Errorf("unsupported CA key vault format (re-provision the CA on a fresh database)")
+	}
+	blob, err := hex.DecodeString(hexBlob)
 	if err != nil {
 		return nil, fmt.Errorf("invalid hex string: %w", err)
 	}
-	hash := sha256.Sum256([]byte(masterSecret))
-	block, err := aes.NewCipher(hash[:])
+	if len(blob) < kdfSaltLen {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	salt, rest := blob[:kdfSaltLen], blob[kdfSaltLen:]
+	block, err := aes.NewCipher(deriveVaultKey(masterSecret, salt))
 	if err != nil {
 		return nil, err
 	}
@@ -306,10 +348,10 @@ func decryptKey(encryptedHex string, masterSecret string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(encrypted) < gcm.NonceSize() {
+	if len(rest) < gcm.NonceSize() {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
-	nonce, ciphertext := encrypted[:gcm.NonceSize()], encrypted[gcm.NonceSize():]
+	nonce, ciphertext := rest[:gcm.NonceSize()], rest[gcm.NonceSize():]
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 

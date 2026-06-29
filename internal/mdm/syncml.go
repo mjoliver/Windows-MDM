@@ -2,35 +2,36 @@
 // Reference: OMA-ERELD-DM-V1_2, MS-MDM spec
 //
 // Protocol summary:
-//   Device → POST /omadm  (SyncML XML, mTLS with device cert)
-//   Pane   → SyncML response (status ACKs + pending commands)
-//   Device executes commands, reports results in next check-in
+//
+//	Device → POST /omadm  (SyncML XML, mTLS with device cert)
+//	Pane   → SyncML response (status ACKs + pending commands)
+//	Device executes commands, reports results in next check-in
 package mdm
 
 import "encoding/xml"
 
 const (
-	syncMLNS   = "SYNCML:SYNCML1.2"
-	syncMLDTD  = "1.2"
+	syncMLNS    = "SYNCML:SYNCML1.2"
+	syncMLDTD   = "1.2"
 	syncMLProto = "DM/1.2"
-	metInfNS   = "syncml:metinf"
+	metInfNS    = "syncml:metinf"
 
 	// Alert codes — what the device is telling us
-	AlertCodeSession       = "1201" // Generic DM session
+	AlertCodeSession        = "1201" // Generic DM session
 	AlertCodeClientInitMgmt = "1202" // Client-initiated management
-	AlertCodeFirstSession  = "1200" // First session after enrollment (bootstrap)
+	AlertCodeFirstSession   = "1200" // First session after enrollment (bootstrap)
 
 	// Status codes
-	StatusOK               = "200"
-	StatusCreated          = "201"
-	StatusAccepted         = "202"
-	StatusNotModified      = "304"
-	StatusBadRequest       = "400"
-	StatusUnauthorized     = "401"
-	StatusNotFound         = "404"
-	StatusCommandFailed    = "500"
-	StatusNotExecuted      = "215"
-	StatusAtomicFailed     = "507"
+	StatusOK            = "200"
+	StatusCreated       = "201"
+	StatusAccepted      = "202"
+	StatusNotModified   = "304"
+	StatusBadRequest    = "400"
+	StatusUnauthorized  = "401"
+	StatusNotFound      = "404"
+	StatusCommandFailed = "500"
+	StatusNotExecuted   = "215"
+	StatusAtomicFailed  = "507"
 )
 
 // SyncML is the root element of every OMA-DM message.
@@ -43,13 +44,13 @@ type SyncML struct {
 
 // SyncHdr identifies the message session, source and destination.
 type SyncHdr struct {
-	VerDTD    string  `xml:"VerDTD"`   // Always "1.2"
-	VerProto  string  `xml:"VerProto"` // Always "DM/1.2"
-	SessionID string  `xml:"SessionID"`
-	MsgID     string  `xml:"MsgID"`
-	Target    LocURI  `xml:"Target"`
-	Source    LocURI  `xml:"Source"`
-	RespURI   string  `xml:"RespURI,omitempty"` // device tells us where to respond
+	VerDTD    string `xml:"VerDTD"`   // Always "1.2"
+	VerProto  string `xml:"VerProto"` // Always "DM/1.2"
+	SessionID string `xml:"SessionID"`
+	MsgID     string `xml:"MsgID"`
+	Target    LocURI `xml:"Target"`
+	Source    LocURI `xml:"Source"`
+	RespURI   string `xml:"RespURI,omitempty"` // device tells us where to respond
 }
 
 // LocURI identifies a party (device or server) by URI.
@@ -60,10 +61,10 @@ type LocURI struct {
 // SyncBody contains the sequence of commands and status responses.
 type SyncBody struct {
 	// Inbound from device
-	Alerts  []Alert  `xml:"Alert"`
-	Statuses []Status `xml:"Status"`
-	Results []Results `xml:"Results"`
-	Gets    []Get     `xml:"Get"`
+	Alerts   []Alert   `xml:"Alert"`
+	Statuses []Status  `xml:"Status"`
+	Results  []Results `xml:"Results"`
+	Gets     []Get     `xml:"Get"`
 
 	// Outbound to device
 	Commands []interface{} `xml:",omitempty"` // mix of Get, Replace, Exec, Add, Delete
@@ -73,20 +74,20 @@ type SyncBody struct {
 
 // Alert is sent by the device to indicate session type or important events.
 type Alert struct {
-	CmdID string   `xml:"CmdID"`
-	Data  string   `xml:"Data"` // alert code e.g. "1201"
-	Items []Item   `xml:"Item,omitempty"`
+	CmdID string `xml:"CmdID"`
+	Data  string `xml:"Data"` // alert code e.g. "1201"
+	Items []Item `xml:"Item,omitempty"`
 }
 
 // Status is an acknowledgement of a previous command or header.
 type Status struct {
-	MsgRef    string `xml:"MsgRef"`    // which message this ACKs
-	CmdRef    string `xml:"CmdRef"`    // which command within that message
+	MsgRef    string `xml:"MsgRef"` // which message this ACKs
+	CmdRef    string `xml:"CmdRef"` // which command within that message
 	CmdID     string `xml:"CmdID"`
-	Cmd       string `xml:"Cmd"`       // command name: "SyncHdr", "Get", "Replace", etc.
+	Cmd       string `xml:"Cmd"` // command name: "SyncHdr", "Get", "Replace", etc.
 	TargetRef string `xml:"TargetRef,omitempty"`
 	SourceRef string `xml:"SourceRef,omitempty"`
-	Data      string `xml:"Data"`      // status code: "200", "404", etc.
+	Data      string `xml:"Data"` // status code: "200", "404", etc.
 }
 
 // Results carries the device's responses to Get commands.
@@ -99,10 +100,10 @@ type Results struct {
 
 // Item is a leaf element containing an OMA-URI address and data.
 type Item struct {
-	Source *LocURI  `xml:"Source,omitempty"`
-	Target *LocURI  `xml:"Target,omitempty"`
-	Meta   *Meta    `xml:"Meta,omitempty"`
-	Data   string   `xml:"Data,omitempty"`
+	Source *LocURI `xml:"Source,omitempty"`
+	Target *LocURI `xml:"Target,omitempty"`
+	Meta   *Meta   `xml:"Meta,omitempty"`
+	Data   string  `xml:"Data,omitempty"`
 }
 
 // Meta describes the format and type of item data.
@@ -163,15 +164,17 @@ const (
 	OMADevInfoLang  = "./DevInfo/Lang"
 
 	// DevDetail — OS and hardware detail
-	OMADevDetailSwV           = "./DevDetail/SwV"    // OS version e.g. "10.0.22621.1"
-	OMADevDetailHwV           = "./DevDetail/HwV"    // BIOS/firmware version
-	OMADevDetailOSPlatform    = "./DevDetail/Ext/Microsoft/OSPlatform"
-	OMADevDetailOSBuild       = "./DevDetail/Ext/Microsoft/OSBuild"
-	OMADevDetailComputerName  = "./DevDetail/Ext/Microsoft/DNSComputerName"
-	OMADevDetailFreeStorage   = "./DevDetail/Ext/Microsoft/LocalTime"
+	OMADevDetailSwV          = "./DevDetail/SwV" // OS version e.g. "10.0.22621.1"
+	OMADevDetailHwV          = "./DevDetail/HwV" // BIOS/firmware version
+	OMADevDetailOSPlatform   = "./DevDetail/Ext/Microsoft/OSPlatform"
+	OMADevDetailOSBuild      = "./DevDetail/Ext/Microsoft/OSBuild"
+	OMADevDetailComputerName = "./DevDetail/Ext/Microsoft/DNSComputerName"
+	// OMADevDetailLocalTime is the device local time node (the constant was
+	// previously mislabelled "FreeStorage" while pointing at LocalTime).
+	OMADevDetailLocalTime = "./DevDetail/Ext/Microsoft/LocalTime"
 
 	// DMClient — management server configuration
-	OMADMClientPollFrequency  = "./Vendor/MSFT/DMClient/Provider/PaneMDM/Poll/IntervalForRemainingScheduledRetries"
+	OMADMClientPollFrequency = "./Vendor/MSFT/DMClient/Provider/PaneMDM/Poll/IntervalForRemainingScheduledRetries"
 
 	// Policy CSPs
 	OMAPolicyPrefix = "./Device/Vendor/MSFT/Policy/Config"

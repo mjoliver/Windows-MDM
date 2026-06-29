@@ -4,6 +4,7 @@ import { Monitor, ArrowLeft, Lock, Trash2, RefreshCw, HelpCircle } from 'lucide-
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
 import { api, type Device, type DeviceCompliance, type DeviceCommand } from '../api'
+import { formatResultCode } from '../format'
 
 function timeAgo(iso: string | null) {
   if (!iso) return 'Never'
@@ -199,7 +200,7 @@ export function DeviceDetailPage() {
                                 background: cmd.status === 'failed' ? 'rgba(242,184,181,0.1)' : 'rgba(180,225,151,0.1)',
                                 color: cmd.status === 'failed' ? 'var(--md-sys-color-error)' : 'var(--md-sys-color-success)'
                               }}>
-                                {cmd.result_code.startsWith('0x') ? cmd.result_code.toUpperCase() : `0x${parseInt(cmd.result_code).toString(16).toUpperCase()}`}
+                                {formatResultCode(cmd.result_code)}
                               </span>
                             ) : '—'}
                           </td>

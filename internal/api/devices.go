@@ -93,8 +93,8 @@ func (h *Handler) HandleGetDevice(w http.ResponseWriter, r *http.Request) {
 	).Scan(&pendingCmds)
 
 	respondOK(w, map[string]interface{}{
-		"device":               d,
-		"pending_commands":     pendingCmds,
+		"device":           d,
+		"pending_commands": pendingCmds,
 	})
 }
 
@@ -289,7 +289,7 @@ func (h *Handler) HandleGetDeviceCommands(w http.ResponseWriter, r *http.Request
 		); err != nil {
 			continue
 		}
-		
+
 		// Add friendly info for common SyncML errors
 		if c.ResultCode == "406" {
 			c.ResultInfo = "Not Acceptable (Device security policy or hardware restriction)"

@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -20,7 +22,7 @@ import (
 //   - The cache directory must be writable
 //
 // Pane will start an HTTP-01 challenge server on :80 alongside the main HTTPS server.
-func buildAutoTLSConfig(domain, cacheDir string) (*tls.Config, http.Handler, error) {
+func buildAutoTLSConfig(domain, cacheDir string, clientCAs *x509.CertPool) (*tls.Config, http.Handler, error) {
 	if domain == "" {
 		return nil, nil, fmt.Errorf("server.domain is required for tls.mode=auto")
 	}
@@ -39,6 +41,10 @@ func buildAutoTLSConfig(domain, cacheDir string) (*tls.Config, http.Handler, err
 	tlsCfg := manager.TLSConfig()
 	// Require TLS 1.2+ — Let's Encrypt certs work fine with this
 	tlsCfg.MinVersion = tls.VersionTLS12
+	// Accept (and verify) a device client certificate when offered, so the
+	// OMA-DM endpoint can authenticate enrolled devices via direct mTLS.
+	tlsCfg.ClientCAs = clientCAs
+	tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
 
 	slog.Info("auto-TLS: Let's Encrypt autocert configured",
 		"domain", domain,
@@ -59,11 +65,15 @@ func (s *Server) runAutoTLS(ctx context.Context, tlsCfg *tls.Config, acmeHandler
 		Handler: acmeHandler,
 	}
 
-	// :443 — main HTTPS server
+	// :443 — main HTTPS server. Timeouts bound slow-client (Slowloris) attacks.
 	https443 := &http.Server{
-		Addr:      ":443",
-		Handler:   s.mux,
-		TLSConfig: tlsCfg,
+		Addr:              ":443",
+		Handler:           s.mux,
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	slog.Info("Latchz MDM starting",

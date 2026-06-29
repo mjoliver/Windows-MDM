@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS ux_compliance_records_device_catalog;

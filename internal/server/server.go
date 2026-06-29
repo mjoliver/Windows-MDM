@@ -4,7 +4,9 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -21,47 +23,104 @@ import (
 	"github.com/latchzmdm/latchz/internal/auth"
 	"github.com/latchzmdm/latchz/internal/config"
 	"github.com/latchzmdm/latchz/internal/db"
+	"github.com/latchzmdm/latchz/internal/devauth"
 	"github.com/latchzmdm/latchz/internal/enrollment"
 	"github.com/latchzmdm/latchz/internal/mdm"
 	"github.com/latchzmdm/latchz/internal/pki"
 )
 
+// authenticator is the auth-provider contract the server depends on. Concrete
+// implementations (OIDC, builtin) mount their own login endpoints and validate
+// sessions + enrollment tokens. Keeping this an interface lets the server fail
+// closed when no provider is configured rather than wiring a permissive bypass.
+type authenticator interface {
+	// MountRoutes registers the provider's login/callback/logout endpoints.
+	MountRoutes(r chi.Router)
+	// SessionFromRequest validates the session cookie and returns the identity.
+	SessionFromRequest(r *http.Request) (email, role string, err error)
+	// ValidateEnrollmentToken validates a device enrollment token and returns
+	// the authenticated user's email.
+	ValidateEnrollmentToken(token string) (email string, err error)
+}
+
 // Server is the Pane HTTPS server.
 type Server struct {
-	cfg          *config.Config
-	db           *db.DB
-	ca           *pki.CA
-	authProvider *auth.Provider
-	enrollment   *enrollment.Handler
-	mdm          *mdm.Handler
-	api          *api.Handler
-	mux          *chi.Mux
+	cfg        *config.Config
+	db         *db.DB
+	ca         *pki.CA
+	auth       authenticator
+	enrollment *enrollment.Handler
+	mdm        *mdm.Handler
+	api        *api.Handler
+	mux        *chi.Mux
 }
 
 // New creates and configures the server and all its routes.
 func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
-	// Generate a random JWT secret from a fresh key on each start.
-	// In production, set PANE_AUTH_JWT_SECRET to a stable value.
-	jwtSecret := make([]byte, 64)
-	if _, err := rand.Read(jwtSecret); err != nil {
-		return nil, fmt.Errorf("generating jwt secret: %w", err)
+	// JWT secret signs session + enrollment tokens. Prefer a stable, operator-
+	// supplied secret (auth.jwt_secret / LATCHZ_AUTH_JWT_SECRET) so sessions
+	// survive restarts and are valid across horizontally-scaled instances.
+	// Only fall back to a random per-process secret in dev, with a loud warning.
+	var jwtSecret []byte
+	if s := cfg.Auth.JWTSecret; s != "" {
+		jwtSecret = []byte(s)
+	} else {
+		jwtSecret = make([]byte, 64)
+		if _, err := rand.Read(jwtSecret); err != nil {
+			return nil, fmt.Errorf("generating jwt secret: %w", err)
+		}
+		slog.Warn("auth.jwt_secret is not set — using a random per-process secret. " +
+			"Sessions will be invalidated on restart and will not work across multiple instances. " +
+			"Set LATCHZ_AUTH_JWT_SECRET to a stable 32+ byte value in production.")
 	}
 
-	base := "https://" + cfg.Server.Domain
+	authProvider, err := buildAuthenticator(cfg, database.DB, jwtSecret)
+	if err != nil {
+		return nil, err
+	}
 
-	// Initialise the OIDC auth provider (only when provider=oidc)
-	var authProvider *auth.Provider
-	if cfg.Auth.Provider == "oidc" {
-		var err error
-		authProvider, err = auth.New(
+	// Trusted-proxy client-cert header (only honoured when explicitly enabled,
+	// for tls.mode=none behind a terminating mTLS proxy).
+	proxyCertHeader := ""
+	if cfg.TLS.TrustProxyClientCert {
+		proxyCertHeader = cfg.TLS.ClientCertHeader
+	}
+
+	enrollHandler := enrollment.NewHandler(cfg.Server.Domain, cfg.Server.EnrollmentDomain)
+	mdmHandler := mdm.NewHandler(database.DB, ca.TLSPool(), cfg.Server.Domain, proxyCertHeader)
+	apiHandler := api.NewHandler(database.DB)
+
+	s := &Server{
+		cfg:        cfg,
+		db:         database,
+		ca:         ca,
+		auth:       authProvider,
+		enrollment: enrollHandler,
+		mdm:        mdmHandler,
+		api:        apiHandler,
+		mux:        chi.NewRouter(),
+	}
+	s.routes()
+	return s, nil
+}
+
+// buildAuthenticator constructs the configured auth provider. It fails closed:
+// an unset or unimplemented provider returns an error rather than a no-auth
+// server. Config validation already rejects these, but this is defence in depth.
+func buildAuthenticator(cfg *config.Config, database *sql.DB, jwtSecret []byte) (authenticator, error) {
+	base := "https://" + cfg.Server.Domain
+	switch cfg.Auth.Provider {
+	case "oidc":
+		p, err := auth.New(
 			context.Background(),
-			database.DB,
+			database,
 			cfg.Auth.OIDC.Issuer,
 			cfg.Auth.OIDC.ClientID,
 			cfg.Auth.OIDC.ClientSecret,
 			base,
 			cfg.Auth.OIDC.AllowedDomains,
 			jwtSecret,
+			cfg.Auth.BootstrapAdmin,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("initialising OIDC provider: %w", err)
@@ -70,24 +129,34 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 			"issuer", cfg.Auth.OIDC.Issuer,
 			"allowed_domains", cfg.Auth.OIDC.AllowedDomains,
 		)
+		return p, nil
+	case "builtin":
+		p, err := auth.NewBuiltin(database, jwtSecret, base, cfg.Auth.BootstrapAdmin)
+		if err != nil {
+			return nil, fmt.Errorf("initialising builtin auth provider: %w", err)
+		}
+		slog.Info("builtin auth provider initialised", "bootstrap_admin", cfg.Auth.BootstrapAdmin)
+		return p, nil
+	default:
+		return nil, fmt.Errorf("no usable auth provider configured (provider=%q) — refusing to start", cfg.Auth.Provider)
 	}
+}
 
-	enrollHandler := enrollment.NewHandler(cfg.Server.Domain, cfg.Server.EnrollmentDomain)
-	mdmHandler := mdm.NewHandler(database.DB, ca.TLSPool(), cfg.Server.Domain)
-	apiHandler := api.NewHandler(database.DB)
+// Handler exposes the configured router so tests can drive the full route
+// table with httptest without standing up a TLS listener.
+func (s *Server) Handler() http.Handler {
+	return s.mux
+}
 
-	s := &Server{
-		cfg:          cfg,
-		db:           database,
-		ca:           ca,
-		authProvider: authProvider,
-		enrollment:   enrollHandler,
-		mdm:          mdmHandler,
-		api:          apiHandler,
-		mux:          chi.NewRouter(),
-	}
-	s.routes()
-	return s, nil
+// behindProxy reports whether the server runs behind a trusted reverse proxy and
+// may therefore trust forwarded client-IP headers. True when explicitly
+// configured (server.trusted_proxy), or implied by TLS being terminated upstream
+// (tls.mode=none) or a forwarded client cert being trusted. Operators whose
+// origin terminates TLS itself but sits behind an L7 proxy/load balancer that
+// sets X-Forwarded-For must set server.trusted_proxy so the rate limiters key on
+// the real client IP rather than collapsing every client into one bucket.
+func (s *Server) behindProxy() bool {
+	return s.cfg.Server.TrustedProxy || s.cfg.TLS.Mode == "none" || s.cfg.TLS.TrustProxyClientCert
 }
 
 // routes registers all HTTP handlers.
@@ -96,9 +165,19 @@ func (s *Server) routes() {
 
 	// Standard middleware
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// Only trust client-supplied forwarding headers (X-Forwarded-For / X-Real-IP)
+	// when actually behind a trusted terminating proxy. Otherwise a client could
+	// spoof its source IP to evade the rate limiters below.
+	if s.behindProxy() {
+		r.Use(middleware.RealIP)
+	}
 	r.Use(s.loggingMiddleware)
 	r.Use(middleware.Recoverer)
+	r.Use(securityHeaders)
+
+	// Throttle sensitive unauthenticated endpoints.
+	authLimiter := newRateLimiter(20, time.Minute)
+	emergencyLimiter := newRateLimiter(5, time.Minute)
 
 	// ── MDM Enrollment endpoints ──────────────────────────────────────────
 	// These are hit by the Windows MDM client during enrollment (MS-MDE2)
@@ -108,23 +187,21 @@ func (s *Server) routes() {
 		// Generic discovery (some Windows versions use this path)
 		r.Get("/Enrollment.svc", s.enrollment.HandleDiscovery)
 	})
-	
+
 	// Legacy / Alternate default autodiscovery path
 	r.Route("/EnrollmentServer", func(r chi.Router) {
 		r.Post("/Discovery.svc", s.enrollment.HandleDiscovery)
 		r.Get("/Discovery.svc", s.enrollment.HandleDiscovery)
 	})
 
-	// OIDC auth callback (the login page Windows opens for user auth)
-	if s.authProvider != nil {
-		r.Get("/auth/login", s.authProvider.HandleLogin)
-		r.Get("/auth/callback", s.authProvider.HandleCallback)
-		r.Post("/auth/logout", s.authProvider.HandleLogout)
-	} else {
-		r.Get("/auth/login", s.handleAuthLogin)
-		r.Get("/auth/callback", s.handleAuthCallback)
-		r.Post("/auth/logout", s.handleAuthLogout)
-	}
+	// Auth provider login/callback/logout endpoints (the page Windows opens for
+	// user auth, and the dashboard login). The provider is always configured —
+	// the server refuses to start otherwise. Rate-limited to slow credential
+	// stuffing / brute force.
+	r.Group(func(gr chi.Router) {
+		gr.Use(authLimiter.middleware)
+		s.auth.MountRoutes(gr)
+	})
 
 	// MS-XCEP: certificate enrollment policy
 	r.Post("/xcep", s.enrollment.HandleXCEP(s.ca))
@@ -132,14 +209,10 @@ func (s *Server) routes() {
 	// Root CA download (so admins can install the CA cert on trusted devices)
 	r.Get("/pki/ca.pem", s.enrollment.HandleCADownload(s.ca))
 
-	// MS-WSTEP: certificate enrollment (device gets its client cert here)
-	var validateToken func(string) (string, error)
-	if s.authProvider != nil {
-		validateToken = s.authProvider.ValidateEnrollmentToken
-	} else {
-		validateToken = func(t string) (string, error) { return "builtin@pane.local", nil }
-	}
-	r.Post("/wstep", s.enrollment.HandleWSTEP(s.ca, s.db.DB, validateToken))
+	// MS-WSTEP: certificate enrollment (device gets its client cert here). The
+	// enrollment token is always validated by the real auth provider — there is
+	// no accept-any-token bypass.
+	r.Post("/wstep", s.enrollment.HandleWSTEP(s.ca, s.db.DB, s.auth.ValidateEnrollmentToken))
 
 	// ── OMA-DM endpoint ─────────────────────────────────────────────────────
 	// Enrolled devices check in here periodically (SyncML over HTTPS + mTLS)
@@ -155,19 +228,24 @@ func (s *Server) routes() {
 			})
 		})
 
-		// All other API routes require authentication
+		// All other API routes require authentication. Read endpoints are open to
+		// any authenticated user; mutating/destructive endpoints additionally
+		// require an admin role (RBAC).
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
+
+			// admin gates state-changing and destructive operations.
+			admin := s.requireRole("admin", "super_admin")
 
 			r.Get("/me", s.api.HandleMe)
 
 			// Devices
 			r.Get("/devices", s.api.HandleListDevices)
 			r.Get("/devices/{id}", s.api.HandleGetDevice)
-			r.Delete("/devices/{id}", s.api.HandleUnenrollDevice)
-			r.Post("/devices/{id}/lock", s.api.HandleLockDevice)
-			r.Post("/devices/{id}/wipe", s.api.HandleWipeDevice)
-			r.Post("/devices/{id}/sync", s.api.HandleSyncDevice)
+			r.With(admin).Delete("/devices/{id}", s.api.HandleUnenrollDevice)
+			r.With(admin).Post("/devices/{id}/lock", s.api.HandleLockDevice)
+			r.With(admin).Post("/devices/{id}/wipe", s.api.HandleWipeDevice)
+			r.With(admin).Post("/devices/{id}/sync", s.api.HandleSyncDevice)
 			r.Get("/devices/{id}/commands", s.api.HandleGetDeviceCommands)
 
 			// Policy catalog (order matters: specific before param)
@@ -177,18 +255,18 @@ func (s *Server) routes() {
 
 			// Configuration profiles
 			r.Get("/profiles", s.api.HandleListProfiles)
-			r.Post("/profiles", s.api.HandleCreateProfile)
+			r.With(admin).Post("/profiles", s.api.HandleCreateProfile)
 			r.Get("/profiles/{id}", s.api.HandleGetProfile)
-			r.Put("/profiles/{id}", s.api.HandleUpdateProfile)
-			r.Delete("/profiles/{id}", s.api.HandleDeleteProfile)
+			r.With(admin).Put("/profiles/{id}", s.api.HandleUpdateProfile)
+			r.With(admin).Delete("/profiles/{id}", s.api.HandleDeleteProfile)
 
 			// Device groups
 			r.Get("/groups", s.api.HandleListGroups)
-			r.Post("/groups", s.api.HandleCreateGroup)
-			r.Put("/groups/{id}", s.api.HandleUpdateGroup)
-			r.Delete("/groups/{id}", s.api.HandleDeleteGroup)
-			r.Put("/groups/{id}/devices", s.api.HandleAssignDeviceToGroup)
-			r.Put("/groups/{id}/profiles", s.api.HandleAssignProfileToGroup)
+			r.With(admin).Post("/groups", s.api.HandleCreateGroup)
+			r.With(admin).Put("/groups/{id}", s.api.HandleUpdateGroup)
+			r.With(admin).Delete("/groups/{id}", s.api.HandleDeleteGroup)
+			r.With(admin).Put("/groups/{id}/devices", s.api.HandleAssignDeviceToGroup)
+			r.With(admin).Put("/groups/{id}/profiles", s.api.HandleAssignProfileToGroup)
 
 			// Compliance
 			r.Get("/compliance", s.api.HandleFleetCompliance)
@@ -199,8 +277,9 @@ func (s *Server) routes() {
 		})
 	})
 
-	// Emergency access (rescue for lockouts)
-	r.Get("/emergency", s.handleEmergencyAccess)
+	// Emergency access (rescue for lockouts) — strictly rate-limited to make the
+	// token infeasible to brute-force.
+	r.With(emergencyLimiter.middleware).Get("/emergency", s.handleEmergencyAccess)
 
 	// ── Admin dashboard (React SPA) ───────────────────────────────────────
 	// TODO Phase 4: embed React build and serve here
@@ -219,10 +298,12 @@ func (s *Server) Run(ctx context.Context) error {
 		tlsCfg, acmeHandler, err := buildAutoTLSConfig(
 			s.cfg.Server.Domain,
 			s.cfg.TLS.CacheDir,
+			s.ca.TLSPool(),
 		)
 		if err != nil {
 			return fmt.Errorf("building auto-TLS config: %w", err)
 		}
+		tlsCfg.VerifyPeerCertificate = s.verifyPeerCert
 		return s.runAutoTLS(ctx, tlsCfg, acmeHandler)
 	}
 
@@ -330,10 +411,11 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 		slog.Warn("using self-signed TLS certificate (not suitable for production)",
 			"domain", s.cfg.Server.Domain)
 		return &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-			ClientCAs:    s.ca.TLSPool(),
-			ClientAuth:   tls.VerifyClientCertIfGiven,
+			Certificates:          []tls.Certificate{cert},
+			MinVersion:            tls.VersionTLS12,
+			ClientCAs:             s.ca.TLSPool(),
+			ClientAuth:            tls.VerifyClientCertIfGiven,
+			VerifyPeerCertificate: s.verifyPeerCert,
 		}, nil
 
 	case "manual":
@@ -345,10 +427,11 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 			return nil, fmt.Errorf("loading TLS cert/key: %w", err)
 		}
 		return &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-			ClientCAs:    s.ca.TLSPool(),
-			ClientAuth:   tls.VerifyClientCertIfGiven,
+			Certificates:          []tls.Certificate{cert},
+			MinVersion:            tls.VersionTLS12,
+			ClientCAs:             s.ca.TLSPool(),
+			ClientAuth:            tls.VerifyClientCertIfGiven,
+			VerifyPeerCertificate: s.verifyPeerCert,
 		}, nil
 
 	case "auto":
@@ -384,17 +467,15 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.authProvider == nil {
-			// No auth configured — allow in dev (log a warning)
-			slog.Warn("requireAuth: no auth provider configured, allowing request", "path", r.URL.Path)
-			next.ServeHTTP(w, r)
+		// Fail closed: if no auth provider is wired, reject rather than allow.
+		// (The server refuses to start without one; this is defence in depth.)
+		if s.auth == nil {
+			respondJSON(w, http.StatusServiceUnavailable, `{"error":"authentication not configured"}`)
 			return
 		}
-		email, role, err := s.authProvider.SessionFromRequest(r)
+		email, role, err := s.auth.SessionFromRequest(r)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":"unauthenticated"}`))
+			respondJSON(w, http.StatusUnauthorized, `{"error":"unauthenticated"}`)
 			return
 		}
 		// Attach email + role to request context for downstream handlers
@@ -405,40 +486,78 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// requireRole wraps requireAuth and additionally enforces that the session
+// carries one of the allowed roles. Use on destructive/privileged endpoints.
+func (s *Server) requireRole(allowed ...string) func(http.Handler) http.Handler {
+	allow := make(map[string]bool, len(allowed))
+	for _, r := range allowed {
+		allow[r] = true
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			role := roleFromContext(r.Context())
+			if !allow[role] {
+				respondJSON(w, http.StatusForbidden, `{"error":"forbidden: insufficient role"}`)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func respondJSON(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
+}
+
 // ── Remaining handlers ────────────────────────────────────────────────────────
 
-// handleAuthLogin / Callback / Logout are fallbacks when no auth provider is configured.
-func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
-	// Provide a bypass for the Windows MDM Federated WebView during local testing.
-	// This JavaScript instantly sets the MS-MDE2 enrollment token and closes the window.
-	html := `<!DOCTYPE html>
-<html>
-<head><title>Latchz MDM Enrollment</title></head>
-<body>
-	<h2>Authenticating...</h2>
-	<script>
-		try {
-			// Set the token payload
-			window.external.Property("token") = "dev_token:test@mjo.gg";
-			// Force the WebView to close and execute WSTEP
-			window.external.FinalNext();
-		} catch (e) {
-			document.body.innerHTML += "<br>Wait, please close this window manually.";
-		}
-	</script>
-</body>
-</html>`
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
+// verifyPeerCert is a tls.Config VerifyPeerCertificate hook that rejects a
+// presented client certificate at the handshake if it has been revoked. Client
+// certs are optional (VerifyClientCertIfGiven), so an absent/unknown cert is
+// allowed here and authorisation is left to the application layer.
+func (s *Server) verifyPeerCert(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+	if len(rawCerts) == 0 {
+		return nil
+	}
+	cert, err := x509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return nil // malformed; the app layer will reject it
+	}
+	var revoked int
+	err = s.db.DB.QueryRow(db.Rebind(
+		`SELECT revoked FROM certificates WHERE thumbprint = ? AND cert_type = 'device'`), devauth.Thumbprint(cert)).Scan(&revoked)
+	if err == sql.ErrNoRows || err != nil {
+		return nil
+	}
+	if revoked == 1 {
+		return fmt.Errorf("client certificate has been revoked")
+	}
+	return nil
 }
-func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "auth: no provider configured", http.StatusServiceUnavailable)
-}
-func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/", http.StatusFound)
+
+// securityHeaders sets baseline response hardening headers on every response.
+// A strict CSP is intentionally NOT set globally because the enrollment callback
+// pages rely on inline scripts required by the Windows WebAuthBroker; the SPA
+// gets its own CSP in handleDashboard.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	// CSP scoped to the SPA. 'unsafe-inline' for styles covers React inline
+	// style attributes; scripts are restricted to same-origin bundle files.
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "+
+			"script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
 	webHandler().ServeHTTP(w, r)
 }
 
@@ -448,17 +567,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEmergencyAccess(w http.ResponseWriter, r *http.Request) {
+	expected := s.cfg.Server.EmergencyToken
 	token := r.URL.Query().Get("token")
-	if token == "" || token != s.cfg.Server.EmergencyToken {
+	// Disabled unless an emergency token is configured. Use a constant-time
+	// comparison to avoid leaking the token via timing.
+	if expected == "" || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
 		http.Error(w, "invalid or missing emergency token", http.StatusUnauthorized)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"emergency access granted"}`))
-}
-
-func (s *Server) notImpl(w http.ResponseWriter) {
-	http.Error(w, "not yet implemented", http.StatusNotImplemented)
 }
 
 // ── Context keys ──────────────────────────────────────────────────────────────

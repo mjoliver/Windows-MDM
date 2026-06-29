@@ -1,11 +1,13 @@
 package enrollment
 
 import (
+	"context"
 	"crypto/sha1"
 	"database/sql"
 	"encoding/base64"
 	"encoding/pem"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,16 +16,58 @@ import (
 
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
+	"github.com/latchzmdm/latchz/internal/devauth"
 	"github.com/latchzmdm/latchz/internal/pki"
 )
 
+// errHardwareIDTaken indicates an enrollment tried to re-use a hardware_id that
+// is already registered to a different user.
+var errHardwareIDTaken = errors.New("hardware_id already enrolled by another user")
+
+// upsertDevice creates or re-enrolls a device by hardware_id. Re-enrollment of
+// an existing hardware_id is only permitted by the same user that originally
+// enrolled it; a different user is rejected (prevents device-record hijack via
+// the attacker-controlled hardware_id).
+func upsertDevice(ctx context.Context, db *sql.DB, info DeviceInfo, userEmail string) (string, error) {
+	var existingID, existingOwner string
+	err := db.QueryRowContext(ctx, dbpkg.Rebind(
+		`SELECT id, COALESCE(enrolled_by, '') FROM devices WHERE hardware_id = ?`), info.HardwareID,
+	).Scan(&existingID, &existingOwner)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		id := uuid.New().String()
+		if _, err := db.ExecContext(ctx, dbpkg.Rebind(`
+			INSERT INTO devices (id, hardware_id, device_name, os_version, manufacturer, model, serial_number, enrolled_by, compliance_status)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+		`), id, info.HardwareID, info.DeviceName, info.OSVersion, info.Manufacturer, info.Model, info.SerialNumber, userEmail); err != nil {
+			return "", err
+		}
+		return id, nil
+	case err != nil:
+		return "", err
+	default:
+		if existingOwner != "" && !strings.EqualFold(existingOwner, userEmail) {
+			return "", errHardwareIDTaken
+		}
+		if _, err := db.ExecContext(ctx, dbpkg.Rebind(`
+			UPDATE devices SET device_name = ?, os_version = ?, manufacturer = ?, model = ?,
+				serial_number = ?, enrolled_by = ?, enrolled_at = CURRENT_TIMESTAMP, is_active = 1
+			WHERE id = ?
+		`), info.DeviceName, info.OSVersion, info.Manufacturer, info.Model, info.SerialNumber, userEmail, existingID); err != nil {
+			return "", err
+		}
+		return existingID, nil
+	}
+}
+
 const (
-	wstepAction         = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment/RSTRC/wstep"
-	wstepNS             = "http://docs.oasis-open.org/ws-sx/ws-trust/200512"
-	wstepTokenType      = "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentToken"
-	wstepCertValueType  = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"
-	wstepCSRValueType   = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment#PKCS10"
-	wstepKeyIdValueType = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#ThumbprintSHA1"
+	wstepAction                = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment/RSTRC/wstep"
+	wstepNS                    = "http://docs.oasis-open.org/ws-sx/ws-trust/200512"
+	wstepTokenType             = "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentToken"
+	wstepCertValueType         = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"
+	wstepCSRValueType          = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment#PKCS10"
+	wstepKeyIdValueType        = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#ThumbprintSHA1"
 	wstepProvisionDocValueType = "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentProvisionDoc"
 	wstepEncodingType          = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#base64binary"
 
@@ -119,6 +163,10 @@ const (
 		`</s:Envelope>`
 )
 
+// nowFunc returns the current time; overridable in tests for deterministic
+// WSTEP response timestamps.
+var nowFunc = time.Now
+
 // DeviceInfo holds metadata extracted from the WSTEP AdditionalContext.
 type DeviceInfo struct {
 	DeviceType        string
@@ -150,25 +198,44 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 			return
 		}
 
-		// ── Step 1: Validate the enrollment token ─────────────────────────
-		if env.Header.Security == nil || env.Header.Security.BinarySecurityToken == nil {
-			slog.Error("wstep: missing security token in header (device not authenticated)")
+		// ── Step 1: Authenticate the request ──────────────────────────────
+		// Two paths:
+		//   - Initial enrollment: a WS-Security enrollment token (from login).
+		//   - Renewal (ROBO): the device re-keys non-interactively presenting its
+		//     existing client certificate (mTLS), with no enrollment token. We
+		//     authenticate by that certificate and re-issue for the same device.
+		var userEmail string
+		var renewalDeviceID string
+		hasToken := env.Header.Security != nil && env.Header.Security.BinarySecurityToken != nil
+
+		if hasToken {
+			// Never log the raw token — it is a bearer credential.
+			tokenStr := strings.TrimSpace(env.Header.Security.BinarySecurityToken.Value)
+			if tokenBytes, decErr := base64.StdEncoding.DecodeString(tokenStr); decErr == nil {
+				tokenStr = string(tokenBytes)
+			}
+			email, err := validateToken(tokenStr)
+			if err != nil {
+				slog.Warn("wstep: invalid enrollment token", "err", err)
+				writeSoapFault(w, "invalid enrollment token")
+				return
+			}
+			userEmail = email
+		} else if id, rerr := devauth.Resolve(db, ca.TLSPool(), r, ""); rerr == nil {
+			// Renewal MINTS a new certificate, so it requires real proof-of-
+			// possession of the existing key. We therefore accept renewal only over
+			// DIRECT mTLS (the TLS handshake proves possession) — note the empty
+			// proxy-header argument above. A device certificate is public, so
+			// trusting a proxy-forwarded cert here would let anyone holding a copy
+			// of it mint a fresh cert. (Read-only OMA-DM check-in still accepts the
+			// trusted-proxy header; certificate issuance does not.) Renewal behind a
+			// TLS-terminating proxy requires mTLS passthrough to the origin.
+			renewalDeviceID = id.DeviceID
+			userEmail = id.EnrolledBy
+			slog.Info("wstep: certificate renewal (mTLS)", "device_id", id.DeviceID)
+		} else {
+			slog.Warn("wstep: no enrollment token and no valid client certificate")
 			writeSoapFault(w, "missing security token")
-			return
-		}
-
-		tokenStr := strings.TrimSpace(env.Header.Security.BinarySecurityToken.Value)
-		slog.Info("wstep: raw security token received", "tokenStr", tokenStr)
-		
-		tokenBytes, err := base64.StdEncoding.DecodeString(tokenStr)
-		if err == nil {
-			tokenStr = string(tokenBytes)
-		}
-
-		userEmail, err := validateToken(tokenStr)
-		if err != nil {
-			slog.Warn("wstep: invalid enrollment token", "err", err)
-			writeSoapFault(w, "invalid enrollment token")
 			return
 		}
 
@@ -195,39 +262,31 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		info.EnrolledUserEmail = userEmail
 
 		// ── Step 4: Create/update device record in DB ─────────────────────
-		deviceID := uuid.New().String()
-		_, err = db.ExecContext(r.Context(), dbpkg.Rebind(`
-			INSERT INTO devices (id, hardware_id, device_name, os_version, manufacturer, model, serial_number, enrolled_by, compliance_status)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-			ON CONFLICT(hardware_id) DO UPDATE SET
-				device_name = excluded.device_name,
-				os_version = excluded.os_version,
-				enrolled_by = excluded.enrolled_by,
-				enrolled_at = CURRENT_TIMESTAMP,
-				is_active = 1
-		`),
-			deviceID, info.HardwareID, info.DeviceName, info.OSVersion,
-			info.Manufacturer, info.Model, info.SerialNumber, userEmail,
-		)
-		if err != nil {
-			slog.Error("wstep: saving device to database", "err", err)
-			writeSoapFault(w, "internal error saving device")
-			return
-		}
-
-		// Fetch actual device ID
+		// On renewal the device is already known (authenticated by its cert), so
+		// we reuse its id. On initial enrollment, hardware_id is attacker-
+		// controlled, so re-enrollment of an existing hardware_id is only allowed
+		// by the SAME user that originally enrolled it (no hijack).
 		var actualDeviceID string
-		err = db.QueryRowContext(r.Context(),
-			dbpkg.Rebind(`SELECT id FROM devices WHERE hardware_id = ?`), info.HardwareID,
-		).Scan(&actualDeviceID)
-		if err != nil {
-			slog.Error("wstep: fetching device id", "err", err)
-			writeSoapFault(w, "internal error")
-			return
+		if renewalDeviceID != "" {
+			actualDeviceID = renewalDeviceID
+		} else {
+			actualDeviceID, err = upsertDevice(r.Context(), db, info, userEmail)
+			if err != nil {
+				if errors.Is(err, errHardwareIDTaken) {
+					slog.Warn("wstep: hardware_id already enrolled by another user", "hardware_id", info.HardwareID, "enrolling_user", userEmail)
+					writeSoapFault(w, "device already enrolled by another account")
+					return
+				}
+				slog.Error("wstep: saving device to database", "err", err)
+				writeSoapFault(w, "internal error saving device")
+				return
+			}
 		}
 
 		// ── Step 5: Sign the CSR with our CA ──────────────────────────────
-		certPEM, err := ca.IssueDeviceCertFromDER(actualDeviceID, info.DeviceName, csrDER)
+		// The certificate Subject is bound to the server-issued device identity
+		// (not the attacker-supplied CSR CommonName).
+		certPEM, err := ca.IssueDeviceCertFromDER(actualDeviceID, userEmail, csrDER)
 		if err != nil {
 			slog.Error("wstep: issuing device certificate", "err", err, "device_id", actualDeviceID)
 			writeSoapFault(w, "certificate issuance failed")
@@ -263,7 +322,7 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		provisioningB64 := base64.StdEncoding.EncodeToString([]byte(provisioningXML))
 
 		// ── Step 7: Build & Send WSTEP response (Template Bomb) ───────────
-		now := time.Now().UTC()
+		now := nowFunc().UTC()
 		expires := now.Add(5 * time.Minute)
 
 		contextAttr := ""

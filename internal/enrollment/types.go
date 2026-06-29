@@ -9,17 +9,17 @@ import "encoding/xml"
 // SOAPEnvelope is the outer SOAP wrapper for all MS-MDE2 messages.
 type SOAPEnvelope struct {
 	XMLName   xml.Name
-	XmlnsS    string      `xml:"xmlns:s,attr"`
-	XmlnsA    string      `xml:"xmlns:a,attr"`
-	XmlnsU    string      `xml:"xmlns:u,attr,omitempty"`
-	XmlnsWSSE string      `xml:"xmlns:wsse,attr,omitempty"`
-	XmlnsWST  string      `xml:"xmlns:wst,attr,omitempty"`
-	XmlnsAC   string      `xml:"xmlns:ac,attr,omitempty"`
-	XmlnsXCEP string      `xml:"xmlns:px,attr,omitempty"`
-	XmlnsXSI  string      `xml:"xmlns:xsi,attr,omitempty"`
-	XmlnsXSD  string      `xml:"xmlns:xsd,attr,omitempty"`
-	Header    SOAPHeader  `xml:"Header"`
-	Body      SOAPBody    `xml:"Body"`
+	XmlnsS    string     `xml:"xmlns:s,attr"`
+	XmlnsA    string     `xml:"xmlns:a,attr"`
+	XmlnsU    string     `xml:"xmlns:u,attr,omitempty"`
+	XmlnsWSSE string     `xml:"xmlns:wsse,attr,omitempty"`
+	XmlnsWST  string     `xml:"xmlns:wst,attr,omitempty"`
+	XmlnsAC   string     `xml:"xmlns:ac,attr,omitempty"`
+	XmlnsXCEP string     `xml:"xmlns:px,attr,omitempty"`
+	XmlnsXSI  string     `xml:"xmlns:xsi,attr,omitempty"`
+	XmlnsXSD  string     `xml:"xmlns:xsd,attr,omitempty"`
+	Header    SOAPHeader `xml:"Header"`
+	Body      SOAPBody   `xml:"Body"`
 }
 
 // SOAPHeader carries WS-Addressing and security headers.
@@ -60,8 +60,8 @@ type SOAPBody struct {
 	RequestSecurityTokenRequest *RequestSecurityTokenRequest `xml:"RequestSecurityToken"`
 
 	// Outbound (sent to Windows device)
-	DiscoverResponse                      *DiscoverResponse                      `xml:"DiscoverResponse,omitempty"`
-	GetPoliciesResponse                   *GetPoliciesResponse                   `xml:"GetPoliciesResponse,omitempty"`
+	DiscoverResponse                       *DiscoverResponse                       `xml:"DiscoverResponse,omitempty"`
+	GetPoliciesResponse                    *GetPoliciesResponse                    `xml:"GetPoliciesResponse,omitempty"`
 	RequestSecurityTokenResponseCollection *RequestSecurityTokenResponseCollection `xml:"RequestSecurityTokenResponseCollection,omitempty"`
 
 	// Fault
@@ -106,8 +106,8 @@ type DiscoverReqMsg struct {
 
 // DiscoverResponse tells Windows where our enrollment endpoints are.
 type DiscoverResponse struct {
-	XMLName       struct{}      `xml:"DiscoverResponse"`
-	Xmlns         string        `xml:"xmlns,attr"`
+	XMLName        struct{}       `xml:"DiscoverResponse"`
+	Xmlns          string         `xml:"xmlns,attr"`
 	DiscoverResult DiscoverResult `xml:"DiscoverResult"`
 }
 
@@ -135,31 +135,31 @@ type DiscoverResult struct {
 
 // GetPoliciesRequest is the device asking "what kind of cert should I request?"
 type GetPoliciesRequest struct {
-	XMLName struct{} `xml:"GetPolicies"`
-	Xmlns   string   `xml:"xmlns,attr"`
+	XMLName struct{}   `xml:"GetPolicies"`
+	Xmlns   string     `xml:"xmlns,attr"`
 	Client  XCEPClient `xml:"client"`
 }
 
 // XCEPClient identifies the client software version.
 type XCEPClient struct {
-	LastUpdate    string           `xml:"lastUpdate"`
-	PreferredLanguage string       `xml:"preferredLanguage"`
+	LastUpdate        string `xml:"lastUpdate"`
+	PreferredLanguage string `xml:"preferredLanguage"`
 }
 
 // GetPoliciesResponse tells the device what cert parameters to use in its CSR.
 type GetPoliciesResponse struct {
-	XMLName  struct{} `xml:"GetPoliciesResponse"`
-	Xmlns    string   `xml:"xmlns,attr"`
+	XMLName  struct{}     `xml:"GetPoliciesResponse"`
+	Xmlns    string       `xml:"xmlns,attr"`
 	Response XCEPResponse `xml:"response"`
-	CAs      *XCEPCAs    `xml:"cAs,omitempty"`
+	CAs      *XCEPCAs     `xml:"cAs,omitempty"`
 }
 
 // XCEPResponse contains the certificate issuance policies.
 type XCEPResponse struct {
-	PolicyID           string         `xml:"policyID"`
-	PolicyFriendlyName string         `xml:"policyFriendlyName"`
-	NextUpdateHours    int            `xml:"nextUpdateHours"`
-	Policies           XCEPPolicies   `xml:"policies"`
+	PolicyID           string       `xml:"policyID"`
+	PolicyFriendlyName string       `xml:"policyFriendlyName"`
+	NextUpdateHours    int          `xml:"nextUpdateHours"`
+	Policies           XCEPPolicies `xml:"policies"`
 }
 
 // XCEPPolicies wraps the list of certificate policies.
@@ -169,9 +169,9 @@ type XCEPPolicies struct {
 
 // XCEPPolicy defines the certificate template parameters.
 type XCEPPolicy struct {
-	OIDReference int                `xml:"oidReference"`
-	CAs          XCEPPolicyCAs      `xml:"cAs"`
-	Attributes   XCEPPolicyAttribs  `xml:"attributes"`
+	OIDReference int               `xml:"oidReference"`
+	CAs          XCEPPolicyCAs     `xml:"cAs"`
+	Attributes   XCEPPolicyAttribs `xml:"attributes"`
 }
 
 // XCEPPolicyCAs references which CAs can issue this certificate type.
@@ -181,12 +181,12 @@ type XCEPPolicyCAs struct {
 
 // XCEPPolicyAttribs describes the certificate requirements.
 type XCEPPolicyAttribs struct {
-	CommonName            string         `xml:"commonName"`
-	PolicySchema          int            `xml:"policySchema"`
-	CertificateValidity   XCEPValidity   `xml:"certificateValidity"`
-	Permission            XCEPPermission `xml:"permission"`
-	PrivateKeyAttributes  XCEPPrivKey    `xml:"privateKeyAttributes"`
-	HashAlgorithmOIDReference int        `xml:"hashAlgorithmOIDReference"`
+	CommonName                string         `xml:"commonName"`
+	PolicySchema              int            `xml:"policySchema"`
+	CertificateValidity       XCEPValidity   `xml:"certificateValidity"`
+	Permission                XCEPPermission `xml:"permission"`
+	PrivateKeyAttributes      XCEPPrivKey    `xml:"privateKeyAttributes"`
+	HashAlgorithmOIDReference int            `xml:"hashAlgorithmOIDReference"`
 }
 
 // XCEPValidity sets the certificate lifetime.
@@ -203,10 +203,10 @@ type XCEPPermission struct {
 
 // XCEPPrivKey describes the private key requirements.
 type XCEPPrivKey struct {
-	MinimalKeyLength    int                  `xml:"minimalKeyLength"`
-	KeySpec             int                  `xml:"keySpec"`
-	KeyUsageProperty    int                  `xml:"keyUsageProperty"`
-	Permissions         XCEPKeyPermissions   `xml:"permissions"`
+	MinimalKeyLength      int                `xml:"minimalKeyLength"`
+	KeySpec               int                `xml:"keySpec"`
+	KeyUsageProperty      int                `xml:"keyUsageProperty"`
+	Permissions           XCEPKeyPermissions `xml:"permissions"`
 	AlgorithmOIDReference int                `xml:"algorithmOIDReference"`
 }
 
@@ -222,10 +222,10 @@ type XCEPCAs struct {
 
 // XCEPCAEntry represents a CA certificate with its thumbprint.
 type XCEPCAEntry struct {
-	UriReference      string `xml:"uriReference"`
-	Renewal           string `xml:"renewal"`
-	PolicyID          string `xml:"policyID"`
-	CarThumbs         XCEPThumbs `xml:"cARThumbs"`
+	UriReference string     `xml:"uriReference"`
+	Renewal      string     `xml:"renewal"`
+	PolicyID     string     `xml:"policyID"`
+	CarThumbs    XCEPThumbs `xml:"cARThumbs"`
 }
 
 // XCEPThumbs holds the CA certificate thumbprint.
@@ -237,9 +237,9 @@ type XCEPThumbs struct {
 
 // RequestSecurityTokenRequest is the device's CSR submission.
 type RequestSecurityTokenRequest struct {
-	Context             string            `xml:"Context,attr,omitempty"`
-	TokenType           string            `xml:"TokenType"`
-	RequestType         string            `xml:"RequestType"`
+	Context             string               `xml:"Context,attr,omitempty"`
+	TokenType           string               `xml:"TokenType"`
+	RequestType         string               `xml:"RequestType"`
 	BinarySecurityToken *BinarySecurityToken `xml:"BinarySecurityToken"` // the CSR
 	AdditionalContext   AdditionalContext    `xml:"AdditionalContext"`
 }
@@ -258,19 +258,19 @@ type ContextItem struct {
 
 // RequestSecurityTokenResponseCollection wraps the enrollment response.
 type RequestSecurityTokenResponseCollection struct {
-	XMLName                   struct{}                     `xml:"RequestSecurityTokenResponseCollection"`
-	Xmlns                     string                       `xml:"xmlns,attr"`
+	XMLName                      struct{}                       `xml:"RequestSecurityTokenResponseCollection"`
+	Xmlns                        string                         `xml:"xmlns,attr"`
 	RequestSecurityTokenResponse []RequestSecurityTokenResponse `xml:"RequestSecurityTokenResponse"`
 }
 
 // RequestSecurityTokenResponse contains the device certificate and OMA-DM URL.
 type RequestSecurityTokenResponse struct {
-	Context                        string                         `xml:"Context,attr,omitempty"`
-	TokenType                      string                         `xml:"TokenType"`
-	DispositionMessage             *DispositionMessage             `xml:"DispositionMessage,omitempty"`
-	RequestedSecurityToken         *RequestedSecToken             `xml:"RequestedSecurityToken"`
-	RequestID                      *RequestID                     `xml:"RequestID,omitempty"`
-	RequestedUnattachedReference   *UnattachedRef                 `xml:"RequestedUnattachedReference,omitempty"`
+	Context                      string              `xml:"Context,attr,omitempty"`
+	TokenType                    string              `xml:"TokenType"`
+	DispositionMessage           *DispositionMessage `xml:"DispositionMessage,omitempty"`
+	RequestedSecurityToken       *RequestedSecToken  `xml:"RequestedSecurityToken"`
+	RequestID                    *RequestID          `xml:"RequestID,omitempty"`
+	RequestedUnattachedReference *UnattachedRef      `xml:"RequestedUnattachedReference,omitempty"`
 }
 
 type DispositionMessage struct {

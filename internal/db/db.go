@@ -13,8 +13,8 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	_ "github.com/lib/pq"        // Postgres driver
-	_ "modernc.org/sqlite"       // SQLite driver (CGo-free)
+	_ "github.com/lib/pq"  // Postgres driver
+	_ "modernc.org/sqlite" // SQLite driver (CGo-free)
 )
 
 //go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
@@ -36,15 +36,14 @@ func Open(driver, dsn string) (*DB, error) {
 
 	switch driver {
 	case "sqlite":
-		// modernc sqlite uses "sqlite" as the driver name
-		sqlDB, err = sql.Open("sqlite", dsn)
+		// modernc sqlite uses "sqlite" as the driver name. Apply PRAGMAs via the
+		// DSN so EVERY pooled connection gets them (a one-off PRAGMA Exec only
+		// affects a single connection). foreign_keys(ON) enforces FK constraints,
+		// which SQLite ignores by default.
+		sqlDB, err = sql.Open("sqlite", withSQLitePragmas(dsn))
 		if err != nil {
 			return nil, fmt.Errorf("opening sqlite db: %w", err)
 		}
-		// WAL mode and busy timeout are critical for SQLite concurrency
-		_, _ = sqlDB.Exec("PRAGMA journal_mode=WAL")
-		_, _ = sqlDB.Exec("PRAGMA busy_timeout=5000")
-		_, _ = sqlDB.Exec("PRAGMA synchronous=NORMAL")
 
 		// With WAL mode, we can allow more than 1 connection safely
 		sqlDB.SetMaxOpenConns(10)
@@ -114,6 +113,23 @@ func (db *DB) migrate(driver, dsn string) error {
 	slog.Info("database migrations applied", "version", version, "driver", driver)
 
 	return nil
+}
+
+// withSQLitePragmas appends Latchz's required PRAGMAs to a modernc-sqlite DSN so
+// they apply to every connection in the pool. Pragmas already present in the DSN
+// are not duplicated-overridden by callers; this simply appends our defaults.
+func withSQLitePragmas(dsn string) string {
+	pragmas := []string{
+		"_pragma=busy_timeout(5000)",
+		"_pragma=journal_mode(WAL)",
+		"_pragma=synchronous(NORMAL)",
+		"_pragma=foreign_keys(ON)",
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + strings.Join(pragmas, "&")
 }
 
 // Rebind converts standard '?' placeholders to PostgreSQL '$1, $2...' placeholders

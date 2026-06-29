@@ -45,6 +45,15 @@ func ApplyGroup(db *sql.DB, groupID string) {
 	}
 }
 
+// ResyncDevices re-resolves and re-applies policy (including retraction) for a
+// set of devices. Used after disassociation/deletion so removed settings are
+// retracted from the affected devices.
+func ResyncDevices(db *sql.DB, deviceIDs []string) {
+	for _, id := range deviceIDs {
+		ApplyDevice(db, id)
+	}
+}
+
 // ApplyProfile re-applies a specific profile to all devices in all groups that use it.
 // Called asynchronously when a profile is updated.
 func ApplyProfile(db *sql.DB, profileID string) {
@@ -83,16 +92,17 @@ func ApplyDevice(db *sql.DB, deviceID string) {
 		slog.Error("policy: resolving device settings", "device_id", deviceID, "err", err)
 		return
 	}
-
-	if len(settings) == 0 {
-		return
-	}
+	// NOTE: do not early-return on an empty desired set — retraction below must
+	// still run to remove settings that are no longer governed.
 
 	// Load current compliance values to skip already-compliant settings
 	compliant := loadCompliantSettings(db, deviceID)
 
+	desired := make(map[string]bool, len(settings))
 	queued := 0
 	for _, s := range settings {
+		desired[s.OMAURI] = true
+
 		// Skip if already compliant (device is already at the desired value)
 		if actualVal, ok := compliant[s.OMAURI]; ok && actualVal == s.DesiredValue {
 			continue
@@ -110,13 +120,69 @@ func ApplyDevice(db *sql.DB, deviceID string) {
 		queued++
 	}
 
-	if queued > 0 {
+	// Retract any settings that were previously governed but are no longer in
+	// the device's desired set (profile/group/device disassociation or setting
+	// removal). Without this, removed policies linger on the device forever.
+	retracted := retractUngoverned(db, deviceID, desired)
+
+	if queued > 0 || retracted > 0 {
 		slog.Info("policy: applied settings to device",
 			"device_id", deviceID,
 			"commands_queued", queued,
+			"retracted", retracted,
 			"total_settings", len(settings),
 		)
 	}
+}
+
+// retractUngoverned enqueues retraction commands (reset to default, else Delete)
+// for settings the device previously had a compliance record for but which are
+// no longer governed by any assigned profile. Returns the number retracted.
+func retractUngoverned(db *sql.DB, deviceID string, desired map[string]bool) int {
+	type item struct {
+		catalogID    int
+		omaURI       string
+		defaultValue string
+	}
+	rows, err := db.Query(dbpkg.Rebind(`
+		SELECT pc.id, pc.oma_uri, COALESCE(pc.default_value, '')
+		FROM compliance_records cr
+		JOIN policy_catalog pc ON pc.id = cr.catalog_id
+		WHERE cr.device_id = ?
+	`), deviceID)
+	if err != nil {
+		slog.Error("policy: loading governed settings for retraction", "device_id", deviceID, "err", err)
+		return 0
+	}
+	var toRetract []item
+	for rows.Next() {
+		var it item
+		if err := rows.Scan(&it.catalogID, &it.omaURI, &it.defaultValue); err != nil {
+			continue
+		}
+		if !desired[it.omaURI] {
+			toRetract = append(toRetract, it)
+		}
+	}
+	rows.Close()
+
+	n := 0
+	for _, it := range toRetract {
+		var err error
+		if it.defaultValue != "" {
+			_, err = mdm.EnqueueReplace(db, deviceID, it.omaURI, it.defaultValue)
+		} else {
+			_, err = mdm.EnqueueDelete(db, deviceID, it.omaURI)
+		}
+		if err != nil {
+			slog.Error("policy: queuing retraction", "device_id", deviceID, "oma_uri", it.omaURI, "err", err)
+			continue
+		}
+		// Forget the compliance record so we don't retract it again next pass.
+		_, _ = db.Exec(dbpkg.Rebind(`DELETE FROM compliance_records WHERE device_id = ? AND catalog_id = ?`), deviceID, it.catalogID)
+		n++
+	}
+	return n
 }
 
 // resolveDevice computes the full set of desired settings for a device

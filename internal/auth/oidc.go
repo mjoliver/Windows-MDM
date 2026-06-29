@@ -7,14 +7,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
-	"errors"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
@@ -32,6 +33,10 @@ const (
 	sessionCookieName = "pane_session"
 )
 
+// nowFunc returns the current time; overridable in tests for deterministic
+// token issuance/expiry.
+var nowFunc = time.Now
+
 // Provider handles OIDC authentication for both the admin dashboard
 // and the device enrollment flow.
 type Provider struct {
@@ -47,20 +52,24 @@ type Provider struct {
 
 	// baseURL is our public server URL, used for the OAuth2 redirect URI.
 	baseURL string
+
+	// bootstrapAdmin is the only email granted super_admin on first creation.
+	// This replaces the insecure "first login becomes super_admin" behaviour.
+	bootstrapAdmin string
 }
 
 // Claims are embedded in both enrollment tokens and session tokens.
 type Claims struct {
 	jwt.RegisteredClaims
-	Email  string `json:"email"`
-	Role   string `json:"role,omitempty"`
+	Email string `json:"email"`
+	Role  string `json:"role,omitempty"`
 	// TokenType distinguishes enrollment tokens from session tokens
 	TokenType string `json:"tt"`
 }
 
 // New creates an OIDC auth provider.
 // The jwtSecret is used to sign enrollment tokens and session JWTs.
-func New(ctx context.Context, db *sql.DB, issuer, clientID, clientSecret, baseURL string, allowedDomains []string, jwtSecret []byte) (*Provider, error) {
+func New(ctx context.Context, db *sql.DB, issuer, clientID, clientSecret, baseURL string, allowedDomains []string, jwtSecret []byte, bootstrapAdmin string) (*Provider, error) {
 	if len(jwtSecret) < 32 {
 		return nil, fmt.Errorf("jwtSecret must be at least 32 bytes")
 	}
@@ -88,7 +97,15 @@ func New(ctx context.Context, db *sql.DB, issuer, clientID, clientSecret, baseUR
 		db:             db,
 		allowedDomains: allowedDomains,
 		baseURL:        baseURL,
+		bootstrapAdmin: bootstrapAdmin,
 	}, nil
+}
+
+// MountRoutes registers the OIDC login/callback/logout endpoints on the router.
+func (p *Provider) MountRoutes(r chi.Router) {
+	r.Get("/auth/login", p.HandleLogin)
+	r.Get("/auth/callback", p.HandleCallback)
+	r.Post("/auth/logout", p.HandleLogout)
 }
 
 // ── HTTP handlers ─────────────────────────────────────────────────────────────
@@ -106,10 +123,10 @@ func (p *Provider) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	appru := r.URL.Query().Get("appru")
 	loginHint := r.URL.Query().Get("login_hint")
-	
+
 	// State encodes: uuid : flowType : appru (b64) : loginHint (b64)
-	state := uuid.New().String() + ":" + flowType + ":" + 
-		base64.RawURLEncoding.EncodeToString([]byte(appru)) + ":" + 
+	state := uuid.New().String() + ":" + flowType + ":" +
+		base64.RawURLEncoding.EncodeToString([]byte(appru)) + ":" +
 		base64.RawURLEncoding.EncodeToString([]byte(loginHint))
 
 	// Store state in a short-lived cookie for CSRF protection
@@ -166,7 +183,7 @@ func (p *Provider) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	flowType := "dashboard"
 	appru := ""
 	loginHint := ""
-	
+
 	if len(parts) >= 2 {
 		flowType = parts[1]
 	}
@@ -224,15 +241,11 @@ func (p *Provider) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce that the authenticated user matches the originally intended login_hint
+	// Enforce that the authenticated user matches the originally intended login_hint.
+	// Return 200 OK so the Windows Web Authentication Broker renders the HTML error.
 	if loginHint != "" && !strings.EqualFold(claims.Email, loginHint) {
 		slog.Warn("auth: email mismatch during enrollment", "expected", loginHint, "got", claims.Email)
-		
-		msg := fmt.Sprintf("Account mismatch: You entered %s in Windows, but authenticated as %s. Please restart enrollment.", loginHint, claims.Email)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// Return 200 OK so the Windows Web Authentication Broker renders the HTML error
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "<!DOCTYPE html><html><head><title>Enrollment Failed</title></head><body style=\"font-family:sans-serif;padding:20px;\"><h2 style=\"color:#d32f2f;\">Enrollment Failed</h2><p>%s</p></body></html>", msg)
+		renderEnrollMismatch(w, loginHint, claims.Email)
 		return
 	}
 
@@ -242,10 +255,7 @@ func (p *Provider) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			"email", claims.Email,
 			"allowed_domains", p.allowedDomains,
 		)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// Return 200 OK so the Windows Web Authentication Broker renders the HTML error
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(accessDeniedPage(claims.Email)))
+		renderAccessDenied(w, claims.Email)
 		return
 	}
 
@@ -297,17 +307,25 @@ func (p *Provider) handleEnrollmentCallback(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// If no appru was provided, fallback to the legacy window.external.notify method
+	// If no appru was provided, fall back to the legacy window.external.notify method.
 	if appru == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, enrollmentCallbackPageLegacy, email, token)
+		writeHTML(w, http.StatusOK, tmplEnrollLegacy, struct{ Email, Token string }{email, token})
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, enrollmentCallbackPageAppru, email, appru, token)
+	// Validate the return URL before posting the token to it — an attacker-chosen
+	// appru would otherwise exfiltrate the enrollment token (open redirect).
+	safeAppru, ok := appruAllowed(appru, p.baseURL)
+	if !ok {
+		slog.Warn("auth: rejected enrollment return URL (appru)", "appru", appru, "email", email)
+		writeHTML(w, http.StatusBadRequest, tmplEnrollRejected, nil)
+		return
+	}
+
+	writeHTML(w, http.StatusOK, tmplEnrollAppru, struct {
+		Email, Token string
+		Appru        template.URL
+	}{email, token, safeAppru})
 }
 
 // handleDashboardCallback issues a session JWT as an HTTP-only cookie.
@@ -334,96 +352,28 @@ func (p *Provider) handleDashboardCallback(w http.ResponseWriter, r *http.Reques
 
 // issueEnrollmentToken creates a short-lived JWT used as the WS-Trust security token.
 func (p *Provider) issueEnrollmentToken(email string) (string, error) {
-	now := time.Now()
-	claims := Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   email,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(enrollmentTokenExpiry)),
-			ID:        uuid.New().String(),
-		},
-		Email:     email,
-		TokenType: "enroll",
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
-		SignedString(p.jwtSecret)
+	return signClaims(p.jwtSecret, newEnrollmentClaims(email, nowFunc()))
 }
 
 // issueSessionToken creates a JWT for dashboard sessions stored as a cookie.
 func (p *Provider) issueSessionToken(email, role string) (string, error) {
-	now := time.Now()
-	claims := Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   email,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(sessionTokenExpiry)),
-			ID:        uuid.New().String(),
-		},
-		Email:     email,
-		Role:      role,
-		TokenType: "session",
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).
-		SignedString(p.jwtSecret)
+	return signClaims(p.jwtSecret, newSessionClaims(email, role, nowFunc()))
 }
 
-// ValidateEnrollmentToken validates the JWT presented by a device during WSTEP.
-// Returns the user email if valid.
+// ValidateEnrollmentToken validates the JWT presented by a device during WSTEP
+// and consumes it (single-use). Shared with the builtin provider.
 func (p *Provider) ValidateEnrollmentToken(tokenStr string) (string, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-		}
-		return p.jwtSecret, nil
-	})
-	if err != nil {
-		return "", fmt.Errorf("parsing token: %w", err)
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid {
-		return "", errors.New("invalid token claims")
-	}
-
-	if claims.TokenType != "enroll" {
-		return "", errors.New("not an enrollment token")
-	}
-
-	return claims.Email, nil
+	return validateEnrollmentToken(p.jwtSecret, p.db, tokenStr)
 }
 
 // ValidateSessionToken validates a dashboard session cookie JWT.
-// Returns (email, role) if valid.
 func (p *Provider) ValidateSessionToken(tokenStr string) (email, role string, err error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
-		}
-		return p.jwtSecret, nil
-	})
-	if err != nil {
-		return "", "", fmt.Errorf("parsing session token: %w", err)
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid {
-		return "", "", errors.New("invalid session")
-	}
-
-	if claims.TokenType != "session" {
-		return "", "", errors.New("not a session token")
-	}
-
-	return claims.Email, claims.Role, nil
+	return validateSessionToken(p.jwtSecret, tokenStr)
 }
 
 // SessionFromRequest extracts and validates the session token from the cookie.
 func (p *Provider) SessionFromRequest(r *http.Request) (email, role string, err error) {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
-		return "", "", errors.New("no session cookie")
-	}
-	return p.ValidateSessionToken(cookie.Value)
+	return sessionFromRequest(p.jwtSecret, r)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -447,17 +397,15 @@ func (p *Provider) isEmailAllowed(email string) bool {
 }
 
 // upsertUser ensures the user exists in the database.
-// On first login, creates the user with 'user' role.
-// If this is the very first user ever, grants 'super_admin' (bootstrap).
+// New users are created with the 'user' role, EXCEPT the configured
+// bootstrap admin, who is created as 'super_admin'. Roles of existing users are
+// never changed here (promotion happens via the admin CLI). This deliberately
+// avoids the old "first login over the internet becomes super_admin" behaviour.
 func (p *Provider) upsertUser(ctx context.Context, email, displayName string) (role string, err error) {
-	// Check if any users exist (bootstrap detection)
-	var count int
-	_ = p.db.QueryRowContext(ctx, dbpkg.Rebind(`SELECT COUNT(*) FROM users`)).Scan(&count)
-
 	defaultRole := "user"
-	if count == 0 {
+	if p.bootstrapAdmin != "" && strings.EqualFold(email, p.bootstrapAdmin) {
 		defaultRole = "super_admin"
-		slog.Info("bootstrap: first user login — granting super_admin", "email", email)
+		slog.Info("bootstrap admin login — granting super_admin", "email", email)
 	}
 
 	_, err = p.db.ExecContext(ctx, dbpkg.Rebind(`
@@ -480,49 +428,74 @@ func (p *Provider) upsertUser(ctx context.Context, email, displayName string) (r
 	return role, nil
 }
 
-// ── HTML pages ────────────────────────────────────────────────────────────────
+// ── HTML pages (html/template → contextual auto-escaping, no XSS) ─────────────
 
-// enrollmentCallbackPageLegacy is the fallback if appru is missing.
-const enrollmentCallbackPageLegacy = `<!DOCTYPE html>
+var (
+	tmplEnrollLegacy = template.Must(template.New("enrollLegacy").Parse(`<!DOCTYPE html>
 <html>
 <head><title>Latchz MDM — Enrolling...</title></head>
 <body>
-<p>Enrolling device for <strong>%s</strong>...</p>
+<p>Enrolling device for <strong>{{.Email}}</strong>...</p>
 <script>
   try {
     if (window.external && typeof window.external.notify === 'function') {
-      window.external.notify('%s');
+      window.external.notify('{{.Token}}');
     }
   } catch(e) {
     document.body.innerHTML = '<p>Enrollment token issued. You may close this window.</p>';
   }
 </script>
 </body>
-</html>`
+</html>`))
 
-// enrollmentCallbackPageAppru POSTs the token back to the Windows MDM client.
-const enrollmentCallbackPageAppru = `<!DOCTYPE html>
+	tmplEnrollAppru = template.Must(template.New("enrollAppru").Parse(`<!DOCTYPE html>
 <html>
 <head><title>Latchz MDM — Authenticated</title></head>
 <body onload="document.forms[0].submit()">
-<p>Authentication successful for <strong>%s</strong>. Returning to Windows...</p>
-<form method="POST" action="%s">
-  <!-- Windows MDM client expects 'wresult' to contain the opaque token string -->
-  <input type="hidden" name="wresult" value="%s">
+<p>Authentication successful for <strong>{{.Email}}</strong>. Returning to Windows...</p>
+<form method="POST" action="{{.Appru}}">
+  <input type="hidden" name="wresult" value="{{.Token}}">
   <noscript><input type="submit" value="Continue"></noscript>
 </form>
 </body>
-</html>`
+</html>`))
 
-// accessDeniedPage is shown when a user's email domain is not on the allowlist.
-func accessDeniedPage(email string) string {
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html>
-<head><title>Access Denied — Latchz MDM</title></head>
+	tmplEnrollRejected = template.Must(template.New("enrollRejected").Parse(`<!DOCTYPE html>
+<html><head><title>Enrollment Failed</title></head>
+<body style="font-family:sans-serif;padding:20px;">
+<h2 style="color:#d32f2f;">Enrollment Failed</h2>
+<p>The return address provided by the enrollment client was not recognised. Please restart enrollment.</p>
+</body></html>`))
+
+	tmplEnrollMismatch = template.Must(template.New("mismatch").Parse(`<!DOCTYPE html>
+<html><head><title>Enrollment Failed</title></head>
+<body style="font-family:sans-serif;padding:20px;">
+<h2 style="color:#d32f2f;">Enrollment Failed</h2>
+<p>Account mismatch: you entered <strong>{{.Expected}}</strong> in Windows, but authenticated as <strong>{{.Got}}</strong>. Please restart enrollment.</p>
+</body></html>`))
+
+	tmplAccessDenied = template.Must(template.New("accessDenied").Parse(`<!DOCTYPE html>
+<html><head><title>Access Denied — Latchz MDM</title></head>
 <body>
 <h1>Access Denied</h1>
-<p>The account <strong>%s</strong> is not authorised to access this server.</p>
+<p>The account <strong>{{.}}</strong> is not authorised to access this server.</p>
 <p>Contact your administrator to be invited.</p>
-</body>
-</html>`, email)
+</body></html>`))
+)
+
+// writeHTML renders a template as an HTML response. Templates use html/template
+// so all interpolated values are contextually escaped.
+func writeHTML(w http.ResponseWriter, status int, t *template.Template, data any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_ = t.Execute(w, data)
+}
+
+// renderAccessDenied / renderEnrollMismatch are small testable seams.
+func renderAccessDenied(w http.ResponseWriter, email string) {
+	writeHTML(w, http.StatusOK, tmplAccessDenied, email)
+}
+
+func renderEnrollMismatch(w http.ResponseWriter, expected, got string) {
+	writeHTML(w, http.StatusOK, tmplEnrollMismatch, struct{ Expected, Got string }{expected, got})
 }

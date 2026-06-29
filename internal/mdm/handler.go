@@ -2,11 +2,9 @@ package mdm
 
 import (
 	"bytes"
-	"crypto/sha1"
 	"crypto/x509"
 	"database/sql"
 	"encoding/xml"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
+	"github.com/latchzmdm/latchz/internal/devauth"
 )
 
 // Handler handles OMA-DM SyncML check-ins from enrolled devices.
@@ -21,11 +20,18 @@ type Handler struct {
 	db     *sql.DB
 	ca     *x509.CertPool // root CA pool for mTLS device auth
 	domain string
+	store  *sessionStore
+
+	// proxyCertHeader, when non-empty, names a request header carrying a
+	// URL-encoded PEM client certificate forwarded by a trusted terminating
+	// proxy (tls.mode=none). Empty means only direct mTLS is accepted.
+	proxyCertHeader string
 }
 
-// NewHandler creates an OMA-DM handler.
-func NewHandler(db *sql.DB, caPool *x509.CertPool, domain string) *Handler {
-	return &Handler{db: db, ca: caPool, domain: domain}
+// NewHandler creates an OMA-DM handler. proxyCertHeader is "" unless a trusted
+// proxy is configured to forward the device client certificate.
+func NewHandler(db *sql.DB, caPool *x509.CertPool, domain, proxyCertHeader string) *Handler {
+	return &Handler{db: db, ca: caPool, domain: domain, store: newSessionStore(), proxyCertHeader: proxyCertHeader}
 }
 
 // HandleOMADM is the main OMA-DM endpoint. Devices POST here on every check-in.
@@ -74,8 +80,13 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get or create the session
-	sess := store.get(deviceID, sessionID, isFirst)
+	// Get or create the session, and serialize all processing for it. A single
+	// OMA-DM session may be driven by concurrent connections; holding the session
+	// lock prevents concurrent mutation of CmdMap / the ID counters (which would
+	// otherwise crash the whole process on a detected concurrent map write).
+	sess := h.store.get(deviceID, sessionID, isFirst)
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
 
 	slog.Info("mdm: check-in received",
 		"device_id", deviceID,
@@ -87,13 +98,16 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		"results", len(incoming.SyncBody.Results),
 	)
 
-	// ── Step 3: Update checkin timestamp and status ──────────────────────
-	// ── Step 3: Update checkin timestamp and status ──────────────────────
+	// ── Step 3: Update check-in timestamp ────────────────────────────────
+	// Only the last_checkin is updated here. Compliance status is computed from
+	// the device's actual reported values (see refreshDeviceCompliance) — a
+	// check-in must NOT blanket-mark the device compliant. (Also: Rebind so the
+	// query works on Postgres, not just SQLite.)
 	if _, err := h.db.Exec(
-		`UPDATE devices SET last_checkin = ?, compliance_status = 'compliant' WHERE id = ?`,
+		dbpkg.Rebind(`UPDATE devices SET last_checkin = ? WHERE id = ?`),
 		time.Now().UTC(), deviceID,
 	); err != nil {
-		slog.Error("mdm: failed to update device status", "device_id", deviceID, "err", err)
+		slog.Error("mdm: failed to update device check-in time", "device_id", deviceID, "err", err)
 	}
 
 	// ── Step 4: Process Status responses (command result ACKs) ────────────
@@ -109,10 +123,13 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 	var osVersion, osBuild sql.NullString
 	_ = h.db.QueryRow(dbpkg.Rebind(`SELECT os_version, os_build FROM devices WHERE id = ?`), deviceID).Scan(&osVersion, &osBuild)
 
-	if isFirst || !osVersion.Valid || osVersion.String == "" || !osBuild.Valid || osBuild.String == "" {
-		// On the first session, or until we have full info, interrogation it
-		slog.Info("mdm: device info incomplete — interrogating", "device_id", deviceID)
+	infoIncomplete := !osVersion.Valid || osVersion.String == "" || !osBuild.Valid || osBuild.String == ""
+	if (isFirst || infoIncomplete) && sess.Interrogations < maxInterrogations {
+		// On the first session, or until we have full info, interrogate the device.
+		// Bounded so a device that never reports complete info isn't re-queried forever.
+		slog.Info("mdm: device info incomplete — interrogating", "device_id", deviceID, "round", sess.Interrogations+1)
 		outboundCmds = append(outboundCmds, buildFirstCheckInCommands(sess)...)
+		sess.Interrogations++
 	}
 
 	// Load any pending commands from the queue
@@ -123,11 +140,25 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		outboundCmds = append(outboundCmds, buildSyncMLCommands(sess, pending)...)
 		// Mark as sent
 		ids := make([]int, len(pending))
+		wipeDelivered := false
 		for i, c := range pending {
 			ids[i] = c.ID
+			if c.CommandType == "Exec" && c.OMAURI == OMAExecWipe {
+				wipeDelivered = true
+			}
 		}
 		if err := markCommandsSent(h.db, ids); err != nil {
 			slog.Error("mdm: marking commands sent", "device_id", deviceID, "err", err)
+		}
+		// Finalise teardown the moment the wipe is delivered: deactivate the
+		// device and revoke its certificate. This is deliberate and fail-closed —
+		// a wipe means "remove this device", and for a lost/compromised device we
+		// want its access cut immediately rather than contingent on it cooperating
+		// with (and ACKing) the wipe (a reset device rarely reports back anyway).
+		// Tradeoff: if the wipe fails or is never received, the device must
+		// re-enroll to be managed again (it cannot retry over the revoked cert).
+		if wipeDelivered {
+			h.finalizeWipe(deviceID)
 		}
 	}
 
@@ -223,100 +254,22 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 
 	// If we had no commands, session is done
 	if len(outboundCmds) == 0 {
-		store.remove(deviceID, sessionID)
+		h.store.remove(deviceID, sessionID)
 	}
 }
 
 // ── Device authentication ─────────────────────────────────────────────────────
 
-// authenticateDevice verifies the device's mTLS client certificate against our CA.
-// Returns the device ID from the database.
+// authenticateDevice identifies the device strictly by a verified client
+// certificate (direct mTLS or a trusted-proxy-forwarded cert). There is NO
+// hardware-ID fallback: a hardware_id is not a secret. Resolution rules live in
+// the shared devauth package so the OMA-DM and WSTEP-renewal paths stay in sync.
 func (h *Handler) authenticateDevice(r *http.Request) (string, error) {
-	// Get peer certificates from TLS
-	var peerCerts []*x509.Certificate
-	if r.TLS != nil {
-		peerCerts = r.TLS.PeerCertificates
-	}
-
-	if len(peerCerts) == 0 {
-		// If no cert presented (or behind a reverse proxy like Cloud Run),
-		// try to identify by source URI from body (Hardware ID).
-		return h.lookupDeviceByRequest(r)
-	}
-
-	// Verify the cert chain against our CA
-	if h.ca != nil {
-		opts := x509.VerifyOptions{
-			Roots:     h.ca,
-			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		}
-		if _, err := peerCerts[0].Verify(opts); err != nil {
-			return "", errorf("certificate verification failed: %v", err)
-		}
-	}
-
-	// Look up device by certificate thumbprint
-	thumbprint := certThumbprint(peerCerts[0])
-	var deviceID string
-	err := h.db.QueryRow(dbpkg.Rebind(`
-		SELECT device_id FROM certificates
-		WHERE thumbprint = ? AND cert_type = 'device' AND revoked = 0
-	`), thumbprint).Scan(&deviceID)
-
-	if err == sql.ErrNoRows {
-		return "", errorf("no device found for certificate thumbprint %s", thumbprint)
-	}
+	id, err := devauth.Resolve(h.db, h.ca, r, h.proxyCertHeader)
 	if err != nil {
-		return "", errorf("database error looking up device: %v", err)
+		return "", err
 	}
-
-	return deviceID, nil
-}
-
-// lookupDeviceByRequest finds a device from the SyncML body source URI.
-// Used in development when mTLS is not configured end-to-end.
-func (h *Handler) lookupDeviceByRequest(r *http.Request) (string, error) {
-	// 1. Try to get HWID from query parameter (for Cloud Run no-mTLS fallback)
-	if hwid := r.URL.Query().Get("hwid"); hwid != "" {
-		var deviceID string
-		err := h.db.QueryRow(
-			dbpkg.Rebind(`SELECT id FROM devices WHERE hardware_id = ? AND is_active = 1`), hwid,
-		).Scan(&deviceID)
-		if err == nil {
-			slog.Warn("mdm: device auth via query param hwid (no mTLS)", "device_id", deviceID, "hwid", hwid)
-			return deviceID, nil
-		}
-	}
-
-	// 2. Peek at the body to get the Source/LocURI
-	body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
-	r.Body = io.NopCloser(bytes.NewReader(body)) // restore
-
-	var msg SyncML
-	if err := xml.Unmarshal(body, &msg); err != nil {
-		return "", errorf("no client cert and SyncML parse failed")
-	}
-
-	hardwareID := msg.SyncHdr.Source.LocURI
-	if hardwareID == "" {
-		return "", errorf("no client cert and no source URI in SyncML")
-	}
-
-	var deviceID string
-	err := h.db.QueryRow(
-		dbpkg.Rebind(`SELECT id FROM devices WHERE hardware_id = ? AND is_active = 1`), hardwareID,
-	).Scan(&deviceID)
-	if err == sql.ErrNoRows {
-		return "", errorf("device not found for hardware_id %s (not enrolled?)", hardwareID)
-	}
-	if err != nil {
-		return "", errorf("database error: %v", err)
-	}
-
-	slog.Warn("mdm: device auth via hardware ID (no mTLS) — only acceptable in dev mode",
-		"device_id", deviceID, "hardware_id", hardwareID,
-	)
-	return deviceID, nil
+	return id.DeviceID, nil
 }
 
 // ── Status processing ─────────────────────────────────────────────────────────
@@ -351,16 +304,20 @@ func (h *Handler) processStatuses(deviceID string, sess *Session, statuses []Sta
 	}
 }
 
+// finalizeWipe deactivates the device and revokes its certificates after a
+// remote-wipe command has been delivered. The device will factory-reset and
+// lose its enrollment, so it must not remain a trusted, active device.
+func (h *Handler) finalizeWipe(deviceID string) {
+	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE devices SET is_active = 0 WHERE id = ?`), deviceID); err != nil {
+		slog.Error("mdm: deactivating wiped device", "device_id", deviceID, "err", err)
+	}
+	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE certificates SET revoked = 1 WHERE device_id = ?`), deviceID); err != nil {
+		slog.Error("mdm: revoking wiped device certs", "device_id", deviceID, "err", err)
+	}
+	slog.Info("mdm: remote wipe delivered — device deactivated and certs revoked", "device_id", deviceID)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-func certThumbprint(cert *x509.Certificate) string {
-	h := sha1.Sum(cert.Raw)
-	return fmt.Sprintf("%x", h[:])
-}
-
-func errorf(format string, args ...interface{}) error {
-	return fmt.Errorf(format, args...)
-}
 
 // xmlInner extracts the inner XML between the opening and closing tags of element.
 func xmlInner(data []byte, element string) string {

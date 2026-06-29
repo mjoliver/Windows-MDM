@@ -19,5 +19,16 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Honour the conventional underscore prefix for intentionally-unused vars.
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
+      // Don't enforce the experimental React-Compiler "set state in effect"
+      // performance hint on this POC; on-mount setLoading(true) is idiomatic.
+      'react-hooks/set-state-in-effect': 'off',
+    },
   },
 ])

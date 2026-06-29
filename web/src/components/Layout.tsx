@@ -1,19 +1,20 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Monitor, Shield, Users, BookOpen,
-  CheckSquare, LogOut, Settings
+  LayoutDashboard, Monitor, Shield, Users,
+  CheckSquare, LogOut
 } from 'lucide-react'
 import { api, type Me } from '../api'
 import { useEffect, useState } from 'react'
 
 interface Props { children: React.ReactNode; title: string }
 
+// Only routes that exist are listed (Policy Catalog / Settings pages are not
+// implemented yet, so their nav links were removed to avoid dead navigation).
 const navItems = [
   { to: '/',          icon: LayoutDashboard, label: 'Overview' },
   { to: '/devices',   icon: Monitor,         label: 'Devices' },
   { to: '/profiles',  icon: Shield,          label: 'Profiles' },
   { to: '/groups',    icon: Users,           label: 'Groups' },
-  { to: '/catalog',   icon: BookOpen,        label: 'Policy Catalog' },
   { to: '/compliance',icon: CheckSquare,     label: 'Compliance' },
 ]
 
@@ -22,8 +23,15 @@ export function Layout({ children, title }: Props) {
   const navigate = useNavigate()
 
   useEffect(() => {
+    // Auth gate: on failure, redirect to login (api also redirects on 401).
     api.me().then(setMe).catch(() => navigate('/login'))
   }, [])
+
+  // Do not mount the authenticated layout (or its children, which fetch data)
+  // until the session is confirmed.
+  if (!me) {
+    return <div className="app-layout" style={{ minHeight: '100vh' }} />
+  }
 
   const initials = me?.display_name
     ? me.display_name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
@@ -53,11 +61,6 @@ export function Layout({ children, title }: Props) {
               {item.label}
             </NavLink>
           ))}
-          <span className="nav-section-label" style={{ fontSize: '0.7rem', fontWeight: 700, opacity: 0.4, margin: '16px 12px 8px', textTransform: 'uppercase', letterSpacing: '0.1em' }}>System</span>
-          <NavLink to="/settings" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
-            <Settings size={18} />
-            Settings
-          </NavLink>
         </nav>
 
         <div className="sidebar-footer">

@@ -12,34 +12,55 @@ import (
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 )
 
+// Session lifetime bounds. Sessions are short-lived; abandoned ones are reaped
+// so the in-memory map cannot grow without bound (memory DoS).
+const (
+	sessionTTL    = 30 * time.Minute
+	sweepInterval = 1 * time.Minute
+	// maxInterrogations caps device-info Get rounds per session so a device that
+	// never reports complete info does not get re-interrogated forever.
+	maxInterrogations = 3
+)
+
 // sessionStore tracks active OMA-DM sessions in memory.
 // Each session is identified by (deviceID + sessionID).
 // Sessions are short-lived — a device connects, we exchange a few messages, it disconnects.
 type sessionStore struct {
-	mu       sync.Mutex
-	sessions map[string]*Session
+	mu        sync.Mutex
+	sessions  map[string]*Session
+	lastSweep time.Time
 }
 
-var store = &sessionStore{
-	sessions: make(map[string]*Session),
+// newSessionStore creates an empty session store. Each mdm.Handler owns one so
+// state does not leak across servers (or across tests).
+func newSessionStore() *sessionStore {
+	return &sessionStore{sessions: make(map[string]*Session), lastSweep: time.Now()}
 }
 
 // Session tracks the state of a single OMA-DM management session.
+//
+// A single OMA-DM session can span multiple TCP connections (and thus multiple
+// concurrent HTTP requests). All mutable fields below are guarded by mu; callers
+// must hold it for the duration of request processing for a given session.
 type Session struct {
-	DeviceID  string
-	SessionID string
-	NextMsgID int
-	NextCmdID int
-	IsFirst   bool // first session after enrollment (alert 1200)
-	StartedAt time.Time
-	LastSeen  time.Time
-	CmdMap    map[string]int // maps CmdID (from SyncML) -> queueID (from DB)
+	mu             sync.Mutex
+	DeviceID       string
+	SessionID      string
+	NextMsgID      int
+	NextCmdID      int
+	IsFirst        bool // first session after enrollment (alert 1200)
+	Interrogations int  // device-info Get rounds issued this session
+	StartedAt      time.Time
+	LastSeen       time.Time
+	CmdMap         map[string]int // maps CmdID (from SyncML) -> queueID (from DB)
 }
 
 // get retrieves or creates a session for the given device+session key.
 func (s *sessionStore) get(deviceID, sessionID string, isFirst bool) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.sweepLocked()
 
 	key := deviceID + ":" + sessionID
 	sess, ok := s.sessions[key]
@@ -66,6 +87,21 @@ func (s *sessionStore) remove(deviceID, sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, deviceID+":"+sessionID)
+}
+
+// sweepLocked evicts sessions idle longer than sessionTTL. Throttled to run at
+// most once per sweepInterval. Caller must hold s.mu.
+func (s *sessionStore) sweepLocked() {
+	now := time.Now()
+	if now.Sub(s.lastSweep) < sweepInterval {
+		return
+	}
+	s.lastSweep = now
+	for key, sess := range s.sessions {
+		if now.Sub(sess.LastSeen) > sessionTTL {
+			delete(s.sessions, key)
+		}
+	}
 }
 
 // nextCmdID returns the next available command ID and advances the counter.

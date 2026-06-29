@@ -20,11 +20,11 @@ type ComplianceRecord struct {
 
 // FleetComplianceSummary gives a high-level fleet overview.
 type FleetComplianceSummary struct {
-	TotalDevices      int `json:"total_devices"`
-	CompliantDevices  int `json:"compliant_devices"`
+	TotalDevices        int `json:"total_devices"`
+	CompliantDevices    int `json:"compliant_devices"`
 	NonCompliantDevices int `json:"non_compliant_devices"`
-	UnknownDevices    int `json:"unknown_devices"`
-	CompliancePercent int `json:"compliance_percent"`
+	UnknownDevices      int `json:"unknown_devices"`
+	CompliancePercent   int `json:"compliance_percent"`
 }
 
 // HandleFleetCompliance returns fleet-wide compliance summary.
@@ -81,8 +81,8 @@ func (h *Handler) HandleFleetCompliance(w http.ResponseWriter, r *http.Request) 
 	}
 
 	respondOK(w, map[string]interface{}{
-		"summary":         summary,
-		"top_issues":      issues,
+		"summary":    summary,
+		"top_issues": issues,
 	})
 }
 

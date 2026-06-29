@@ -2,6 +2,7 @@ package mdm
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -66,7 +67,7 @@ func markCommandResult(dbConn *sql.DB, queueID int, resultCode, resultData strin
 	if resultCode != StatusOK && resultCode != StatusCreated && resultCode != StatusAccepted {
 		status = "failed"
 	}
-	
+
 	if resultData != "" {
 		_, err := dbConn.Exec(db.Rebind(`
 			UPDATE command_queue
@@ -75,7 +76,7 @@ func markCommandResult(dbConn *sql.DB, queueID int, resultCode, resultData strin
 		`), status, resultCode, resultData, queueID)
 		return err
 	}
-	
+
 	_, err := dbConn.Exec(db.Rebind(`
 		UPDATE command_queue
 		SET status = ?, result_code = ?, completed_at = CURRENT_TIMESTAMP
@@ -97,6 +98,12 @@ func EnqueueReplace(dbConn *sql.DB, deviceID, omaURI, value string) (int64, erro
 // EnqueueExec adds an Exec (trigger action) command to the queue.
 func EnqueueExec(dbConn *sql.DB, deviceID, omaURI, payload string) (int64, error) {
 	return enqueue(dbConn, deviceID, "Exec", formatDeviceURI(omaURI), payload)
+}
+
+// EnqueueDelete adds a Delete command, used to retract a previously-applied
+// policy node from the device.
+func EnqueueDelete(dbConn *sql.DB, deviceID, omaURI string) (int64, error) {
+	return enqueue(dbConn, deviceID, "Delete", formatDeviceURI(omaURI), "")
 }
 
 // formatDeviceURI ensures that Policy CSP URIs have the required ./Device/ prefix
@@ -124,13 +131,35 @@ func EnqueueReboot(dbConn *sql.DB, deviceID string) (int64, error) {
 }
 
 func enqueue(dbConn *sql.DB, deviceID, commandType, omaURI, payload string) (int64, error) {
-	var lastInsertID int64
+	// Dedup: if an equivalent command for this (device, uri, type) is already
+	// pending, update its payload instead of piling up duplicates (repeated
+	// Sync / profile re-apply would otherwise grow the queue without bound).
+	var existingID int64
 	err := dbConn.QueryRow(db.Rebind(`
+		SELECT id FROM command_queue
+		WHERE device_id = ? AND oma_uri = ? AND command_type = ? AND status = 'pending'
+		LIMIT 1
+	`), deviceID, omaURI, commandType).Scan(&existingID)
+	switch {
+	case err == nil:
+		if _, uerr := dbConn.Exec(db.Rebind(`
+			UPDATE command_queue SET payload = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?
+		`), nullableString(payload), existingID); uerr != nil {
+			return 0, fmt.Errorf("updating pending command: %w", uerr)
+		}
+		return existingID, nil
+	case errors.Is(err, sql.ErrNoRows):
+		// no pending duplicate — insert below
+	default:
+		return 0, fmt.Errorf("checking pending command: %w", err)
+	}
+
+	var lastInsertID int64
+	if err := dbConn.QueryRow(db.Rebind(`
 		INSERT INTO command_queue (device_id, command_type, oma_uri, payload)
 		VALUES (?, ?, ?, ?)
 		RETURNING id
-	`), deviceID, commandType, omaURI, nullableString(payload)).Scan(&lastInsertID)
-	if err != nil {
+	`), deviceID, commandType, omaURI, nullableString(payload)).Scan(&lastInsertID); err != nil {
 		return 0, fmt.Errorf("enqueueing command: %w", err)
 	}
 	return lastInsertID, nil
@@ -159,13 +188,13 @@ func buildSyncMLCommands(session *Session, pending []PendingCommand) []interface
 			if isNumeric(cmd.Payload) {
 				format = "int"
 			}
-			
+
 			item.Meta = &Meta{
 				Format: &MetaFormat{
 					Xmlns: metInfNS,
 					Value: format,
 				},
-				Type:   "text/plain",
+				Type: "text/plain",
 			}
 		}
 

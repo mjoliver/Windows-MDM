@@ -4,24 +4,24 @@ import (
 	"net/http"
 	"strconv"
 
-	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/go-chi/chi/v5"
+	dbpkg "github.com/latchzmdm/latchz/internal/db"
 )
 
 // CatalogEntry is a single policy from the DDF-ingested catalog.
 type CatalogEntry struct {
-	ID            int      `json:"id"`
-	OMAURI        string   `json:"oma_uri"`
-	DisplayName   string   `json:"display_name"`
-	Description   string   `json:"description"`
-	Category      string   `json:"category"`
-	CSPName       string   `json:"csp_name"`
-	DataType      string   `json:"data_type"`
-	AllowedValues string   `json:"allowed_values"` // JSON array string
-	DefaultValue  string   `json:"default_value"`
-	MinOSVersion  string   `json:"min_os_version"`
-	AccessTypes   string   `json:"access_types"` // JSON array string
-	IsDeprecated  bool     `json:"is_deprecated"`
+	ID            int    `json:"id"`
+	OMAURI        string `json:"oma_uri"`
+	DisplayName   string `json:"display_name"`
+	Description   string `json:"description"`
+	Category      string `json:"category"`
+	CSPName       string `json:"csp_name"`
+	DataType      string `json:"data_type"`
+	AllowedValues string `json:"allowed_values"` // JSON array string
+	DefaultValue  string `json:"default_value"`
+	MinOSVersion  string `json:"min_os_version"`
+	AccessTypes   string `json:"access_types"` // JSON array string
+	IsDeprecated  bool   `json:"is_deprecated"`
 }
 
 // HandleListCatalog returns all policy catalog entries.
