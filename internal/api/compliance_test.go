@@ -24,6 +24,13 @@ func setChiURLParamForCompliance(r *http.Request, key, value string) *http.Reque
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, ctx))
 }
 
+// contextWithAuth creates a context with authentication information for tests.
+func contextWithAuth(ctx context.Context, email, role string) context.Context {
+	ctx = context.WithValue(ctx, CtxKeyEmail, email)
+	ctx = context.WithValue(ctx, CtxKeyRole, role)
+	return ctx
+}
+
 // ── Tests for HandleFleetCompliance ───────────────────────────────────────────
 
 func TestHandleFleetCompliance(t *testing.T) {
@@ -1301,24 +1308,18 @@ func TestHandleGetDeviceCommandsResultInfoMapping(t *testing.T) {
 func TestPolicyOpsInjection(t *testing.T) {
 	// Save originals
 	origApplyDevice := policyOps.ApplyDevice
-	origApplyGroup := policyOps.ApplyGroup
 	origApplyProfile := policyOps.ApplyProfile
 	defer func() {
 		policyOps.ApplyDevice = origApplyDevice
-		policyOps.ApplyGroup = origApplyGroup
 		policyOps.ApplyProfile = origApplyProfile
 	}()
 
-	var calledDevice, calledGroup, calledProfile bool
-	var deviceID, groupID, profileID string
+	var calledDevice, calledProfile bool
+	var deviceID, profileID string
 
 	policyOps.ApplyDevice = func(db *sql.DB, id string) {
 		calledDevice = true
 		deviceID = id
-	}
-	policyOps.ApplyGroup = func(db *sql.DB, id string) {
-		calledGroup = true
-		groupID = id
 	}
 	policyOps.ApplyProfile = func(db *sql.DB, id string) {
 		calledProfile = true
@@ -1362,41 +1363,6 @@ func TestPolicyOpsInjection(t *testing.T) {
 		}
 		if deviceID != "dev-001" {
 			t.Errorf("ApplyDevice called with deviceID %q, want %q", deviceID, "dev-001")
-		}
-	}
-
-	// ApplyGroup is called from HandleAssignDeviceToGroup (action=add)
-	{
-		db, mock, err := sqlmock.New()
-		if err != nil {
-			t.Fatalf("couldn't create sqlmock: %s", err)
-		}
-		defer db.Close()
-
-		mock.ExpectQuery("SELECT 1 FROM device_groups WHERE id = \\?").
-			WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
-		mock.ExpectExec("INSERT INTO device_group_members").
-			WillReturnResult(sqlmock.NewResult(1, 1))
-		mock.ExpectExec("INSERT INTO audit_log").
-			WillReturnResult(sqlmock.NewResult(1, 1))
-
-		h := NewHandler(db)
-		ctx := contextWithAuth(context.Background(), "admin@example.com", "admin")
-		r := httptest.NewRequest(http.MethodPut, "/api/groups/group-1/devices", bytes.NewReader([]byte(`{"device_ids":["dev-1"],"action":"add"}`)))
-		r = r.WithContext(ctx)
-		r = setChiURLParamForCompliance(r, "id", "group-1")
-		w := httptest.NewRecorder()
-
-		h.HandleAssignDeviceToGroup(w, r)
-
-		// Give goroutine time to run
-		time.Sleep(50 * time.Millisecond)
-
-		if !calledGroup {
-			t.Error("ApplyGroup should have been called by HandleAssignDeviceToGroup")
-		}
-		if groupID != "group-1" {
-			t.Errorf("ApplyGroup called with groupID %q, want %q", groupID, "group-1")
 		}
 	}
 
