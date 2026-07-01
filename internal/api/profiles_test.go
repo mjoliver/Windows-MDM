@@ -215,7 +215,7 @@ func TestHandleCreateProfile(t *testing.T) {
 		setupMock  func(sqlmock.Sqlmock)
 		expectCode int
 	}{
-	{
+		{
 			name:  "successful creation with settings",
 			email: "admin@example.com",
 			body: `{
@@ -249,7 +249,7 @@ func TestHandleCreateProfile(t *testing.T) {
 			},
 			expectCode: http.StatusCreated,
 		},
-	{
+		{
 			name:  "successful creation without settings",
 			email: "admin@example.com",
 			body: `{
@@ -347,7 +347,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 		setupMock  func(sqlmock.Sqlmock)
 		expectCode int
 	}{
-	{
+		{
 			name:  "successful update",
 			url:   "/api/profiles/prof-1",
 			email: "admin@example.com",
@@ -381,7 +381,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 			},
 			expectCode: http.StatusOK,
 		},
-	{
+		{
 			name:  "update with empty name keeps existing",
 			url:   "/api/profiles/prof-1",
 			email: "admin@example.com",
