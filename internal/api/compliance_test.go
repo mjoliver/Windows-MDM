@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -1314,16 +1315,27 @@ func TestPolicyOpsInjection(t *testing.T) {
 		policyOps.ApplyProfile = origApplyProfile
 	}()
 
-	var calledDevice, calledProfile bool
-	var deviceID, profileID string
+	var (
+		mu            sync.Mutex
+		calledDevice  bool
+		calledProfile bool
+		deviceID      string
+		profileID     string
+		profileDone   = make(chan struct{})
+	)
 
 	policyOps.ApplyDevice = func(db *sql.DB, id string) {
+		mu.Lock()
 		calledDevice = true
 		deviceID = id
+		mu.Unlock()
 	}
 	policyOps.ApplyProfile = func(db *sql.DB, id string) {
+		defer close(profileDone)
+		mu.Lock()
 		calledProfile = true
 		profileID = id
+		mu.Unlock()
 	}
 
 	// ApplyDevice is called from HandleSyncDevice
@@ -1358,11 +1370,16 @@ func TestPolicyOpsInjection(t *testing.T) {
 
 		h.HandleSyncDevice(w, r)
 
-		if !calledDevice {
+		mu.Lock()
+		calledDeviceResult := calledDevice
+		deviceIDResult := deviceID
+		mu.Unlock()
+
+		if !calledDeviceResult {
 			t.Error("ApplyDevice should have been called by HandleSyncDevice")
 		}
-		if deviceID != "dev-001" {
-			t.Errorf("ApplyDevice called with deviceID %q, want %q", deviceID, "dev-001")
+		if deviceIDResult != "dev-001" {
+			t.Errorf("ApplyDevice called with deviceID %q, want %q", deviceIDResult, "dev-001")
 		}
 	}
 
@@ -1401,14 +1418,19 @@ func TestPolicyOpsInjection(t *testing.T) {
 
 		h.HandleUpdateProfile(w, r)
 
-		// Give goroutine time to run
-		time.Sleep(50 * time.Millisecond)
+		// Wait for the goroutine to complete
+		<-profileDone
 
-		if !calledProfile {
+		mu.Lock()
+		calledProfileResult := calledProfile
+		profileIDResult := profileID
+		mu.Unlock()
+
+		if !calledProfileResult {
 			t.Error("ApplyProfile should have been called by HandleUpdateProfile")
 		}
-		if profileID != "prof-1" {
-			t.Errorf("ApplyProfile called with profileID %q, want %q", profileID, "prof-1")
+		if profileIDResult != "prof-1" {
+			t.Errorf("ApplyProfile called with profileID %q, want %q", profileIDResult, "prof-1")
 		}
 	}
 }
