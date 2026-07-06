@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/mdm"
-	"github.com/latchzmdm/latchz/internal/policy"
 )
 
 // Device is the JSON representation of an enrolled device.
@@ -242,7 +241,7 @@ func (h *Handler) HandleSyncDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Also re-evaluate profile assignments and queue Replace commands for non-compliant policies
-	policy.ApplyDevice(h.db, id)
+	policyOps.ApplyDevice(h.db, id)
 
 	h.audit(r, actor, "device.sync", "device", id, fmt.Sprintf(`{"queued_gets":%d}`, queued))
 	respondOK(w, map[string]interface{}{"status": "sync_queued", "commands_queued": queued})
