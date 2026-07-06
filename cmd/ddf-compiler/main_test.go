@@ -48,12 +48,12 @@ func TestNewCompiler(t *testing.T) {
 
 func TestCompileNode(t *testing.T) {
 	tests := []struct {
-		name        string
-		node        Node
-		uri         string
-		cspName     string
-		wantErr     bool
-		wantEntry   func() CatalogEntry
+		name      string
+		node      Node
+		uri       string
+		cspName   string
+		wantErr   bool
+		wantEntry func() CatalogEntry
 	}{
 		{
 			name: "full node with chr format and all access types",
@@ -755,10 +755,10 @@ func TestCompilerProcessFile(t *testing.T) {
 			wantEntries: 0,
 		},
 		{
-			name: "invalid XML content",
-			xmlContent: `This is not XML at all! <broken>`,
-			filename:      "invalid.xml",
-			wantEntries:   0,
+			name:        "invalid XML content",
+			xmlContent:  `This is not XML at all! <broken>`,
+			filename:    "invalid.xml",
+			wantEntries: 0,
 		},
 	}
 
