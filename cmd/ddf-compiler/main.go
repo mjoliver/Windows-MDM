@@ -74,12 +74,20 @@ type TypeTag struct {
 	MIME string `xml:"MIME"`
 }
 
-// ── Application State ──────────────────────────────────────────────────────
+// Compiler holds the parsing state and dependencies for DDF compilation.
+// It replaces the global allEntries/anomalies variables for better testability.
+type Compiler struct {
+	Entries   []CatalogEntry
+	Anomalies []string
+}
 
-var (
-	allEntries []CatalogEntry
-	anomalies  []string // Markdown blocks
-)
+// NewCompiler creates a new Compiler instance with initialized slices.
+func NewCompiler() *Compiler {
+	return &Compiler{
+		Entries:   make([]CatalogEntry, 0),
+		Anomalies: make([]string, 0),
+	}
+}
 
 func main() {
 	configFile := flag.String("config", "latchz.yaml", "Path to the configuration YAML file (provides database.driver and database.dsn)")
@@ -112,6 +120,9 @@ func main() {
 	}
 	defer database.Close()
 
+	// ── Create compiler with state ─────────────────────────────────────
+	compiler := NewCompiler()
+
 	// ── Parse all DDF XML files ─────────────────────────────────────────
 	err = filepath.WalkDir(*inDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -120,7 +131,7 @@ func main() {
 		if d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".xml") {
 			return nil
 		}
-		processFile(path)
+		compiler.processFile(path)
 		return nil
 	})
 
@@ -129,10 +140,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("Parsing complete", "policies_extracted", len(allEntries))
+	slog.Info("Parsing complete", "policies_extracted", len(compiler.Entries))
 
 	// ── Insert entries into policy_catalog ──────────────────────────────
-	inserted, updated, err := insertCatalogEntries(database, allEntries)
+	inserted, updated, err := insertCatalogEntries(database, compiler.Entries)
 	if err != nil {
 		slog.Error("Failed to insert catalog entries", "error", err)
 		os.Exit(1)
@@ -141,7 +152,7 @@ func main() {
 
 	// ── Optionally write JSON catalog ───────────────────────────────────
 	if *outFile != "" {
-		outBytes, err := json.MarshalIndent(allEntries, "", "  ")
+		outBytes, err := json.MarshalIndent(compiler.Entries, "", "  ")
 		if err != nil {
 			slog.Error("Failed to marshal catalog", "error", err)
 			os.Exit(1)
@@ -154,19 +165,19 @@ func main() {
 	}
 
 	// ── Write anomalies report if there are any ─────────────────────────
-	if len(anomalies) > 0 {
+	if len(compiler.Anomalies) > 0 {
 		var report strings.Builder
 		report.WriteString(fmt.Sprintf("# DDF Parser Anomalies Report\nGenerated: %s\n\n", time.Now().Format(time.RFC3339)))
 		report.WriteString("The following suspected policy nodes could not be fully parsed and were dropped from the catalog.\n\n")
-		for _, a := range anomalies {
+		for _, a := range compiler.Anomalies {
 			report.WriteString(a)
 		}
 		_ = os.WriteFile(*reportFile, []byte(report.String()), 0644)
-		slog.Warn("Parser finished with anomalies", "policies_extracted", len(allEntries), "anomalies", len(anomalies), "report", *reportFile)
+		slog.Warn("Parser finished with anomalies", "policies_extracted", len(compiler.Entries), "anomalies", len(compiler.Anomalies), "report", *reportFile)
 	} else {
 		// Clean up old report if it existed
 		_ = os.Remove(*reportFile)
-		slog.Info("Parser finished flawlessly", "policies_extracted", len(allEntries))
+		slog.Info("Parser finished flawlessly", "policies_extracted", len(compiler.Entries))
 	}
 }
 
@@ -259,7 +270,9 @@ func insertCatalogEntries(database *db.DB, entries []CatalogEntry) (inserted, up
 	return inserted, updated, nil
 }
 
-func processFile(path string) {
+// processFile reads and parses a single DDF XML file, populating the compiler's
+// Entries and Anomalies slices.
+func (c *Compiler) processFile(path string) {
 	slog.Info("Processing DDF", "file", path)
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -285,11 +298,13 @@ func processFile(path string) {
 	cspName := strings.TrimSuffix(baseName, filepath.Ext(baseName))
 
 	for _, n := range tree.Nodes {
-		traverseNode(n, ".", cspName, path)
+		c.traverseNode(n, ".", cspName, path)
 	}
 }
 
-func traverseNode(n Node, parentPath string, cspName string, sourceFile string) {
+// traverseNode recursively walks the XML node tree, populating Entries for leaf
+// nodes and Anomalies for nodes that fail compilation.
+func (c *Compiler) traverseNode(n Node, parentPath string, cspName string, sourceFile string) {
 	// Construct the current absolute OMA-URI
 	currentURI := parentPath
 	if n.NodeName != "" {
@@ -303,7 +318,7 @@ func traverseNode(n Node, parentPath string, cspName string, sourceFile string) 
 	// If there are subnodes, this is an interior component. Keep traversing.
 	if len(n.Nodes) > 0 {
 		for _, sub := range n.Nodes {
-			traverseNode(sub, currentURI, cspName, sourceFile)
+			c.traverseNode(sub, currentURI, cspName, sourceFile)
 		}
 		return
 	}
@@ -320,16 +335,24 @@ func traverseNode(n Node, parentPath string, cspName string, sourceFile string) 
 		// Log the anomaly dynamically!
 		anomaly := fmt.Sprintf("## Missing properties at `%s`\n**Source:** `%s`\n**Error:** %v\n\n```xml\n<!-- Leaf Node XML -->\n<NodeName>%s</NodeName>\n```\n\n---\n",
 			currentURI, sourceFile, err, n.NodeName)
-		anomalies = append(anomalies, anomaly)
+		c.Anomalies = append(c.Anomalies, anomaly)
 		return
 	}
 
-	allEntries = append(allEntries, entry)
+	c.Entries = append(c.Entries, entry)
 }
 
+// compileNode converts a single XML Node into a CatalogEntry.
+// Returns an error if the node is missing required properties.
 func compileNode(n Node, uri string, cspName string) (CatalogEntry, error) {
 	if n.NodeName == "" {
 		return CatalogEntry{}, fmt.Errorf("node requires a NodeName")
+	}
+
+	// Bug fix: check DFProperties for nil before accessing it.
+	// The test TestCompileNode/nil_DFProperties_returns_error caught this nil pointer dereference.
+	if n.DFProperties == nil {
+		return CatalogEntry{}, fmt.Errorf("node requires DFProperties")
 	}
 
 	entry := CatalogEntry{
