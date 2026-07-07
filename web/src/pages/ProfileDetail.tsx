@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Shield, Plus, Trash2, Save } from 'lucide-react'
+import { Shield, Plus, Trash2, Save } from 'lucide-react'
 import { Layout } from '../components/Layout'
+import { Breadcrumb } from '../components/Breadcrumb'
 import { api, type Profile, type PolicySetting, type CatalogEntry } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { SearchBar } from '../components/SearchBar'
+import { SkeletonLine, SkeletonBlock } from '../components/SkeletonLoader'
+import { useToast } from '../context/ToastContext'
 
 export function ProfileDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -14,12 +17,13 @@ export function ProfileDetailPage() {
   const [settings, setSettings] = useState<PolicySetting[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [searching, setSearching] = useState(false)
 
   // Catalog Drawer State
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [catalogQuery, setCatalogQuery] = useState('')
   const [catalogItems, setCatalogItems] = useState<CatalogEntry[]>([])
-  const [searching, setSearching] = useState(false)
+  const toast = useToast()
 
   useEffect(() => {
     if (!id) return
@@ -49,7 +53,7 @@ export function ProfileDetailPage() {
       await api.profiles.update(id, { ...profile, settings })
       navigate('/profiles')
     } catch (e: unknown) {
-      alert(`Failed to save: ${e instanceof Error ? e.message : 'Unknown error'}`)
+      toast.error(`Failed to save profile: ${e instanceof Error ? e.message : 'Unknown error'}`)
     } finally {
       setSaving(false)
     }
@@ -95,7 +99,34 @@ export function ProfileDetailPage() {
     ))
   }
 
-  if (loading) return <Layout title="Loading..."><div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div></Layout>
+  if (loading)
+    return (
+      <Layout title="Loading...">
+        <div className="fade-in" style={{ display: 'flex', height: 'calc(100vh - 120px)', gap: 24, overflow: 'hidden', opacity: 0.5, pointerEvents: 'none' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                <SkeletonBlock width={48} height={48} borderRadius={16} />
+                <div>
+                  <SkeletonBlock width={200} height={24} style={{ marginBottom: 8 }} />
+                  <SkeletonBlock width={300} height={16} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 12 }}>
+                <SkeletonBlock width={120} height={40} />
+                <SkeletonBlock width={120} height={40} />
+              </div>
+            </div>
+            <div className="card" style={{ flex: 1, padding: 0 }}>
+              <SkeletonBlock width="100%" height={56} borderRadius={0} />
+              <div style={{ padding: 24 }}>
+                <SkeletonLine count={5} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </Layout>
+    )
   if (!profile) return <Layout title="Editor"><div style={{ padding: 40, color: 'var(--danger)' }}>Profile not found</div></Layout>
 
   return (
@@ -108,9 +139,10 @@ export function ProfileDetailPage() {
           
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexShrink: 0 }}>
             <div>
-              <button className="btn btn-secondary btn-sm" onClick={() => navigate('/profiles')} style={{ marginBottom: 16 }}>
-                <ArrowLeft size={13} /> Back
-              </button>
+              <Breadcrumb items={[
+                { label: 'Profiles', to: '/profiles' },
+                { label: profile.name },
+              ]} />
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                 <div className="detail-icon" style={{ width: 48, height: 48, borderRadius: 16 }}>
                     <Shield size={24} />

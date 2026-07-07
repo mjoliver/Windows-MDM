@@ -5,6 +5,7 @@ import { api, type Group, type Device, type Profile } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { ActionButton } from '../components/ActionButton'
 import { Modal } from '../components/Modal'
+import { useToast } from '../context/ToastContext'
 
 function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (g: Group) => void }) {
   const [name, setName]     = useState('')
@@ -64,13 +65,14 @@ function ManageModal({
 }) {
   const [tab, setTab] = useState<'devices' | 'profiles'>('devices')
   const [saving, setSaving] = useState(false)
+  const toast = useToast()
 
   const assign = async (ids: string[], action: 'add' | 'remove', type: 'devices' | 'profiles') => {
     setSaving(true)
     try {
       if (type === 'devices')  await api.groups.assignDevices(group.id, ids, action)
       if (type === 'profiles') await api.groups.assignProfiles(group.id, ids, action)
-    } catch (e) { alert(`Failed: ${e}`) }
+    } catch (e) { toast.error(`Failed to ${action} ${type}: ${e instanceof Error ? e.message : String(e)}`) }
     finally { setSaving(false) }
   }
 

@@ -43,6 +43,13 @@
   --transition-fast: 200ms var(--ease);
 }
 
+/* ── Skeleton Animation ──────────────────────────────────────────────────── */
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.35; }
+}
+
 /* ── Reset ─────────────────────────────────────────────────────────────── */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

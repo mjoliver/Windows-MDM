@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, ArrowLeft, Lock, Trash2, RefreshCw, HelpCircle } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, HelpCircle } from 'lucide-react'
 import { Layout } from '../components/Layout'
+import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
 import { api, type Device, type DeviceCompliance, type DeviceCommand } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
 import { InfoGrid } from '../components/InfoGrid'
+import { SkeletonLine, SkeletonBlock } from '../components/SkeletonLoader'
+import { useToast } from '../context/ToastContext'
 
 export function DeviceDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -20,6 +23,7 @@ export function DeviceDetailPage() {
   const [error, setError]             = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [confirmWipe, setConfirmWipe]     = useState(false)
+  const toast = useToast()
 
   useEffect(() => {
     if (!id) return
@@ -52,22 +56,61 @@ export function DeviceDetailPage() {
     setActionLoading(name)
     try { 
       await fn() 
-      // Refresh after a short delay to see the queued state
       setTimeout(refresh, 500)
-    } catch (e) { alert(`Failed: ${e}`) }
+    } catch (e) { 
+      toast.error(`Failed to ${name}: ${e instanceof Error ? e.message : String(e)}`)
+    }
     finally { setActionLoading(null) }
   }
 
-  if (loading) return <Layout title="Device"><div style={{ opacity: 0.6, padding: 40 }}>Initializing telemetry…</div></Layout>
+  if (loading)
+    return (
+      <Layout title="Device">
+        <div className="fade-in" style={{ opacity: 0.5, pointerEvents: 'none' }}>
+          <div style={{ height: 24 }} />
+          {/* Hero skeleton */}
+          <div className="card" style={{ padding: 40, display: 'flex', alignItems: 'center', gap: 40, marginBottom: 32 }}>
+            <SkeletonBlock width={80} height={80} borderRadius={24} />
+            <div style={{ flex: 1 }}>
+              <SkeletonBlock width={300} height={36} style={{ marginBottom: 12 }} />
+              <SkeletonLine count={2} />
+            </div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <SkeletonBlock width={120} height={48} />
+              <SkeletonBlock width={48} height={48} borderRadius={16} />
+              <SkeletonBlock width={48} height={48} borderRadius={16} />
+            </div>
+          </div>
+          {/* Grid skeleton */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 32 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+              <div className="card" style={{ padding: 24 }}>
+                <SkeletonBlock width={140} height={18} style={{ marginBottom: 20 }} />
+                <SkeletonLine count={6} />
+              </div>
+              <div className="card" style={{ padding: 24 }}>
+                <SkeletonBlock width={140} height={18} style={{ marginBottom: 20 }} />
+                <SkeletonLine count={4} />
+              </div>
+            </div>
+            <div className="card" style={{ padding: 24 }}>
+              <SkeletonBlock width={140} height={18} style={{ marginBottom: 20 }} />
+              <SkeletonLine count={6} />
+            </div>
+          </div>
+        </div>
+      </Layout>
+    )
   if (error)   return <Layout title="Device"><div style={{ color: 'var(--md-sys-color-error)', padding: 40 }}>Error loading device: {error}</div></Layout>
   if (!device) return <Layout title="Device"><div style={{ color: 'var(--md-sys-color-error)', padding: 40 }}>Device not found in registry</div></Layout>
 
   return (
     <Layout title="Device Management">
       <div className="fade-in">
-        <button className="btn btn-secondary btn-sm" onClick={() => navigate('/devices')} style={{ marginBottom: 24, padding: '8px 16px' }}>
-          <ArrowLeft size={14} /> Back to Fleet
-        </button>
+        <Breadcrumb items={[
+          { label: 'Devices', to: '/devices' },
+          { label: device.device_name || 'Unnamed Device' },
+        ]} />
 
         {/* Hero Banner */}
         <div className="card" style={{ padding: 40, marginBottom: 32, display: 'flex', alignItems: 'center', gap: 40, background: 'radial-gradient(circle at top right, rgba(208, 188, 255, 0.1), transparent)' }}>
