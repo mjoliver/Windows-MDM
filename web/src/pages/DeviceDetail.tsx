@@ -76,13 +76,13 @@ export function DeviceDetailPage() {
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 8 }}>
-              <h1 style={{ fontSize: '2.4rem', fontWeight: 800, margin: 0 }}>{device.device_name || 'Generic Windows Device'}</h1>
+              <h1 style={{ fontSize: '2.4rem', fontWeight: 800, margin: 0 }}>{device.device_name || 'Unnamed Device'}</h1>
               <Badge status={device.compliance_status} label={device.compliance_status === 'compliant' ? 'Verified Healthy' : 'Action Required'} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 24, opacity: 0.6, fontSize: '1rem', fontWeight: 500 }}>
               <span>{device.manufacturer} {device.model}</span>
               <span style={{ width: 4, height: 4, borderRadius: '50%', background: 'currentColor' }} />
-              <span>Windows {device.os_version}</span>
+              <span>{device.os_version}</span>
               <span style={{ width: 4, height: 4, borderRadius: '50%', background: 'currentColor' }} />
               <span>Checked in {timeAgo(device.last_checkin)}</span>
             </div>

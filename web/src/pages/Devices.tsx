@@ -56,7 +56,7 @@ export function DevicesPage() {
           <EmptyState
             icon={<Monitor size={48} style={{ opacity: 0.3 }} />}
             title={search ? 'No results found' : 'No devices enrolled'}
-            description={search ? 'Try a more general search term' : 'Waiting for Windows devices to join the fleet'}
+            description={search ? 'Try a more general search term' : 'Waiting for devices to join the fleet'}
           />
         ) : (
           <table>
