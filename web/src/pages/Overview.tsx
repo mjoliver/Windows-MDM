@@ -5,17 +5,8 @@ import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
 import { api, type Device, type FleetCompliance } from '../api'
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'
-
-function timeAgo(iso: string | null) {
-  if (!iso) return 'Never'
-  const diff = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(diff / 60000)
-  if (m < 1)   return 'Just now'
-  if (m < 60)  return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24)  return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
+import { timeAgo } from '../format'
+import { EmptyState } from '../components/EmptyState'
 
 export function OverviewPage() {
   const [devices, setDevices]           = useState<Device[]>([])
@@ -106,10 +97,12 @@ export function OverviewPage() {
             <div className="card-title" style={{ marginBottom: 24, padding: '0 8px' }}>Global Health Index</div>
             
             {total === 0 ? (
-              <div className="empty-state" style={{ padding: 60 }}>
-                <Users size={48} style={{ opacity: 0.2, marginBottom: 16 }} />
-                <p style={{ opacity: 0.6 }}>Awaiting telemetry from enrolled devices…</p>
-              </div>
+              <EmptyState
+                icon={<Users size={48} style={{ opacity: 0.2 }} />}
+                title=""
+                description="Awaiting telemetry from enrolled devices…"
+                style={{ padding: 60 }}
+              />
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 40, padding: '0 8px' }}>
                 <div style={{ position: 'relative', width: 180, height: 180 }}>
@@ -171,10 +164,12 @@ export function OverviewPage() {
             </div>
             
             {recentDevices.length === 0 ? (
-              <div className="empty-state" style={{ padding: 60 }}>
-                <Monitor size={48} style={{ opacity: 0.2, marginBottom: 16 }} />
-                <p style={{ opacity: 0.6 }}>No recently provisioned devices.</p>
-              </div>
+              <EmptyState
+                icon={<Monitor size={48} style={{ opacity: 0.2 }} />}
+                title=""
+                description="No recently provisioned devices."
+                style={{ padding: 60 }}
+              />
             ) : (
               <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
                 <table className="table-static">

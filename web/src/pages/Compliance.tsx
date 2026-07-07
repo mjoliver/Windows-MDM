@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
 import { api, type FleetCompliance, type Device } from '../api'
+import { EmptyState } from '../components/EmptyState'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 
 export function CompliancePage() {
@@ -84,9 +85,7 @@ export function CompliancePage() {
             <div className="card-title">Compliance Rate</div>
           </div>
           {total === 0 ? (
-            <div className="empty-state" style={{ padding: '28px 0' }}>
-              <Monitor size={28} /><p>No devices enrolled</p>
-            </div>
+            <EmptyState icon={<Monitor size={28} />} title="No devices enrolled" description="" style={{ padding: '28px 0' }} />
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 28 }}>
               <div style={{ position: 'relative', width: 160, height: 160, flexShrink: 0 }}>
@@ -134,9 +133,7 @@ export function CompliancePage() {
             <div className="card-subtitle">Policies failing across the most devices</div>
           </div>
           {(fleet?.top_issues?.length ?? 0) === 0 ? (
-            <div className="empty-state" style={{ padding: '28px 0' }}>
-              <CheckSquare size={28} /><p>No issues detected</p>
-            </div>
+            <EmptyState icon={<CheckSquare size={28} />} title="No issues detected" description="" style={{ padding: '28px 0' }} />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
               {fleet!.top_issues.map((issue, i) => (
@@ -161,9 +158,9 @@ export function CompliancePage() {
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
           Device Compliance
         </div>
-        {devices.length === 0 ? (
-          <div className="empty-state"><Monitor size={36} /><p>No devices enrolled</p></div>
-        ) : (
+         {devices.length === 0 ? (
+            <EmptyState icon={<Monitor size={36} />} title="No devices enrolled" description="" />
+         ) : (
           <table>
             <thead>
               <tr>

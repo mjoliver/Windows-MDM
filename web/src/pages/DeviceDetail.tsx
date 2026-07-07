@@ -4,18 +4,10 @@ import { Monitor, ArrowLeft, Lock, Trash2, RefreshCw, HelpCircle } from 'lucide-
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
 import { api, type Device, type DeviceCompliance, type DeviceCommand } from '../api'
-import { formatResultCode } from '../format'
-
-function timeAgo(iso: string | null) {
-  if (!iso) return 'Never'
-  const diff = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(diff / 60000)
-  if (m < 1)  return 'Just now'
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
+import { formatResultCode, timeAgo } from '../format'
+import { EmptyState } from '../components/EmptyState'
+import { Modal } from '../components/Modal'
+import { InfoGrid } from '../components/InfoGrid'
 
 export function DeviceDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -160,10 +152,12 @@ export function DeviceDetailPage() {
                   </table>
                 </div>
               ) : (
-                <div className="empty-state" style={{ padding: 60 }}>
-                  <HelpCircle size={40} style={{ opacity: 0.2, marginBottom: 16 }} />
-                  <p style={{ opacity: 0.6 }}>No policy configuration received from device yet.</p>
-                </div>
+                <EmptyState
+                  icon={<HelpCircle size={40} style={{ opacity: 0.2 }} />}
+                  title=""
+                  description="No policy configuration received from device yet."
+                  style={{ padding: 60 }}
+                />
               )}
             </div>
 
@@ -217,28 +211,17 @@ export function DeviceDetailPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
             <div className="card" style={{ padding: 24 }}>
               <div className="stat-label" style={{ marginBottom: 16 }}>Inventory Detail</div>
-              <div className="info-grid" style={{ gridTemplateColumns: '1fr', gap: 20 }}>
-                {[
+              <InfoGrid
+                fields={[
                   { label: 'Manufacturer', value: device.manufacturer },
                   { label: 'Model', value: device.model },
                   { label: 'OS Version', value: device.os_version },
                   { label: 'OS Build', value: device.os_build },
                   { label: 'Serial Number', value: device.serial_number },
                   { label: 'Hardware ID', value: device.hardware_id, mono: true },
-                ].map(item => (
-                  <div key={item.label}>
-                    <div className="info-label" style={{ marginBottom: 4, fontSize: '0.7rem' }}>{item.label}</div>
-                    <div className="info-value" style={{ 
-                      fontSize: '0.875rem', 
-                      fontFamily: item.mono ? 'monospace' : 'inherit',
-                      wordBreak: 'break-all',
-                      color: 'var(--md-sys-color-on-surface)'
-                    }}>
-                      {item.value || 'Not reported'}
-                    </div>
-                  </div>
-                ))}
-              </div>
+                ]}
+                columns={1}
+              />
             </div>
 
             <div className="card" style={{ padding: 24, background: 'rgba(242, 184, 181, 0.03)', borderColor: 'rgba(242, 184, 181, 0.1)' }}>
@@ -255,31 +238,28 @@ export function DeviceDetailPage() {
           </div>
         </div>
 
-        {/* Wipe Confirm */}
-        {confirmWipe && (
-          <div className="modal-overlay" onClick={() => setConfirmWipe(false)}>
-            <div className="modal" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
-              <div className="modal-header">
-                <span className="modal-title" style={{ color: 'var(--md-sys-color-error)' }}>Confirm Action</span>
-              </div>
-              <div className="modal-body">
-                <p style={{ opacity: 0.8, lineHeight: 1.6 }}>
-                  You are about to issue a <strong>Remote Wipe</strong> command. This operation is irreversible.
-                </p>
-              </div>
-              <div className="modal-footer">
-                <button className="btn btn-secondary" onClick={() => setConfirmWipe(false)}>Cancel</button>
-                <button className="btn btn-danger" onClick={async () => {
-                  setConfirmWipe(false)
-                  await action('wipe', () => api.devices.wipe(id!))
-                  navigate('/devices')
-                }}>
-                  Confirm Wipe
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        <Modal
+          open={confirmWipe}
+          onClose={() => setConfirmWipe(false)}
+          title="Confirm Action"
+          maxWidth={440}
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setConfirmWipe(false)}>Cancel</button>
+              <button className="btn btn-danger" onClick={async () => {
+                setConfirmWipe(false)
+                await action('wipe', () => api.devices.wipe(id!))
+                navigate('/devices')
+              }}>
+                Confirm Wipe
+              </button>
+            </>
+          }
+        >
+          <p style={{ opacity: 0.8, lineHeight: 1.6 }}>
+            You are about to issue a <strong>Remote Wipe</strong> command. This operation is irreversible.
+          </p>
+        </Modal>
       </div>
     </Layout>
   )

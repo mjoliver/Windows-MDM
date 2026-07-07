@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react'
 import { Users, Plus, Trash2, Monitor, Shield, X } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { api, type Group, type Device, type Profile } from '../api'
+import { EmptyState } from '../components/EmptyState'
+import { ActionButton } from '../components/ActionButton'
+import { Modal } from '../components/Modal'
 
 function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (g: Group) => void }) {
   const [name, setName]     = useState('')
@@ -179,17 +182,17 @@ export function GroupsPage() {
         </button>
       </div>
 
-      {groups.length === 0 && !loading ? (
-        <div className="table-wrap">
-          <div className="empty-state">
-            <Users size={40} />
-            <h3>No groups yet</h3>
-            <p>Create a group, add devices, then assign a profile to enforce policy</p>
-            <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-              <Plus size={14} /> New Group
-            </button>
-          </div>
-        </div>
+       {groups.length === 0 && !loading ? (
+         <div className="table-wrap">
+           <EmptyState
+             icon={<Users size={40} />}
+             title="No groups yet"
+             description="Create a group, add devices, then assign a profile to enforce policy"
+             action={
+               <ActionButton icon={<Plus size={14} />} label="New Group" onClick={() => setShowCreate(true)} variant="primary" />
+             }
+           />
+         </div>
       ) : (
         <div className="table-wrap">
           <table>
@@ -258,24 +261,24 @@ export function GroupsPage() {
         />
       )}
 
-      {deleteId && (
-        <div className="modal-overlay" onClick={() => setDeleteId(null)}>
-          <div className="modal" style={{ maxWidth: 400 }} onClick={e => e.stopPropagation()}>
-            <div className="modal-header"><span className="modal-title">Delete Group</span></div>
-            <div className="modal-body">
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.7 }}>
-                Devices in this group will be ungrouped. Existing profiles will no longer be applied.
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setDeleteId(null)}>Cancel</button>
-              <button className="btn btn-danger" onClick={() => handleDelete(deleteId)}>
-                <Trash2 size={13} /> Delete Group
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+       <Modal
+         open={!!deleteId}
+         onClose={() => setDeleteId(null)}
+         title="Delete Group"
+         maxWidth={400}
+         footer={
+           <>
+             <button className="btn btn-secondary" onClick={() => setDeleteId(null)}>Cancel</button>
+             <button className="btn btn-danger" onClick={() => handleDelete(deleteId!)}>
+               <Trash2 size={13} /> Delete Group
+             </button>
+           </>
+         }
+       >
+         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.7 }}>
+           Devices in this group will be ungrouped. Existing profiles will no longer be applied.
+         </p>
+       </Modal>
     </Layout>
   )
 }

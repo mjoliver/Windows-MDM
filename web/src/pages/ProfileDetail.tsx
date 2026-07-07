@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Shield, Plus, Trash2, Search, Save } from 'lucide-react'
+import { ArrowLeft, Shield, Plus, Trash2, Save } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { api, type Profile, type PolicySetting, type CatalogEntry } from '../api'
+import { EmptyState } from '../components/EmptyState'
+import { SearchBar } from '../components/SearchBar'
 
 export function ProfileDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -136,12 +138,13 @@ export function ProfileDetailPage() {
             </div>
             
             {settings.length === 0 ? (
-              <div className="empty-state" style={{ flex: 1, justifyContent: 'center' }}>
-                <Shield size={48} style={{ marginBottom: 16 }} />
-                <h3>No policies assigned</h3>
-                <p>Start by adding security rules from the catalog.</p>
-                <button className="btn btn-secondary mt-16" onClick={() => setDrawerOpen(true)}>Open Catalog</button>
-              </div>
+              <EmptyState
+                icon={<Shield size={48} />}
+                title="No policies assigned"
+                description="Start by adding security rules from the catalog."
+                action={<button className="btn btn-secondary mt-16" onClick={() => setDrawerOpen(true)}>Open Catalog</button>}
+                style={{ flex: 1, justifyContent: 'center' }}
+              />
             ) : (
               <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
                 {settings.map(s => (
@@ -207,18 +210,14 @@ export function ProfileDetailPage() {
                 <button className="btn btn-icon btn-secondary btn-sm" onClick={() => setDrawerOpen(false)} style={{ borderRadius: '50%' }}>×</button>
               </div>
               
-              <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--md-sys-color-outline)' }}>
-                 <div className="input-wrap">
-                  <Search size={18} className="input-icon" />
-                  <input
-                    className="input input-has-icon"
-                    placeholder="Search policies..."
-                    value={catalogQuery}
-                    onChange={e => setCatalogQuery(e.target.value)}
-                    autoFocus
-                  />
-                </div>
-              </div>
+               <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--md-sys-color-outline)' }}>
+                 <SearchBar
+                   value={catalogQuery}
+                   onChange={setCatalogQuery}
+                   placeholder="Search policies..."
+                   style={{ width: '100%' }}
+                 />
+               </div>
 
               <div style={{ flex: 1, overflowY: 'auto' }}>
                 {searching ? (

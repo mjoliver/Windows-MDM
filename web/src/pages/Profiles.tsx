@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { Shield, Plus, Trash2, Edit2, X } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { api, type Profile } from '../api'
+import { EmptyState } from '../components/EmptyState'
+import { ActionButton } from '../components/ActionButton'
+import { Modal } from '../components/Modal'
 
 function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Profile) => void }) {
   const [name, setName]   = useState('')
@@ -83,17 +86,17 @@ export function ProfilesPage() {
         </button>
       </div>
 
-      {profiles.length === 0 && !loading ? (
-        <div className="table-wrap">
-          <div className="empty-state">
-            <Shield size={40} />
-            <h3>No profiles yet</h3>
-            <p>Create a profile to start enforcing policies on your devices</p>
-            <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-              <Plus size={14} /> New Profile
-            </button>
-          </div>
-        </div>
+       {profiles.length === 0 && !loading ? (
+         <div className="table-wrap">
+           <EmptyState
+             icon={<Shield size={40} />}
+             title="No profiles yet"
+             description="Create a profile to start enforcing policies on your devices"
+             action={
+               <ActionButton icon={<Plus size={14} />} label="New Profile" onClick={() => setShowCreate(true)} variant="primary" />
+             }
+           />
+         </div>
       ) : (
         <div className="table-wrap">
           <table>
@@ -158,26 +161,24 @@ export function ProfilesPage() {
         />
       )}
 
-      {deleteId && (
-        <div className="modal-overlay" onClick={() => setDeleteId(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 400 }}>
-            <div className="modal-header">
-              <span className="modal-title">Delete Profile</span>
-            </div>
-            <div className="modal-body">
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.7 }}>
-                Are you sure? This profile will be removed from all groups and devices.
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setDeleteId(null)}>Cancel</button>
-              <button className="btn btn-danger" onClick={() => handleDelete(deleteId)}>
-                <Trash2 size={13} /> Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Modal
+        open={!!deleteId}
+        onClose={() => setDeleteId(null)}
+        title="Delete Profile"
+        maxWidth={400}
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setDeleteId(null)}>Cancel</button>
+            <button className="btn btn-danger" onClick={() => handleDelete(deleteId!)}>
+              <Trash2 size={13} /> Delete
+            </button>
+          </>
+        }
+      >
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.7 }}>
+          Are you sure? This profile will be removed from all groups and devices.
+        </p>
+      </Modal>
     </Layout>
   )
 }
