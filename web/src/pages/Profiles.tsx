@@ -6,18 +6,21 @@ import { ActionButton } from '../components/ActionButton'
 import { api, type Profile } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
+import { useToast } from '../context/ToastContext'
 
 function CreateProfileModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Profile) => void }) {
   const [name, setName]   = useState('')
   const [desc, setDesc]   = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
+  const toast = useToast()
 
   const submit = async () => {
     if (!name.trim()) { setError('Name is required'); return }
     setSaving(true)
     try {
       const p = await api.profiles.create({ name: name.trim(), description: desc.trim() })
+      toast.success(`Profile "${p.name}" created`)
       onCreated(p)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to create profile')
@@ -61,15 +64,26 @@ export function ProfilesPage() {
   const [loading, setLoading]     = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [deleteId, setDeleteId]   = useState<string | null>(null)
+  const [deleting, setDeleting]   = useState(false)
+  const toast = useToast()
   const navigate = useNavigate()
 
   const load = () => api.profiles.list().then(setProfiles).finally(() => setLoading(false))
   useEffect(() => { load() }, [])
 
   const handleDelete = async (id: string) => {
-    await api.profiles.delete(id)
-    setProfiles(ps => ps.filter(p => p.id !== id))
-    setDeleteId(null)
+    const target = profiles.find(p => p.id === id)
+    setDeleting(true)
+    try {
+      await api.profiles.delete(id)
+      setProfiles(ps => ps.filter(p => p.id !== id))
+      setDeleteId(null)
+      if (target) toast.success(`Profile "${target.name}" deleted`)
+    } catch (e) {
+      toast.error(`Failed to delete profile: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   return (
@@ -135,7 +149,7 @@ export function ProfilesPage() {
                       </button>
                       <button className="btn btn-secondary btn-sm btn-icon" 
                         style={{ color: 'var(--md-sys-color-error)' }}
-                        title="Delete" onClick={() => setDeleteId(p.id)}>
+                        title="Delete" onClick={() => setDeleteId(p.id)} disabled={deleting}>
                         <Trash2 size={13} />
                       </button>
                     </div>
@@ -161,9 +175,9 @@ export function ProfilesPage() {
         maxWidth={400}
         footer={
           <>
-            <button className="btn btn-secondary" onClick={() => setDeleteId(null)}>Cancel</button>
-            <button className="btn btn-danger" onClick={() => handleDelete(deleteId!)}>
-              <Trash2 size={13} /> Delete
+            <button className="btn btn-secondary" onClick={() => setDeleteId(null)} disabled={deleting}>Cancel</button>
+            <button className="btn btn-danger" onClick={() => handleDelete(deleteId!)} disabled={deleting}>
+              <Trash2 size={13} /> {deleting ? 'Deleting…' : 'Delete'}
             </button>
           </>
         }

@@ -12,12 +12,14 @@ function CreateGroupModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [desc, setDesc]     = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
+  const toast = useToast()
 
   const submit = async () => {
     if (!name.trim()) { setError('Name is required'); return }
     setSaving(true)
     try {
       const g = await api.groups.create({ name: name.trim(), description: desc.trim() })
+      toast.success(`Group "${g.name}" created`)
       onCreated(g)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed')
@@ -62,16 +64,29 @@ function ManageModal({
   onClose: () => void
 }) {
   const [tab, setTab] = useState<'devices' | 'profiles'>('devices')
-  const [saving, setSaving] = useState(false)
+  const [busy, setBusy] = useState<Record<string, boolean>>({})
   const toast = useToast()
 
-  const assign = async (ids: string[], action: 'add' | 'remove', type: 'devices' | 'profiles') => {
-    setSaving(true)
+  const isBusy = (key: string) => !!busy[key]
+
+  const setOp = (key: string, val: boolean) => {
+    setBusy(prev => ({ ...prev, [key]: val }))
+  }
+
+  const assign = async (ids: string[], action: 'add' | 'remove', type: 'devices' | 'profiles', labelKey: string, label: string) => {
+    const opKey = `${action}-${labelKey}`
+    setOp(opKey, true)
     try {
       if (type === 'devices')  await api.groups.assignDevices(group.id, ids, action)
       if (type === 'profiles') await api.groups.assignProfiles(group.id, ids, action)
+      const noun = type === 'profiles' ? 'Profile' : 'Device'
+      if (action === 'add') {
+        toast.success(`${noun} "${label}" ${type === 'profiles' ? 'assigned' : 'added'} to group "${group.name}"`)
+      } else {
+        toast.success(`${noun} "${label}" removed from group "${group.name}"`)
+      }
     } catch (e) { toast.error(`Failed to ${action} ${type}: ${e instanceof Error ? e.message : String(e)}`) }
-    finally { setSaving(false) }
+    finally { setOp(opKey, false) }
   }
 
   return (
@@ -103,10 +118,14 @@ function ManageModal({
                 <Monitor size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} />
                 <span style={{ flex: 1, fontSize: '0.875rem' }}>{d.device_name || d.hardware_id}</span>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <button className="btn btn-sm btn-primary" disabled={saving}
-                    onClick={() => assign([d.id], 'add', 'devices')}>Add</button>
-                  <button className="btn btn-sm btn-secondary" disabled={saving}
-                    onClick={() => assign([d.id], 'remove', 'devices')}>Remove</button>
+                  <button className="btn btn-sm btn-primary" disabled={isBusy(`device-add-${d.id}`)}
+                    onClick={() => assign([d.id], 'add', 'devices', `device-add-${d.id}`, d.device_name || d.hardware_id)}>
+                    {isBusy(`device-add-${d.id}`) ? 'Adding…' : 'Add'}
+                  </button>
+                  <button className="btn btn-sm btn-secondary" disabled={isBusy(`device-remove-${d.id}`)}
+                    onClick={() => assign([d.id], 'remove', 'devices', `device-remove-${d.id}`, d.device_name || d.hardware_id)}>
+                    {isBusy(`device-remove-${d.id}`) ? 'Removing…' : 'Remove'}
+                  </button>
                 </div>
               </div>
             ))
@@ -123,10 +142,14 @@ function ManageModal({
                 <Shield size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
                 <span style={{ flex: 1, fontSize: '0.875rem' }}>{p.name}</span>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <button className="btn btn-sm btn-primary" disabled={saving}
-                    onClick={() => assign([p.id], 'add', 'profiles')}>Assign</button>
-                  <button className="btn btn-sm btn-secondary" disabled={saving}
-                    onClick={() => assign([p.id], 'remove', 'profiles')}>Remove</button>
+                  <button className="btn btn-sm btn-primary" disabled={isBusy(`profile-add-${p.id}`)}
+                    onClick={() => assign([p.id], 'add', 'profiles', `profile-add-${p.id}`, p.name)}>
+                    {isBusy(`profile-add-${p.id}`) ? 'Assigning…' : 'Assign'}
+                  </button>
+                  <button className="btn btn-sm btn-secondary" disabled={isBusy(`profile-remove-${p.id}`)}
+                    onClick={() => assign([p.id], 'remove', 'profiles', `profile-remove-${p.id}`, p.name)}>
+                    {isBusy(`profile-remove-${p.id}`) ? 'Removing…' : 'Remove'}
+                  </button>
                 </div>
               </div>
             ))
@@ -145,6 +168,7 @@ export function GroupsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [managing, setManaging]     = useState<Group | null>(null)
   const [deleteId, setDeleteId]     = useState<string | null>(null)
+  const toast = useToast()
 
   const load = () => {
     setLoading(true)
@@ -161,10 +185,21 @@ export function GroupsPage() {
 
   useEffect(() => { load() }, [])
 
+  const [deleting, setDeleting] = useState(false)
+
   const handleDelete = async (id: string) => {
-    await api.groups.delete(id)
-    setGroups(gs => gs.filter(g => g.id !== id))
-    setDeleteId(null)
+    const target = groups.find(g => g.id === id)
+    setDeleting(true)
+    try {
+      await api.groups.delete(id)
+      setGroups(gs => gs.filter(g => g.id !== id))
+      setDeleteId(null)
+      if (target) toast.success(`Group "${target.name}" deleted`)
+    } catch (e) {
+      toast.error(`Failed to delete group: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   return (
@@ -261,9 +296,9 @@ export function GroupsPage() {
          footer={
            <>
              <button className="btn btn-secondary" onClick={() => setDeleteId(null)}>Cancel</button>
-             <button className="btn btn-danger" onClick={() => handleDelete(deleteId!)}>
-               <Trash2 size={13} /> Delete Group
-             </button>
+              <button className="btn btn-danger" onClick={() => handleDelete(deleteId!)} disabled={deleting}>
+                <Trash2 size={13} /> {deleting ? 'Deleting…' : 'Delete Group'}
+              </button>
            </>
          }
        >
