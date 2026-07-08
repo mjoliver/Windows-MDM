@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Shield, Plus, Trash2, Edit2, X } from 'lucide-react'
+import { Shield, Plus, Trash2, Edit2 } from 'lucide-react'
 import { Layout } from '../components/Layout'
+import { ActionButton } from '../components/ActionButton'
 import { api, type Profile } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
 
-function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Profile) => void }) {
+function CreateProfileModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Profile) => void }) {
   const [name, setName]   = useState('')
   const [desc, setDesc]   = useState('')
   const [saving, setSaving] = useState(false)
@@ -24,36 +25,34 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <span className="modal-title">New Profile</span>
-          <button className="btn btn-icon btn-secondary" onClick={onClose}><X size={14} /></button>
-        </div>
-        <div className="modal-body">
-          <div className="form-group">
-            <label className="form-label">Profile name *</label>
-            <input className="input" value={name} onChange={e => setName(e.target.value)}
-              placeholder="e.g. Security Baseline" autoFocus />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Description</label>
-            <input className="input" value={desc} onChange={e => setDesc(e.target.value)}
-              placeholder="Brief description of what this profile enforces" />
-          </div>
-          {error && <p style={{ color: 'var(--danger)', fontSize: '0.82rem', marginTop: 8 }}>{error}</p>}
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: 8, lineHeight: 1.6 }}>
-            After creating the profile you can add policy settings from the Policy Catalog.
-          </p>
-        </div>
-        <div className="modal-footer">
+    <Modal
+      open={true}
+      onClose={onClose}
+      title="New Profile"
+      footer={
+        <>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={submit} disabled={saving}>
             {saving ? 'Creating…' : 'Create Profile'}
           </button>
-        </div>
+        </>
+      }
+    >
+      <div className="form-group">
+        <label className="form-label">Profile name *</label>
+        <input className="input" value={name} onChange={e => setName(e.target.value)}
+          placeholder="e.g. Security Baseline" autoFocus />
       </div>
-    </div>
+      <div className="form-group">
+        <label className="form-label">Description</label>
+        <input className="input" value={desc} onChange={e => setDesc(e.target.value)}
+          placeholder="Brief description of what this profile enforces" />
+      </div>
+      {error && <p style={{ color: 'var(--danger)', fontSize: '0.82rem', marginTop: 8 }}>{error}</p>}
+      <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: 8, lineHeight: 1.6 }}>
+        After creating the profile you can add policy settings from the Policy Catalog.
+      </p>
+    </Modal>
   )
 }
 
@@ -80,9 +79,7 @@ export function ProfilesPage() {
           <h1>Configuration Profiles</h1>
           <p>Policy bundles assigned to device groups</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-          <Plus size={14} /> New Profile
-        </button>
+        <ActionButton icon={<Plus size={14} />} label="New Profile" onClick={() => setShowCreate(true)} variant="primary" />
       </div>
 
        {profiles.length === 0 && !loading ? (
@@ -151,7 +148,7 @@ export function ProfilesPage() {
       )}
 
       {showCreate && (
-        <CreateModal
+        <CreateProfileModal
           onClose={() => setShowCreate(false)}
           onCreated={p => { setProfiles(ps => [p, ...ps]); setShowCreate(false) }}
         />

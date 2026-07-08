@@ -66,8 +66,7 @@ export function Layout({ children, title }: Props) {
         <div className="sidebar-footer">
           {me && (
             <div className="user-chip" style={{ cursor: 'pointer' }} onClick={() => {
-              fetch('/auth/logout', { method: 'POST', credentials: 'include' })
-                .then(() => navigate('/login'))
+              api.logout().then(() => navigate('/login'))
             }}>
               <div className="detail-icon" style={{ width: 32, height: 32, borderRadius: 10, fontSize: '0.75rem', fontWeight: 800 }}>{initials}</div>
               <div className="user-info">
