@@ -11,7 +11,7 @@ export interface SearchBarProps {
 
 /**
  * A search input with a clear button that appears when value is non-empty.
- * Uses the existing `.input-wrap`, `.input-icon`, and `.input` CSS classes.
+ * Uses flexbox layout to naturally prevent icon/text overlap.
  */
 export function SearchBar({
   value,
@@ -24,13 +24,45 @@ export function SearchBar({
   const hasValue = value.length > 0
 
   return (
-    <div className={`input-wrap${className ? ` ${className}` : ''}`} style={style}>
-      <Search size={14} className="input-icon" />
+    <div 
+      className={`search-bar-wrap${className ? ` ${className}` : ''}`} 
+      style={{ 
+        position: 'relative', 
+        display: 'flex', 
+        alignItems: 'center', 
+        width: '100%',
+        ...style 
+      }}
+    >
+      <Search 
+        size={16} 
+        className="search-icon" 
+        style={{
+          position: 'absolute',
+          left: 12,
+          pointerEvents: 'none',
+          color: 'var(--md-sys-color-on-surface-variant)',
+          opacity: 0.5,
+          zIndex: 1,
+        }}
+      />
       <input
-        className="input input-has-icon"
+        className="search-input"
         placeholder={placeholder}
         value={value}
         onChange={e => onChange(e.target.value)}
+        style={{
+          background: 'rgba(0, 0, 0, 0.3)',
+          border: '1px solid var(--md-sys-color-outline)',
+          borderRadius: 'var(--radius-sm)',
+          padding: '12px 16px 12px 38px',
+          color: 'white',
+          width: '100%',
+          transition: 'border-color 0.2s',
+          outline: 'none',
+          fontFamily: 'inherit',
+          fontSize: 'inherit',
+        }}
       />
       {hasValue && (
         <button

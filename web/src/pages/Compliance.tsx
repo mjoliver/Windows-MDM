@@ -81,7 +81,7 @@ export function CompliancePage() {
       <div className="grid-2" style={{ marginBottom: 24 }}>
         {/* Donut */}
         <div className="card">
-          <div className="card-header">
+          <div className="card-header" style={{ marginBottom: 20 }}>
             <div className="card-title">Compliance Rate</div>
           </div>
           {total === 0 ? (
@@ -158,9 +158,9 @@ export function CompliancePage() {
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
           Device Compliance
         </div>
-         {devices.length === 0 ? (
-            <EmptyState icon={<Monitor size={36} />} title="No devices enrolled" description="" />
-         ) : (
+        {devices.length === 0 ? (
+          <EmptyState icon={<Monitor size={36} />} title="No devices enrolled" description="Enrolled devices will appear here with their compliance status" />
+        ) : (
           <table>
             <thead>
               <tr>

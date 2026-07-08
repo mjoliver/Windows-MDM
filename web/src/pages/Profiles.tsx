@@ -4,7 +4,6 @@ import { Shield, Plus, Trash2, Edit2, X } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { api, type Profile } from '../api'
 import { EmptyState } from '../components/EmptyState'
-import { ActionButton } from '../components/ActionButton'
 import { Modal } from '../components/Modal'
 
 function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Profile) => void }) {
@@ -87,17 +86,14 @@ export function ProfilesPage() {
       </div>
 
        {profiles.length === 0 && !loading ? (
-         <div className="table-wrap">
-           <EmptyState
-             icon={<Shield size={40} />}
-             title="No profiles yet"
-             description="Create a profile to start enforcing policies on your devices"
-             action={
-               <ActionButton icon={<Plus size={14} />} label="New Profile" onClick={() => setShowCreate(true)} variant="primary" />
-             }
-           />
-         </div>
-      ) : (
+          <div className="table-wrap">
+            <EmptyState
+              icon={<Shield size={40} />}
+              title="No profiles yet"
+              description="Create a profile to start enforcing policies on your devices"
+            />
+          </div>
+       ) : (
         <div className="table-wrap">
           <table>
             <thead>

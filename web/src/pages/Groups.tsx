@@ -3,7 +3,6 @@ import { Users, Plus, Trash2, Monitor, Shield, X } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { api, type Group, type Device, type Profile } from '../api'
 import { EmptyState } from '../components/EmptyState'
-import { ActionButton } from '../components/ActionButton'
 import { Modal } from '../components/Modal'
 import { useToast } from '../context/ToastContext'
 
@@ -185,17 +184,14 @@ export function GroupsPage() {
       </div>
 
        {groups.length === 0 && !loading ? (
-         <div className="table-wrap">
-           <EmptyState
-             icon={<Users size={40} />}
-             title="No groups yet"
-             description="Create a group, add devices, then assign a profile to enforce policy"
-             action={
-               <ActionButton icon={<Plus size={14} />} label="New Group" onClick={() => setShowCreate(true)} variant="primary" />
-             }
-           />
-         </div>
-      ) : (
+          <div className="table-wrap">
+            <EmptyState
+              icon={<Users size={40} />}
+              title="No groups yet"
+              description="Create a group, add devices, then assign a profile to enforce policy"
+            />
+          </div>
+       ) : (
         <div className="table-wrap">
           <table>
             <thead>
