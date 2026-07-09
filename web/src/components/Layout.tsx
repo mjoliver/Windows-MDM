@@ -25,7 +25,7 @@ export function Layout({ children, title }: Props) {
   useEffect(() => {
     // Auth gate: on failure, redirect to login (api also redirects on 401).
     api.me().then(setMe).catch(() => navigate('/login'))
-  }, [])
+  }, [navigate])
 
   // Do not mount the authenticated layout (or its children, which fetch data)
   // until the session is confirmed.

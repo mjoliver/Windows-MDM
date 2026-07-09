@@ -1,13 +1,10 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
+import { useState, useCallback, type ReactNode } from 'react'
 import { Toast, type ToastVariant } from '../components/Toast'
+import { ToastContext } from '../hooks/useToast'
 
 let _toastId = 0
 function generateId() {
   return `toast-${++_toastId}-${Date.now()}`
-}
-
-export interface ToastId {
-  id: string
 }
 
 export interface ToastManager {
@@ -18,8 +15,6 @@ export interface ToastManager {
   }
   dismiss: (id: string) => void
 }
-
-const ToastContext = createContext<ToastManager | null>(null)
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; variant: ToastVariant; duration?: number }>>([])
@@ -39,12 +34,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     info: (message: string, duration?: number) => addToast('info', message, duration),
   }
 
-  const dismiss = dismissToast
-
   return (
-    <ToastContext.Provider value={{ toast, dismiss }}>
+    <ToastContext.Provider value={{ toast, dismiss: dismissToast }}>
       {children}
-      <ToastContainer toasts={toasts} onDismiss={dismiss} />
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </ToastContext.Provider>
   )
 }
@@ -78,12 +71,4 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Array<{ id: string; mes
       ))}
     </div>
   )
-}
-
-export function useToast(): ToastManager['toast'] {
-  const context = useContext(ToastContext)
-  if (!context) {
-    throw new Error('useToast must be used within a ToastProvider')
-  }
-  return context.toast
 }

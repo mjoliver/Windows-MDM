@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Monitor, Lock, Trash2, RefreshCw, HelpCircle } from 'lucide-react'
 import { Layout } from '../components/Layout'
@@ -10,7 +10,7 @@ import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
 import { InfoGrid } from '../components/InfoGrid'
 import { SkeletonLine, SkeletonBlock } from '../components/SkeletonLoader'
-import { useToast } from '../context/ToastContext'
+import { useToast } from '../hooks/useToast'
 
 export function DeviceDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -25,12 +25,7 @@ export function DeviceDetailPage() {
   const [confirmWipe, setConfirmWipe]     = useState(false)
   const toast = useToast()
 
-  useEffect(() => {
-    if (!id) return
-    refresh()
-  }, [id])
-
-  const refresh = () => {
+  const refresh = useCallback(() => {
     setLoading(true)
     setError(null)
     // Fetch device first — if this fails, show error. Others are best-effort.
@@ -50,7 +45,12 @@ export function DeviceDetailPage() {
     api.devices.getCommands(id!)
       .then(cmd => setCommands(cmd.commands ?? []))   // Go nil slice → JSON null → guard here
       .catch(() => setCommands([]))
-  }
+  }, [id])
+
+  useEffect(() => {
+    if (!id) return
+    refresh()
+  }, [id, refresh])
 
   const action = async (name: string, fn: () => Promise<unknown>) => {
     setActionLoading(name)

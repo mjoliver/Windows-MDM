@@ -5,7 +5,7 @@ import { ActionButton } from '../components/ActionButton'
 import { api, type Group, type Device, type Profile } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
-import { useToast } from '../context/ToastContext'
+import { useToast } from '../hooks/useToast'
 
 function CreateGroupModal({ onClose, onCreated }: { onClose: () => void; onCreated: (g: Group) => void }) {
   const [name, setName]     = useState('')

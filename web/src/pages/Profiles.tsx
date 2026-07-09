@@ -6,7 +6,7 @@ import { ActionButton } from '../components/ActionButton'
 import { api, type Profile } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
-import { useToast } from '../context/ToastContext'
+import { useToast } from '../hooks/useToast'
 
 function CreateProfileModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Profile) => void }) {
   const [name, setName]   = useState('')

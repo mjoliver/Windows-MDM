@@ -7,7 +7,7 @@ import { api, type Profile, type PolicySetting, type CatalogEntry } from '../api
 import { EmptyState } from '../components/EmptyState'
 import { SearchBar } from '../components/SearchBar'
 import { SkeletonLine, SkeletonBlock } from '../components/SkeletonLoader'
-import { useToast } from '../context/ToastContext'
+import { useToast } from '../hooks/useToast'
 
 export function ProfileDetailPage() {
   const { id } = useParams<{ id: string }>()
