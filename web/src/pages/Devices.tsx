@@ -1,20 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Monitor, Search, RefreshCw } from 'lucide-react'
+import { Monitor, RefreshCw } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
 import { api, type Device } from '../api'
-
-function timeAgo(iso: string | null) {
-  if (!iso) return '—'
-  const diff = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(diff / 60000)
-  if (m < 1)  return 'Just now'
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
+import { timeAgo } from '../format'
+import { EmptyState } from '../components/EmptyState'
+import { SearchBar } from '../components/SearchBar'
 
 export function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([])
@@ -51,25 +43,21 @@ export function DevicesPage() {
       </div>
 
       <div className="table-wrap">
-        {/* Search bar */}
         <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}>
-          <div className="input-wrap" style={{ maxWidth: 320 }}>
-            <Search size={14} className="input-icon" />
-            <input
-              className="input input-has-icon"
-              placeholder="Search fleet..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
-          </div>
+          <SearchBar
+            value={search}
+            onChange={setSearch}
+            placeholder="Search fleet..."
+            style={{ maxWidth: 320 }}
+          />
         </div>
 
         {filtered.length === 0 ? (
-          <div className="empty-state">
-            <Monitor size={48} style={{ opacity: 0.3 }} />
-            <h3>{search ? 'No results found' : 'No devices enrolled'}</h3>
-            <p>{search ? 'Try a more general search term' : 'Waiting for Windows devices to join the fleet'}</p>
-          </div>
+          <EmptyState
+            icon={<Monitor size={48} style={{ opacity: 0.3 }} />}
+            title={search ? 'No results found' : 'No devices enrolled'}
+            description={search ? 'Try a more general search term' : 'Waiting for devices to join the fleet'}
+          />
         ) : (
           <table>
             <thead>

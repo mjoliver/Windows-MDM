@@ -149,6 +149,12 @@ export interface DeviceCompliance {
 export const api = {
   me: () => get<Me>('/me'),
 
+  // Logout hits the auth endpoint (outside /api base path)
+  logout: () =>
+    fetch('/auth/logout', { method: 'POST', credentials: 'include' })
+      .then(r => { if (!r.ok) throw new Error('logout failed'); return { ok: true } as const })
+      .catch(e => { throw e }),
+
   // Devices
   devices: {
     list:    ()          => get<Device[]>('/devices'),

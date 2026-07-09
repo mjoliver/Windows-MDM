@@ -1,19 +1,25 @@
 import { useEffect, useState } from 'react'
-import { Users, Plus, Trash2, Monitor, Shield, X } from 'lucide-react'
+import { Users, Plus, Trash2, Monitor, Shield } from 'lucide-react'
 import { Layout } from '../components/Layout'
+import { ActionButton } from '../components/ActionButton'
 import { api, type Group, type Device, type Profile } from '../api'
+import { EmptyState } from '../components/EmptyState'
+import { Modal } from '../components/Modal'
+import { useToast } from '../hooks/useToast'
 
-function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (g: Group) => void }) {
+function CreateGroupModal({ onClose, onCreated }: { onClose: () => void; onCreated: (g: Group) => void }) {
   const [name, setName]     = useState('')
   const [desc, setDesc]     = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
+  const toast = useToast()
 
   const submit = async () => {
     if (!name.trim()) { setError('Name is required'); return }
     setSaving(true)
     try {
       const g = await api.groups.create({ name: name.trim(), description: desc.trim() })
+      toast.success(`Group "${g.name}" created`)
       onCreated(g)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed')
@@ -21,33 +27,31 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <span className="modal-title">New Group</span>
-          <button className="btn btn-icon btn-secondary" onClick={onClose}><X size={14} /></button>
-        </div>
-        <div className="modal-body">
-          <div className="form-group">
-            <label className="form-label">Group name *</label>
-            <input className="input" value={name} onChange={e => setName(e.target.value)}
-              placeholder="e.g. Engineering, Sales, Servers" autoFocus />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Description</label>
-            <input className="input" value={desc} onChange={e => setDesc(e.target.value)}
-              placeholder="What devices belong here?" />
-          </div>
-          {error && <p style={{ color: 'var(--danger)', fontSize: '0.82rem', marginTop: 8 }}>{error}</p>}
-        </div>
-        <div className="modal-footer">
+    <Modal
+      open={true}
+      onClose={onClose}
+      title="New Group"
+      footer={
+        <>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={submit} disabled={saving}>
             {saving ? 'Creating…' : 'Create Group'}
           </button>
-        </div>
+        </>
+      }
+    >
+      <div className="form-group">
+        <label className="form-label">Group name *</label>
+        <input className="input" value={name} onChange={e => setName(e.target.value)}
+          placeholder="e.g. Engineering, Sales, Servers" autoFocus />
       </div>
-    </div>
+      <div className="form-group">
+        <label className="form-label">Description</label>
+        <input className="input" value={desc} onChange={e => setDesc(e.target.value)}
+          placeholder="What devices belong here?" />
+      </div>
+      {error && <p style={{ color: 'var(--danger)', fontSize: '0.82rem', marginTop: 8 }}>{error}</p>}
+    </Modal>
   )
 }
 
@@ -60,80 +64,99 @@ function ManageModal({
   onClose: () => void
 }) {
   const [tab, setTab] = useState<'devices' | 'profiles'>('devices')
-  const [saving, setSaving] = useState(false)
+  const [busy, setBusy] = useState<Record<string, boolean>>({})
+  const toast = useToast()
 
-  const assign = async (ids: string[], action: 'add' | 'remove', type: 'devices' | 'profiles') => {
-    setSaving(true)
+  const isBusy = (key: string) => !!busy[key]
+
+  const setOp = (key: string, val: boolean) => {
+    setBusy(prev => ({ ...prev, [key]: val }))
+  }
+
+  const assign = async (ids: string[], action: 'add' | 'remove', type: 'devices' | 'profiles', labelKey: string, label: string) => {
+    const opKey = `${action}-${labelKey}`
+    setOp(opKey, true)
     try {
       if (type === 'devices')  await api.groups.assignDevices(group.id, ids, action)
       if (type === 'profiles') await api.groups.assignProfiles(group.id, ids, action)
-    } catch (e) { alert(`Failed: ${e}`) }
-    finally { setSaving(false) }
+      const noun = type === 'profiles' ? 'Profile' : 'Device'
+      if (action === 'add') {
+        toast.success(`${noun} "${label}" ${type === 'profiles' ? 'assigned' : 'added'} to group "${group.name}"`)
+      } else {
+        toast.success(`${noun} "${label}" removed from group "${group.name}"`)
+      }
+    } catch (e) { toast.error(`Failed to ${action} ${type}: ${e instanceof Error ? e.message : String(e)}`) }
+    finally { setOp(opKey, false) }
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 580 }} onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <span className="modal-title">Manage: {group.name}</span>
-          <button className="btn btn-icon btn-secondary" onClick={onClose}><X size={14} /></button>
-        </div>
-        <div className="modal-body">
-          {/* Tabs */}
-          <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
-            {(['devices', 'profiles'] as const).map(t => (
-              <button key={t} className={`btn btn-sm ${tab === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t)}>
-                {t === 'devices' ? <Monitor size={12} /> : <Shield size={12} />}
-                {t.charAt(0).toUpperCase() + t.slice(1)}
-              </button>
-            ))}
-          </div>
-
-          {tab === 'devices' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-              {devices.length === 0
-                ? <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No devices enrolled yet</p>
-                : devices.map(d => (
-                  <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
-                    <Monitor size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} />
-                    <span style={{ flex: 1, fontSize: '0.875rem' }}>{d.device_name || d.hardware_id}</span>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <button className="btn btn-sm btn-primary" disabled={saving}
-                        onClick={() => assign([d.id], 'add', 'devices')}>Add</button>
-                      <button className="btn btn-sm btn-secondary" disabled={saving}
-                        onClick={() => assign([d.id], 'remove', 'devices')}>Remove</button>
-                    </div>
-                  </div>
-                ))
-              }
-            </div>
-          )}
-
-          {tab === 'profiles' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
-              {profiles.length === 0
-                ? <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No profiles yet — create one first</p>
-                : profiles.map(p => (
-                  <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
-                    <Shield size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
-                    <span style={{ flex: 1, fontSize: '0.875rem' }}>{p.name}</span>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <button className="btn btn-sm btn-primary" disabled={saving}
-                        onClick={() => assign([p.id], 'add', 'profiles')}>Assign</button>
-                      <button className="btn btn-sm btn-secondary" disabled={saving}
-                        onClick={() => assign([p.id], 'remove', 'profiles')}>Remove</button>
-                    </div>
-                  </div>
-                ))
-              }
-            </div>
-          )}
-        </div>
-        <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={onClose}>Done</button>
-        </div>
+    <Modal
+      open={true}
+      onClose={onClose}
+      title={`Manage: ${group.name}`}
+      maxWidth={580}
+      footer={
+        <button className="btn btn-secondary" onClick={onClose}>Done</button>
+      }
+    >
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+        {(['devices', 'profiles'] as const).map(t => (
+          <button key={t} className={`btn btn-sm ${tab === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t)}>
+            {t === 'devices' ? <Monitor size={12} /> : <Shield size={12} />}
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>
+        ))}
       </div>
-    </div>
+
+      {tab === 'devices' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
+          {devices.length === 0
+            ? <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No devices enrolled yet</p>
+            : devices.map(d => (
+              <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                <Monitor size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1, fontSize: '0.875rem' }}>{d.device_name || d.hardware_id}</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="btn btn-sm btn-primary" disabled={isBusy(`device-add-${d.id}`)}
+                    onClick={() => assign([d.id], 'add', 'devices', `device-add-${d.id}`, d.device_name || d.hardware_id)}>
+                    {isBusy(`device-add-${d.id}`) ? 'Adding…' : 'Add'}
+                  </button>
+                  <button className="btn btn-sm btn-secondary" disabled={isBusy(`device-remove-${d.id}`)}
+                    onClick={() => assign([d.id], 'remove', 'devices', `device-remove-${d.id}`, d.device_name || d.hardware_id)}>
+                    {isBusy(`device-remove-${d.id}`) ? 'Removing…' : 'Remove'}
+                  </button>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      )}
+
+      {tab === 'profiles' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
+          {profiles.length === 0
+            ? <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No profiles yet — create one first</p>
+            : profiles.map(p => (
+              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                <Shield size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1, fontSize: '0.875rem' }}>{p.name}</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="btn btn-sm btn-primary" disabled={isBusy(`profile-add-${p.id}`)}
+                    onClick={() => assign([p.id], 'add', 'profiles', `profile-add-${p.id}`, p.name)}>
+                    {isBusy(`profile-add-${p.id}`) ? 'Assigning…' : 'Assign'}
+                  </button>
+                  <button className="btn btn-sm btn-secondary" disabled={isBusy(`profile-remove-${p.id}`)}
+                    onClick={() => assign([p.id], 'remove', 'profiles', `profile-remove-${p.id}`, p.name)}>
+                    {isBusy(`profile-remove-${p.id}`) ? 'Removing…' : 'Remove'}
+                  </button>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      )}
+    </Modal>
   )
 }
 
@@ -145,6 +168,7 @@ export function GroupsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [managing, setManaging]     = useState<Group | null>(null)
   const [deleteId, setDeleteId]     = useState<string | null>(null)
+  const toast = useToast()
 
   const load = () => {
     setLoading(true)
@@ -161,10 +185,21 @@ export function GroupsPage() {
 
   useEffect(() => { load() }, [])
 
+  const [deleting, setDeleting] = useState(false)
+
   const handleDelete = async (id: string) => {
-    await api.groups.delete(id)
-    setGroups(gs => gs.filter(g => g.id !== id))
-    setDeleteId(null)
+    const target = groups.find(g => g.id === id)
+    setDeleting(true)
+    try {
+      await api.groups.delete(id)
+      setGroups(gs => gs.filter(g => g.id !== id))
+      setDeleteId(null)
+      if (target) toast.success(`Group "${target.name}" deleted`)
+    } catch (e) {
+      toast.error(`Failed to delete group: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   return (
@@ -174,23 +209,18 @@ export function GroupsPage() {
           <h1>Device Groups</h1>
           <p>Organise devices and apply profiles at scale</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-          <Plus size={14} /> New Group
-        </button>
+        <ActionButton icon={<Plus size={14} />} label="New Group" onClick={() => setShowCreate(true)} variant="primary" />
       </div>
 
-      {groups.length === 0 && !loading ? (
-        <div className="table-wrap">
-          <div className="empty-state">
-            <Users size={40} />
-            <h3>No groups yet</h3>
-            <p>Create a group, add devices, then assign a profile to enforce policy</p>
-            <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-              <Plus size={14} /> New Group
-            </button>
+       {groups.length === 0 && !loading ? (
+          <div className="table-wrap">
+            <EmptyState
+              icon={<Users size={40} />}
+              title="No groups yet"
+              description="Create a group, add devices, then assign a profile to enforce policy"
+            />
           </div>
-        </div>
-      ) : (
+       ) : (
         <div className="table-wrap">
           <table>
             <thead>
@@ -243,7 +273,7 @@ export function GroupsPage() {
       )}
 
       {showCreate && (
-        <CreateModal
+        <CreateGroupModal
           onClose={() => setShowCreate(false)}
           onCreated={g => { setGroups(gs => [g, ...gs]); setShowCreate(false) }}
         />
@@ -258,24 +288,24 @@ export function GroupsPage() {
         />
       )}
 
-      {deleteId && (
-        <div className="modal-overlay" onClick={() => setDeleteId(null)}>
-          <div className="modal" style={{ maxWidth: 400 }} onClick={e => e.stopPropagation()}>
-            <div className="modal-header"><span className="modal-title">Delete Group</span></div>
-            <div className="modal-body">
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.7 }}>
-                Devices in this group will be ungrouped. Existing profiles will no longer be applied.
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setDeleteId(null)}>Cancel</button>
-              <button className="btn btn-danger" onClick={() => handleDelete(deleteId)}>
-                <Trash2 size={13} /> Delete Group
+       <Modal
+         open={!!deleteId}
+         onClose={() => setDeleteId(null)}
+         title="Delete Group"
+         maxWidth={400}
+         footer={
+           <>
+             <button className="btn btn-secondary" onClick={() => setDeleteId(null)}>Cancel</button>
+              <button className="btn btn-danger" onClick={() => handleDelete(deleteId!)} disabled={deleting}>
+                <Trash2 size={13} /> {deleting ? 'Deleting…' : 'Delete Group'}
               </button>
-            </div>
-          </div>
-        </div>
-      )}
+           </>
+         }
+       >
+         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.7 }}>
+           Devices in this group will be ungrouped. Existing profiles will no longer be applied.
+         </p>
+       </Modal>
     </Layout>
   )
 }

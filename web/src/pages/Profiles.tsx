@@ -1,20 +1,26 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Shield, Plus, Trash2, Edit2, X } from 'lucide-react'
+import { Shield, Plus, Trash2, Edit2 } from 'lucide-react'
 import { Layout } from '../components/Layout'
+import { ActionButton } from '../components/ActionButton'
 import { api, type Profile } from '../api'
+import { EmptyState } from '../components/EmptyState'
+import { Modal } from '../components/Modal'
+import { useToast } from '../hooks/useToast'
 
-function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Profile) => void }) {
+function CreateProfileModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Profile) => void }) {
   const [name, setName]   = useState('')
   const [desc, setDesc]   = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
+  const toast = useToast()
 
   const submit = async () => {
     if (!name.trim()) { setError('Name is required'); return }
     setSaving(true)
     try {
       const p = await api.profiles.create({ name: name.trim(), description: desc.trim() })
+      toast.success(`Profile "${p.name}" created`)
       onCreated(p)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to create profile')
@@ -22,36 +28,34 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <span className="modal-title">New Profile</span>
-          <button className="btn btn-icon btn-secondary" onClick={onClose}><X size={14} /></button>
-        </div>
-        <div className="modal-body">
-          <div className="form-group">
-            <label className="form-label">Profile name *</label>
-            <input className="input" value={name} onChange={e => setName(e.target.value)}
-              placeholder="e.g. Security Baseline" autoFocus />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Description</label>
-            <input className="input" value={desc} onChange={e => setDesc(e.target.value)}
-              placeholder="Brief description of what this profile enforces" />
-          </div>
-          {error && <p style={{ color: 'var(--danger)', fontSize: '0.82rem', marginTop: 8 }}>{error}</p>}
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: 8, lineHeight: 1.6 }}>
-            After creating the profile you can add policy settings from the Policy Catalog.
-          </p>
-        </div>
-        <div className="modal-footer">
+    <Modal
+      open={true}
+      onClose={onClose}
+      title="New Profile"
+      footer={
+        <>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={submit} disabled={saving}>
             {saving ? 'Creating…' : 'Create Profile'}
           </button>
-        </div>
+        </>
+      }
+    >
+      <div className="form-group">
+        <label className="form-label">Profile name *</label>
+        <input className="input" value={name} onChange={e => setName(e.target.value)}
+          placeholder="e.g. Security Baseline" autoFocus />
       </div>
-    </div>
+      <div className="form-group">
+        <label className="form-label">Description</label>
+        <input className="input" value={desc} onChange={e => setDesc(e.target.value)}
+          placeholder="Brief description of what this profile enforces" />
+      </div>
+      {error && <p style={{ color: 'var(--danger)', fontSize: '0.82rem', marginTop: 8 }}>{error}</p>}
+      <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: 8, lineHeight: 1.6 }}>
+        After creating the profile you can add policy settings from the Policy Catalog.
+      </p>
+    </Modal>
   )
 }
 
@@ -60,15 +64,26 @@ export function ProfilesPage() {
   const [loading, setLoading]     = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [deleteId, setDeleteId]   = useState<string | null>(null)
+  const [deleting, setDeleting]   = useState(false)
+  const toast = useToast()
   const navigate = useNavigate()
 
   const load = () => api.profiles.list().then(setProfiles).finally(() => setLoading(false))
   useEffect(() => { load() }, [])
 
   const handleDelete = async (id: string) => {
-    await api.profiles.delete(id)
-    setProfiles(ps => ps.filter(p => p.id !== id))
-    setDeleteId(null)
+    const target = profiles.find(p => p.id === id)
+    setDeleting(true)
+    try {
+      await api.profiles.delete(id)
+      setProfiles(ps => ps.filter(p => p.id !== id))
+      setDeleteId(null)
+      if (target) toast.success(`Profile "${target.name}" deleted`)
+    } catch (e) {
+      toast.error(`Failed to delete profile: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   return (
@@ -78,23 +93,18 @@ export function ProfilesPage() {
           <h1>Configuration Profiles</h1>
           <p>Policy bundles assigned to device groups</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-          <Plus size={14} /> New Profile
-        </button>
+        <ActionButton icon={<Plus size={14} />} label="New Profile" onClick={() => setShowCreate(true)} variant="primary" />
       </div>
 
-      {profiles.length === 0 && !loading ? (
-        <div className="table-wrap">
-          <div className="empty-state">
-            <Shield size={40} />
-            <h3>No profiles yet</h3>
-            <p>Create a profile to start enforcing policies on your devices</p>
-            <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-              <Plus size={14} /> New Profile
-            </button>
+       {profiles.length === 0 && !loading ? (
+          <div className="table-wrap">
+            <EmptyState
+              icon={<Shield size={40} />}
+              title="No profiles yet"
+              description="Create a profile to start enforcing policies on your devices"
+            />
           </div>
-        </div>
-      ) : (
+       ) : (
         <div className="table-wrap">
           <table>
             <thead>
@@ -139,7 +149,7 @@ export function ProfilesPage() {
                       </button>
                       <button className="btn btn-secondary btn-sm btn-icon" 
                         style={{ color: 'var(--md-sys-color-error)' }}
-                        title="Delete" onClick={() => setDeleteId(p.id)}>
+                        title="Delete" onClick={() => setDeleteId(p.id)} disabled={deleting}>
                         <Trash2 size={13} />
                       </button>
                     </div>
@@ -152,32 +162,30 @@ export function ProfilesPage() {
       )}
 
       {showCreate && (
-        <CreateModal
+        <CreateProfileModal
           onClose={() => setShowCreate(false)}
           onCreated={p => { setProfiles(ps => [p, ...ps]); setShowCreate(false) }}
         />
       )}
 
-      {deleteId && (
-        <div className="modal-overlay" onClick={() => setDeleteId(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 400 }}>
-            <div className="modal-header">
-              <span className="modal-title">Delete Profile</span>
-            </div>
-            <div className="modal-body">
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.7 }}>
-                Are you sure? This profile will be removed from all groups and devices.
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setDeleteId(null)}>Cancel</button>
-              <button className="btn btn-danger" onClick={() => handleDelete(deleteId)}>
-                <Trash2 size={13} /> Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Modal
+        open={!!deleteId}
+        onClose={() => setDeleteId(null)}
+        title="Delete Profile"
+        maxWidth={400}
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setDeleteId(null)} disabled={deleting}>Cancel</button>
+            <button className="btn btn-danger" onClick={() => handleDelete(deleteId!)} disabled={deleting}>
+              <Trash2 size={13} /> {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+          </>
+        }
+      >
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.7 }}>
+          Are you sure? This profile will be removed from all groups and devices.
+        </p>
+      </Modal>
     </Layout>
   )
 }
