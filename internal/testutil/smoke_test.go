@@ -37,5 +37,5 @@ func TestSmoke_DB_CA_Seed(t *testing.T) {
 	if g := AssignProfile(t, database, deviceID, prof); g == "" {
 		t.Fatal("AssignProfile returned empty group id")
 	}
-	_ = db.DriverName
+	_ = db.Driver()
 }

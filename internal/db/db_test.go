@@ -6,15 +6,15 @@ import (
 )
 
 func TestRebind(t *testing.T) {
-	prev := DriverName
-	t.Cleanup(func() { DriverName = prev })
+	prev := Driver()
+	t.Cleanup(func() { SetDriver(prev) })
 
-	DriverName = "sqlite"
+	SetDriver("sqlite")
 	if got := Rebind("SELECT 1 WHERE a = ? AND b = ?"); got != "SELECT 1 WHERE a = ? AND b = ?" {
 		t.Fatalf("sqlite passthrough changed query: %q", got)
 	}
 
-	DriverName = "postgres"
+	SetDriver("postgres")
 	cases := []struct{ in, want string }{
 		{"a = ? AND b = ?", "a = $1 AND b = $2"},
 		{"x = ?", "x = $1"},

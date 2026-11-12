@@ -876,6 +876,7 @@ func TestFleetComplianceSummaryJSON(t *testing.T) {
 // ── Tests for HandleSyncDeviceWithNoAssignedPolicies ──────────────────────────
 
 func TestHandleSyncDeviceNoAssignedPolicies(t *testing.T) {
+	stubPolicyOps(t)
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("couldn't create sqlmock: %s", err)
@@ -1055,6 +1056,7 @@ func TestHandleUnenrollDeviceRevokesCertificates(t *testing.T) {
 // ── Tests for HandleSyncDeviceWithEnqueueFailures ─────────────────────────────
 
 func TestHandleSyncDevicePartialEnqueueFailure(t *testing.T) {
+	stubPolicyOps(t)
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("couldn't create sqlmock: %s", err)
@@ -1553,6 +1555,7 @@ func TestHandleCreateGroupUUIDGeneration(t *testing.T) {
 // ── Tests for HandleUpdateProfileWithEmptySettings ────────────────────────────
 
 func TestHandleUpdateProfileEmptySettings(t *testing.T) {
+	stubPolicyOps(t)
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("couldn't create sqlmock: %s", err)
@@ -1600,6 +1603,7 @@ func TestHandleUpdateProfileEmptySettings(t *testing.T) {
 // ── Tests for HandleAssignDeviceToGroupWithErrors ─────────────────────────────
 
 func TestHandleAssignDeviceToGroupPartialFailure(t *testing.T) {
+	stubPolicyOps(t)
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("couldn't create sqlmock: %s", err)

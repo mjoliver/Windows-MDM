@@ -6,8 +6,8 @@ import (
 	"embed"
 	"fmt"
 	"log/slog"
-
 	"strings"
+	"sync"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -20,8 +20,26 @@ import (
 //go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
 var migrationsFS embed.FS
 
-// DriverName tracks the database engine used at runtime (sqlite or postgres)
-var DriverName string
+// driverMu guards driverName so concurrent Rebind reads and Open writes are race-free.
+var (
+	driverMu   sync.RWMutex
+	driverName string
+)
+
+// Driver returns the active database engine name ("sqlite" or "postgres").
+func Driver() string {
+	driverMu.RLock()
+	d := driverName
+	driverMu.RUnlock()
+	return d
+}
+
+// SetDriver updates the active database engine name used by Rebind.
+func SetDriver(driver string) {
+	driverMu.Lock()
+	driverName = driver
+	driverMu.Unlock()
+}
 
 // DB wraps the standard sql.DB with Latchz-specific helpers.
 type DB struct {
@@ -30,7 +48,7 @@ type DB struct {
 
 // Open opens a database connection and automatically runs any pending migrations.
 func Open(driver, dsn string) (*DB, error) {
-	DriverName = driver
+	SetDriver(driver)
 	var sqlDB *sql.DB
 	var err error
 
@@ -135,7 +153,7 @@ func withSQLitePragmas(dsn string) string {
 // Rebind converts standard '?' placeholders to PostgreSQL '$1, $2...' placeholders
 // if the active database driver is 'postgres'. Otherwise, it returns the query unmodified.
 func Rebind(query string) string {
-	if DriverName != "postgres" {
+	if Driver() != "postgres" {
 		return query
 	}
 

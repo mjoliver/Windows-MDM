@@ -207,7 +207,7 @@ func insertCatalogEntries(database *db.DB, entries []CatalogEntry) (inserted, up
 			isDepInt = 1
 		}
 
-		switch db.DriverName {
+		switch db.Driver() {
 		case "postgres":
 			query := `INSERT INTO policy_catalog (
 				oma_uri, display_name, description, category, csp_name,
