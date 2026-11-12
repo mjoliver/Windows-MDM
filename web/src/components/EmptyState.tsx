@@ -16,8 +16,8 @@ export function EmptyState({ icon, title, description, action, style }: EmptySta
   return (
     <div className="empty-state" style={style}>
       {icon && <div style={{ marginBottom: 16 }}>{icon}</div>}
-      <h3>{title}</h3>
-      <p>{description}</p>
+      {title && <h3>{title}</h3>}
+      {description && <p>{description}</p>}
       {action}
     </div>
   )

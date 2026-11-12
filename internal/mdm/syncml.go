@@ -182,7 +182,7 @@ const (
 	// Remote actions
 	OMAExecWipe   = "./Vendor/MSFT/RemoteWipe/doWipe"
 	OMAExecLock   = "./Vendor/MSFT/RemoteLock/Lock"
-	OMAExecReboot = "./Vendor/MSFT/Reboot/RebootNow"
+	OMAExecReboot = "./Device/Vendor/MSFT/Reboot/RebootNow"
 )
 
 // FirstCheckInURIs is the set of device info URIs we Get on the first session.

@@ -56,7 +56,12 @@ func TestIssueDeviceCert_BindsSubjectToDeviceID(t *testing.T) {
 	if cert.Subject.CommonName != "device-uuid-123" {
 		t.Fatalf("cert CN = %q, want server-issued device id (CSR CN must be ignored)", cert.Subject.CommonName)
 	}
-	if len(cert.Subject.OrganizationalUnit) == 0 || cert.Subject.OrganizationalUnit[0] != "alice@example.com" {
-		t.Fatalf("cert OU = %v, want enrolling user", cert.Subject.OrganizationalUnit)
+	// Subject must be exactly CN=<deviceID> so the Windows OMA-DM client's
+	// SSLCLIENTCERTSEARCHCRITERIA (exact DN match) can locate the cert.
+	if len(cert.Subject.Names) != 1 {
+		t.Fatalf("cert subject = %q, want only CN=<deviceID>", cert.Subject.String())
+	}
+	if len(cert.EmailAddresses) == 0 || cert.EmailAddresses[0] != "alice@example.com" {
+		t.Fatalf("cert SAN email = %v, want enrolling user", cert.EmailAddresses)
 	}
 }

@@ -7,8 +7,16 @@ export default defineConfig({
   // In dev, proxy to localhost:8443 (pane serve).
   server: {
     proxy: {
-      '/api': 'https://localhost:8443',
-      '/auth': 'https://localhost:8443',
+      '/api': {
+        target: 'https://localhost:8443',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/auth': {
+        target: 'https://localhost:8443',
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
   build: {

@@ -97,11 +97,12 @@ type DiscoverRequest struct {
 
 // DiscoverReqMsg contains the details of the discovery request.
 type DiscoverReqMsg struct {
-	EmailAddress       string `xml:"EmailAddress"`
-	RequestVersion     string `xml:"RequestVersion"`
-	DeviceType         string `xml:"DeviceType"`
-	ApplicationVersion string `xml:"ApplicationVersion"`
-	OSEdition          string `xml:"OSEdition"`
+	EmailAddress       string   `xml:"EmailAddress"`
+	RequestVersion     string   `xml:"RequestVersion"`
+	DeviceType         string   `xml:"DeviceType"`
+	ApplicationVersion string   `xml:"ApplicationVersion"`
+	OSEdition          string   `xml:"OSEdition"`
+	AuthPolicies       []string `xml:"AuthPolicies>AuthPolicy"`
 }
 
 // DiscoverResponse tells Windows where our enrollment endpoints are.

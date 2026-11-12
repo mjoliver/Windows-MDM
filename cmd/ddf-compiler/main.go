@@ -91,8 +91,10 @@ func NewCompiler() *Compiler {
 
 func main() {
 	configFile := flag.String("config", "latchz.yaml", "Path to the configuration YAML file (provides database.driver and database.dsn)")
+	driverFlag := flag.String("driver", "", "Database driver override (sqlite or postgres)")
+	dsnFlag := flag.String("dsn", "", "Database DSN override")
 	inDir := flag.String("in", "", "Directory containing Microsoft DDF XML files")
-	outFile := flag.String("out", "", "Output JSON catalog file (optional; if omitted, only database is written)")
+	outFile := flag.String("out", "", "Output JSON catalog file (optional; if omitted, database is required)")
 	reportFile := flag.String("report", "parser_anomalies_report.md", "Output anomalies report file")
 	flag.Parse()
 
@@ -103,28 +105,9 @@ func main() {
 
 	slog.Info("Starting DDF Compiler", "config", *configFile, "in", *inDir)
 
-	// ── Load configuration (uses internal/config package) ──────────────
-	cfg, err := config.Load(*configFile)
-	if err != nil {
-		slog.Error("Failed to load config", "error", err)
-		os.Exit(1)
-	}
-
-	slog.Info("Database config loaded", "driver", cfg.Database.Driver, "dsn", cfg.Database.DSN)
-
-	// ── Open database (runs migrations automatically) ───────────────────
-	database, err := db.Open(cfg.Database.Driver, cfg.Database.DSN)
-	if err != nil {
-		slog.Error("Failed to open database", "error", err)
-		os.Exit(1)
-	}
-	defer database.Close()
-
-	// ── Create compiler with state ─────────────────────────────────────
 	compiler := NewCompiler()
 
-	// ── Parse all DDF XML files ─────────────────────────────────────────
-	err = filepath.WalkDir(*inDir, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(*inDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -142,15 +125,42 @@ func main() {
 
 	slog.Info("Parsing complete", "policies_extracted", len(compiler.Entries))
 
-	// ── Insert entries into policy_catalog ──────────────────────────────
-	inserted, updated, err := insertCatalogEntries(database, compiler.Entries)
-	if err != nil {
-		slog.Error("Failed to insert catalog entries", "error", err)
-		os.Exit(1)
+	driver, dsn := *driverFlag, *dsnFlag
+	if driver == "" && dsn == "" {
+		if _, statErr := os.Stat(*configFile); statErr == nil {
+			cfg, cfgErr := config.Load(*configFile)
+			if cfgErr != nil {
+				slog.Error("Failed to load config", "error", cfgErr)
+				os.Exit(1)
+			}
+			driver = cfg.Database.Driver
+			dsn = cfg.Database.DSN
+		} else if *outFile == "" {
+			slog.Error("Config file not found and neither -dsn nor -out provided", "config", *configFile)
+			os.Exit(1)
+		}
 	}
-	slog.Info("Database upsert complete", "inserted", inserted, "updated", updated)
+	if driver == "" && dsn != "" {
+		driver = "sqlite"
+	}
 
-	// ── Optionally write JSON catalog ───────────────────────────────────
+	if driver != "" && dsn != "" {
+		slog.Info("Database config loaded", "driver", driver, "dsn", dsn)
+		database, dbErr := db.Open(driver, dsn)
+		if dbErr != nil {
+			slog.Error("Failed to open database", "error", dbErr)
+			os.Exit(1)
+		}
+		defer database.Close()
+
+		inserted, updated, upsertErr := insertCatalogEntries(database, compiler.Entries)
+		if upsertErr != nil {
+			slog.Error("Failed to insert catalog entries", "error", upsertErr)
+			os.Exit(1)
+		}
+		slog.Info("Database upsert complete", "inserted", inserted, "updated", updated)
+	}
+
 	if *outFile != "" {
 		outBytes, err := json.MarshalIndent(compiler.Entries, "", "  ")
 		if err != nil {
@@ -164,7 +174,6 @@ func main() {
 		slog.Info("JSON catalog written", "file", *outFile)
 	}
 
-	// ── Write anomalies report if there are any ─────────────────────────
 	if len(compiler.Anomalies) > 0 {
 		var report strings.Builder
 		report.WriteString(fmt.Sprintf("# DDF Parser Anomalies Report\nGenerated: %s\n\n", time.Now().Format(time.RFC3339)))
@@ -175,7 +184,6 @@ func main() {
 		_ = os.WriteFile(*reportFile, []byte(report.String()), 0644)
 		slog.Warn("Parser finished with anomalies", "policies_extracted", len(compiler.Entries), "anomalies", len(compiler.Anomalies), "report", *reportFile)
 	} else {
-		// Clean up old report if it existed
 		_ = os.Remove(*reportFile)
 		slog.Info("Parser finished flawlessly", "policies_extracted", len(compiler.Entries))
 	}
@@ -183,15 +191,21 @@ func main() {
 
 // insertCatalogEntries upserts parsed entries into the policy_catalog table.
 // Uses INSERT ... ON CONFLICT(oma_uri) DO UPDATE for postgres and
-// INSERT OR IGNORE followed by UPDATE for sqlite.
+// INSERT OR IGNORE followed by UPDATE for sqlite, wrapped in a single transaction.
 func insertCatalogEntries(database *db.DB, entries []CatalogEntry) (inserted, updated int, err error) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 
+	tx, err := database.Begin()
+	if err != nil {
+		return 0, 0, fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	for _, e := range entries {
-		// Determine the INSERT strategy based on database driver.
-		// We use a generic approach: try INSERT, if unique conflict, UPDATE.
-		// SQLite: INSERT OR IGNORE, then UPDATE where not matched.
-		// Postgres: INSERT ... ON CONFLICT(oma_uri) DO UPDATE.
+		isDepInt := 0
+		if e.IsDeprecated {
+			isDepInt = 1
+		}
 
 		switch db.DriverName {
 		case "postgres":
@@ -213,11 +227,11 @@ func insertCatalogEntries(database *db.DB, entries []CatalogEntry) (inserted, up
 				is_deprecated = EXCLUDED.is_deprecated,
 				updated_at = EXCLUDED.updated_at`
 
-			_, err := database.Exec(
+			_, err := tx.Exec(
 				query,
 				e.OMAURI, e.DisplayName, e.Description, e.Category, e.CSPName,
 				e.DataType, e.AllowedValues, e.DefaultValue, e.MinOSVersion,
-				e.AccessTypes, e.IsDeprecated, now,
+				e.AccessTypes, isDepInt, now,
 			)
 			if err != nil {
 				return inserted, updated, fmt.Errorf("upserting %s: %w", e.OMAURI, err)
@@ -225,18 +239,17 @@ func insertCatalogEntries(database *db.DB, entries []CatalogEntry) (inserted, up
 			inserted++
 
 		default: // sqlite
-			// Step 1: INSERT OR IGNORE
 			insertQuery := `INSERT OR IGNORE INTO policy_catalog (
 				oma_uri, display_name, description, category, csp_name,
 				data_type, allowed_values, default_value, min_os_version,
 				access_types, is_deprecated, source, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ddf', ?)`
 
-			result, err := database.Exec(
+			result, err := tx.Exec(
 				insertQuery,
 				e.OMAURI, e.DisplayName, e.Description, e.Category, e.CSPName,
 				e.DataType, e.AllowedValues, e.DefaultValue, e.MinOSVersion,
-				e.AccessTypes, e.IsDeprecated, now,
+				e.AccessTypes, isDepInt, now,
 			)
 			if err != nil {
 				return inserted, updated, fmt.Errorf("inserting %s: %w", e.OMAURI, err)
@@ -245,7 +258,6 @@ func insertCatalogEntries(database *db.DB, entries []CatalogEntry) (inserted, up
 			if rows == 1 {
 				inserted++
 			} else {
-				// Step 2: UPDATE existing row
 				updateQuery := `UPDATE policy_catalog SET
 					display_name = ?, description = ?, category = ?, csp_name = ?,
 					data_type = ?, allowed_values = ?, default_value = ?,
@@ -253,11 +265,11 @@ func insertCatalogEntries(database *db.DB, entries []CatalogEntry) (inserted, up
 					updated_at = ?
 					WHERE oma_uri = ?`
 
-				_, err := database.Exec(
+				_, err := tx.Exec(
 					updateQuery,
 					e.DisplayName, e.Description, e.Category, e.CSPName,
 					e.DataType, e.AllowedValues, e.DefaultValue, e.MinOSVersion,
-					e.AccessTypes, e.IsDeprecated, now, e.OMAURI,
+					e.AccessTypes, isDepInt, now, e.OMAURI,
 				)
 				if err != nil {
 					return inserted, updated, fmt.Errorf("updating %s: %w", e.OMAURI, err)
@@ -265,6 +277,10 @@ func insertCatalogEntries(database *db.DB, entries []CatalogEntry) (inserted, up
 				updated++
 			}
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return inserted, updated, fmt.Errorf("committing transaction: %w", err)
 	}
 
 	return inserted, updated, nil

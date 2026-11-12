@@ -73,6 +73,7 @@ export interface Profile {
   created_by: string
   created_at: string
   updated_at: string
+  setting_count?: number
   settings?: PolicySetting[]
 }
 
@@ -161,6 +162,7 @@ export const api = {
     get:     (id: string) => get<{ device: Device; pending_commands: number }>(`/devices/${enc(id)}`),
     unenroll:(id: string) => del<{ status: string }>(`/devices/${enc(id)}`),
     lock:    (id: string) => post<{ status: string; queue_id: number }>(`/devices/${enc(id)}/lock`),
+    reboot:  (id: string) => post<{ status: string; queue_id: number }>(`/devices/${enc(id)}/reboot`),
     wipe:    (id: string) => post<{ status: string }>(`/devices/${enc(id)}/wipe`, { confirm: true }),
     sync:    (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/sync`),
     getCommands: (id: string) => get<{ commands: DeviceCommand[] }>(`/devices/${enc(id)}/commands`),

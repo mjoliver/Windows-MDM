@@ -437,13 +437,23 @@ var (
 <body>
 <p>Enrolling device for <strong>{{.Email}}</strong>...</p>
 <script>
-  try {
-    if (window.external && typeof window.external.notify === 'function') {
-      window.external.notify('{{.Token}}');
-    }
-  } catch(e) {
+  (function() {
+    var token = '{{.Token}}';
+    try {
+      // Windows MS-MDE2 AuthHost.exe (MSHTML/JScript) parameterized COM property:
+      // wrapped in Function() so Chromium/WebView2 parsers do not reject LHS call syntax.
+      var setLegacy = new Function('t', 'window.external.Property("token") = t; window.external.FinalNext();');
+      setLegacy(token);
+      return;
+    } catch(e) {}
+    try {
+      if (window.external && window.external.notify) {
+        window.external.notify(token);
+        return;
+      }
+    } catch(e) {}
     document.body.innerHTML = '<p>Enrollment token issued. You may close this window.</p>';
-  }
+  })();
 </script>
 </body>
 </html>`))

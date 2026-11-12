@@ -79,6 +79,25 @@ func TestHandleWipeDevice(t *testing.T) {
 	}
 }
 
+func TestHandleRebootDevice(t *testing.T) {
+	database := testutil.DB(t)
+	h := NewHandler(database.DB)
+	id := testutil.SeedDevice(t, database, "HW-REBOOT")
+
+	w := httptest.NewRecorder()
+	h.HandleRebootDevice(w, withRoute("POST", "/api/devices/"+id+"/reboot", "", id))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var omaURI string
+	if err := database.QueryRow(`SELECT oma_uri FROM command_queue WHERE device_id = ? AND command_type = 'Exec'`, id).Scan(&omaURI); err != nil {
+		t.Fatal(err)
+	}
+	if omaURI != "./Device/Vendor/MSFT/Reboot/RebootNow" {
+		t.Fatalf("unexpected reboot URI: %s", omaURI)
+	}
+}
+
 func TestHandleUnenrollDevice(t *testing.T) {
 	database := testutil.DB(t)
 	ca := testutil.CA(t, database)
@@ -100,5 +119,56 @@ func TestHandleUnenrollDevice(t *testing.T) {
 	}
 	if revoked != 1 {
 		t.Fatal("device cert should be revoked after unenroll")
+	}
+}
+
+func TestHandleSyncDevice_QueuesPolicyReplace(t *testing.T) {
+	database := testutil.DB(t)
+	h := NewHandler(database.DB)
+	devID := testutil.SeedDevice(t, database, "HW-SYNC")
+
+	res, err := database.Exec(`
+		INSERT INTO policy_catalog (oma_uri, display_name, category, csp_name, data_type, access_types)
+		VALUES ('./Device/Vendor/MSFT/Policy/Config/DeviceLock/MaxInactivityTimeDeviceLock', 'Max Inactivity', 'DeviceLock', 'Policy', 'integer', '["Get","Replace"]')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catID, _ := res.LastInsertId()
+
+	if _, err := database.Exec(`INSERT INTO profiles (id, name) VALUES ('prof-sync', 'Idle Lock')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO profile_settings (profile_id, catalog_id, desired_value) VALUES ('prof-sync', ?, '5')`, catID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO device_groups (id, name) VALUES ('grp-sync', 'Lab')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO device_group_members (device_id, group_id) VALUES (?, 'grp-sync')`, devID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO group_profiles (group_id, profile_id) VALUES ('grp-sync', 'prof-sync')`); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	h.HandleSyncDevice(w, withRoute("POST", "/api/devices/"+devID+"/sync", "", devID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	var replaceCount, getCount int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM command_queue WHERE device_id = ? AND command_type = 'Replace'`, devID).Scan(&replaceCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM command_queue WHERE device_id = ? AND command_type = 'Get'`, devID).Scan(&getCount); err != nil {
+		t.Fatal(err)
+	}
+	if replaceCount != 1 {
+		t.Fatalf("expected HandleSyncDevice to queue 1 Replace via policy.ApplyDevice, got %d", replaceCount)
+	}
+	if getCount < 1 {
+		t.Fatalf("expected HandleSyncDevice to queue at least 1 Get, got %d", getCount)
 	}
 }

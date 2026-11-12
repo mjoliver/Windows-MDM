@@ -15,8 +15,18 @@ server:
   # Public hostname of your MDM server. Must match the DNS name used for enrollment.
   domain: mdm.example.com
 
-  # Network address to bind. Defaults to :8443 for TLS modes, :8080 for none.
+  # Network address to bind for enrollment, auth, and dashboard (no client cert requested).
+  # Defaults to :8443 for TLS modes, :8080 for none.
   listen: ":443"
+
+  # Dedicated mTLS listener for OMA-DM device check-ins (/omadm) and ROBO cert renewal (/wstep).
+  # Separating enrollment (:443, NoClientCert) from mTLS (:8443, VerifyClientCertIfGiven) prevents
+  # Windows WinHTTP (DeviceEnroller.exe) from aborting Discovery/XCEP/WSTEP with 0x80072f0c.
+  mtls_listen: ":8443"
+
+  # Optional: separate hostname for mTLS device check-ins over SNI on port 443 instead of a
+  # separate mtls_listen port (e.g. mdm-mtls.example.com).
+  # mdm_domain: mdm-mtls.example.com
 
   # The email domain your users enroll with.
   # Windows will look for MDM at: enterpriseenrollment.<enrollment_domain>

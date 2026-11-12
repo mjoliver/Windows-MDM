@@ -94,7 +94,7 @@ func (p *BuiltinProvider) renderLoginForm(w http.ResponseWriter, r *http.Request
 			MaxAge:   600,
 			HttpOnly: true,
 			Secure:   true,
-			SameSite: http.SameSiteStrictMode,
+			SameSite: http.SameSiteLaxMode,
 		})
 	}
 	data.CSRF = csrf
@@ -244,18 +244,110 @@ func VerifyPassword(password, encoded string) bool {
 }
 
 var tmplBuiltinLogin = template.Must(template.New("builtinLogin").Parse(`<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>Latchz MDM — Sign in</title></head>
-<body style="font-family:sans-serif;max-width:360px;margin:60px auto;">
-<h2>Latchz MDM</h2>
-{{if .Error}}<p style="color:#d32f2f;">{{.Error}}</p>{{end}}
-<form method="POST" action="/auth/login">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <input type="hidden" name="flow" value="{{.Flow}}">
-  <input type="hidden" name="appru" value="{{.Appru}}">
-  <p><input name="email" type="email" placeholder="email" value="{{.Email}}" style="width:100%;padding:8px;box-sizing:border-box;"></p>
-  <p><input name="password" type="password" placeholder="password" style="width:100%;padding:8px;box-sizing:border-box;"></p>
-  <p><button type="submit" style="padding:8px 16px;">Sign in</button></p>
-</form>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Latchz MDM — Sign In</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background-color: #0F0F12;
+    background-image:
+      radial-gradient(circle at 80% 0%, rgba(208, 188, 255, 0.12), transparent 45%),
+      radial-gradient(circle at 20% 100%, rgba(79, 55, 139, 0.16), transparent 45%);
+    color: #E6E1E5;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    color-scheme: dark;
+  }
+  .card {
+    width: 100%;
+    max-width: 400px;
+    padding: 40px 36px;
+    background: rgba(28, 27, 31, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 24px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  }
+  .badge {
+    width: 52px;
+    height: 52px;
+    border-radius: 16px;
+    background: #4F378B;
+    color: #EADDFF;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 1.35rem;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 1.65rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 6px; }
+  .sub { font-size: 0.9rem; color: #CAC4D0; margin-bottom: 28px; }
+  .error {
+    background: rgba(242, 184, 181, 0.12);
+    border: 1px solid rgba(242, 184, 181, 0.35);
+    color: #F2B8B5;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    margin-bottom: 20px;
+  }
+  label { display: block; font-size: 0.8rem; font-weight: 600; color: #CAC4D0; margin-bottom: 6px; }
+  .field { margin-bottom: 16px; }
+  input[type="email"], input[type="password"] {
+    width: 100%;
+    padding: 12px 14px;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    color: #FFFFFF;
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+  input:focus { border-color: #D0BCFF; }
+  button {
+    width: 100%;
+    margin-top: 8px;
+    padding: 13px 20px;
+    border: none;
+    border-radius: 12px;
+    background: #D0BCFF;
+    color: #381E72;
+    font-size: 0.95rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+  button:hover { filter: brightness(1.06); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="badge">L</div>
+  <h1>Latchz MDM</h1>
+  <p class="sub">{{if eq .Flow "enroll"}}Sign in to enroll this Windows device{{else}}Sign in to manage your Windows fleet{{end}}</p>
+  {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+  <form method="POST" action="/auth/login">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="flow" value="{{.Flow}}">
+    <input type="hidden" name="appru" value="{{.Appru}}">
+    <div class="field">
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" placeholder="admin@lab.local" value="{{.Email}}" autocomplete="username" autofocus required>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" placeholder="••••••••" autocomplete="current-password" required>
+    </div>
+    <button type="submit">Sign In</button>
+  </form>
+</div>
 </body>
 </html>`))

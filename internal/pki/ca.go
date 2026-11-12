@@ -201,12 +201,13 @@ func (ca *CA) IssueDeviceCert(deviceID, enrolledBy string, csrPEM []byte) ([]byt
 		return nil, fmt.Errorf("generating serial: %w", err)
 	}
 
+	// The Subject is ONLY CN=<deviceID>: the Windows OMA-DM client locates its
+	// mTLS client certificate via SSLCLIENTCERTSEARCHCRITERIA "Subject=CN=<id>",
+	// which is an exact distinguished-name match — extra RDNs (O/OU) would make
+	// the lookup fail (MENROLL_E_PROV_SSLCERTNOTFOUND / 0x80180024). The
+	// enrolling user is recorded as an rfc822Name SAN instead.
 	subject := pkix.Name{
-		Organization: []string{"Latchz MDM"},
-		CommonName:   deviceID,
-	}
-	if enrolledBy != "" {
-		subject.OrganizationalUnit = []string{enrolledBy}
+		CommonName: deviceID,
 	}
 	template := &x509.Certificate{
 		SerialNumber: serial,
@@ -215,6 +216,9 @@ func (ca *CA) IssueDeviceCert(deviceID, enrolledBy string, csrPEM []byte) ([]byt
 		NotAfter:     nowFunc().Add(365 * 24 * time.Hour), // 1 year, rotated on re-enrollment
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	if enrolledBy != "" {
+		template.EmailAddresses = []string{enrolledBy}
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, csr.PublicKey, ca.key)

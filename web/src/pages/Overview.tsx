@@ -201,7 +201,7 @@ export function OverviewPage() {
                           </div>
                         </td>
                         <td style={{ paddingRight: 32 }}>
-                          <Badge status={d.compliance_status} label={d.compliance_status === 'compliant' ? 'Verified' : 'Flagged'} />
+                          <Badge status={d.compliance_status} />
                         </td>
                       </tr>
                     ))}

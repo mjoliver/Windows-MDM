@@ -3,6 +3,8 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap');
 
 :root {
+  color-scheme: dark;
+
   /* Material 3 Tonal Palette - Dark */
   --md-sys-color-primary: #D0BCFF;
   --md-sys-color-on-primary: #381E72;
@@ -11,19 +13,39 @@
   
   --md-sys-color-secondary: #CCC2DC;
   --md-sys-color-on-secondary: #332D41;
+  --md-sys-color-tertiary: #EFB8C8;
   
   --md-sys-color-surface: #0F0F12;
   --md-sys-color-on-surface: #E6E1E5;
   --md-sys-color-surface-variant: #1C1B1F;
   --md-sys-color-on-surface-variant: #CAC4D0;
+  --md-sys-color-surface-container-low: rgba(255, 255, 255, 0.04);
   
   --md-sys-color-outline: rgba(255, 255, 255, 0.1);
   --md-sys-color-outline-variant: rgba(255, 255, 255, 0.05);
 
   /* Functional Colors */
   --md-sys-color-error: #F2B8B5;
+  --md-sys-color-error-container: rgba(242, 184, 181, 0.16);
+  --md-sys-color-on-error-container: #F2B8B5;
   --md-sys-color-success: #B4E197;
   --md-sys-color-warning: #FFCC00;
+
+  /* Semantic Aliases used across Compliance, Groups, and Profiles */
+  --accent: #D0BCFF;
+  --success: #B4E197;
+  --success-dim: rgba(180, 225, 151, 0.14);
+  --danger: #F2B8B5;
+  --danger-dim: rgba(242, 184, 181, 0.14);
+  --warning: #FFCC00;
+  --neutral: #94A3B8;
+  --neutral-dim: rgba(148, 163, 184, 0.14);
+  --bg: rgba(255, 255, 255, 0.03);
+  --bg-surface: #1C1B1F;
+  --border: rgba(255, 255, 255, 0.1);
+  --text-primary: #E6E1E5;
+  --text-secondary: #CAC4D0;
+  --text-muted: rgba(202, 196, 208, 0.65);
 
   /* Glassmorphism Tokens */
   --glass-bg: rgba(28, 27, 31, 0.7);
@@ -230,6 +252,11 @@ a:hover { opacity: 0.8; }
 
 .input:focus {
   border-color: var(--md-sys-color-primary);
+}
+
+select.input option {
+  background: var(--md-sys-color-surface-variant);
+  color: var(--md-sys-color-on-surface);
 }
 
 .input-has-icon {
@@ -631,4 +658,44 @@ tr:hover td { background: rgba(255, 255, 255, 0.04); }
 
 .setting-description-clickable:hover {
   opacity: 0.9;
+}
+
+/* ── Tooltips (including disabled action buttons) ──────────────────────── */
+
+.tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+  outline: none;
+}
+
+.tooltip-wrap[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: max-content;
+  max-width: 280px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--md-sys-color-surface-variant);
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 50;
+}
+
+.tooltip-wrap[data-tooltip]:hover::after,
+.tooltip-wrap[data-tooltip]:focus-visible::after,
+.tooltip-wrap[data-tooltip]:focus-within::after {
+  opacity: 1;
+  transform: translateY(0);
 }

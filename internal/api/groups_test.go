@@ -305,6 +305,7 @@ func TestHandleUpdateGroup(t *testing.T) {
 // ── Tests for HandleDeleteGroup ───────────────────────────────────────────────
 
 func TestHandleDeleteGroup(t *testing.T) {
+	stubPolicyOps(t)
 	tests := []struct {
 		name       string
 		url        string
@@ -391,6 +392,7 @@ func TestHandleDeleteGroup(t *testing.T) {
 // ── Tests for HandleAssignDeviceToGroup ───────────────────────────────────────
 
 func TestHandleAssignDeviceToGroup(t *testing.T) {
+	stubPolicyOps(t)
 	tests := []struct {
 		name       string
 		url        string
@@ -510,6 +512,7 @@ func TestHandleAssignDeviceToGroup(t *testing.T) {
 // ── Tests for HandleAssignProfileToGroup ──────────────────────────────────────
 
 func TestHandleAssignProfileToGroup(t *testing.T) {
+	stubPolicyOps(t)
 	tests := []struct {
 		name       string
 		url        string

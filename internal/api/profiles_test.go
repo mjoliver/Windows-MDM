@@ -26,13 +26,13 @@ func TestHandleListProfiles(t *testing.T) {
 			name: "list profiles",
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{
-					"id", "name", "description", "created_by", "created_at", "updated_at",
+					"id", "name", "description", "created_by", "created_at", "updated_at", "setting_count",
 				}).AddRow(
 					"prof-1", "BitLocker Policy", "Enable BitLocker encryption",
-					"admin@example.com", time.Now(), time.Now(),
+					"admin@example.com", time.Now(), time.Now(), 3,
 				).AddRow(
 					"prof-2", "WiFi Policy", "Configure WiFi settings",
-					"admin@example.com", time.Now(), time.Now(),
+					"admin@example.com", time.Now(), time.Now(), 1,
 				))
 			},
 			expectCode:  http.StatusOK,
@@ -42,7 +42,7 @@ func TestHandleListProfiles(t *testing.T) {
 			name: "empty profile list",
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{
-					"id", "name", "description", "created_by", "created_at", "updated_at",
+					"id", "name", "description", "created_by", "created_at", "updated_at", "setting_count",
 				}))
 			},
 			expectCode:  http.StatusOK,
@@ -339,6 +339,7 @@ func TestHandleCreateProfile(t *testing.T) {
 // ── Tests for HandleUpdateProfile ─────────────────────────────────────────────
 
 func TestHandleUpdateProfile(t *testing.T) {
+	stubPolicyOps(t)
 	tests := []struct {
 		name       string
 		url        string
@@ -484,6 +485,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 // ── Tests for HandleDeleteProfile ─────────────────────────────────────────────
 
 func TestHandleDeleteProfile(t *testing.T) {
+	stubPolicyOps(t)
 	tests := []struct {
 		name       string
 		url        string

@@ -399,10 +399,22 @@ func TestEnqueueRef(t *testing.T) {
 	}
 }
 
+// stubPolicyOps replaces policyOps with no-op functions for sqlmock handler tests
+// and restores the real production wiring when the test completes.
+func stubPolicyOps(t *testing.T) {
+	t.Helper()
+	orig := policyOps
+	policyOps.ApplyDevice = func(*sql.DB, string) {}
+	policyOps.ApplyGroup = func(*sql.DB, string) {}
+	policyOps.ApplyProfile = func(*sql.DB, string) {}
+	policyOps.ResyncDevices = func(*sql.DB, []string) {}
+	t.Cleanup(func() { policyOps = orig })
+}
+
 // ── Tests for policyOps ───────────────────────────────────────────────────────
 
 func TestPolicyOps(t *testing.T) {
-	// Verify policyOps has the expected functions
+	// Verify policyOps has the expected functions wired by default
 	if policyOps.ApplyDevice == nil {
 		t.Error("policyOps.ApplyDevice should not be nil")
 	}
@@ -411,5 +423,8 @@ func TestPolicyOps(t *testing.T) {
 	}
 	if policyOps.ApplyProfile == nil {
 		t.Error("policyOps.ApplyProfile should not be nil")
+	}
+	if policyOps.ResyncDevices == nil {
+		t.Error("policyOps.ResyncDevices should not be nil")
 	}
 }

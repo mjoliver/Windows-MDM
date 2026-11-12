@@ -167,6 +167,9 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 	sess.NextMsgID++
 
 	serverURI := "https://" + h.domain + "/omadm"
+	if incoming.SyncHdr.Target.LocURI != "" {
+		serverURI = incoming.SyncHdr.Target.LocURI
+	}
 
 	// Build status ACKs for what the device sent us
 	var statuses []Status

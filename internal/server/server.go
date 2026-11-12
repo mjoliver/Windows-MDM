@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -100,8 +102,54 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 		api:        apiHandler,
 		mux:        chi.NewRouter(),
 	}
+	enrollHandler.SetMDMHost(s.mdmHost())
 	s.routes()
 	return s, nil
+}
+
+// mtlsListenAddr returns the dedicated mTLS listen address used for /omadm
+// SyncML check-ins and ROBO certificate renewals when direct TLS is active and
+// no separate SNI mdm_domain is configured. Keeping the enrollment listener
+// client-cert-free prevents Windows WinHTTP (DeviceEnroller.exe) from aborting
+// Discovery/XCEP/WSTEP with ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED.
+func (s *Server) mtlsListenAddr() string {
+	if s.cfg == nil || s.cfg.TLS.Mode == "none" {
+		return ""
+	}
+	if s.cfg.Server.MTLSListen != "" {
+		return s.cfg.Server.MTLSListen
+	}
+	if s.cfg.Server.MDMDomain == "" {
+		if s.cfg.Server.Listen == ":8443" {
+			return ":8444"
+		}
+		return ":8443"
+	}
+	return ""
+}
+
+// mdmHost returns the host[:port] advertised in WSTEP provisioning XML for
+// /omadm device check-ins and ROBO certificate renewal.
+func (s *Server) mdmHost() string {
+	if s.cfg == nil {
+		return ""
+	}
+	if s.cfg.Server.MDMDomain != "" {
+		return s.cfg.Server.MDMDomain
+	}
+	if addr := s.mtlsListenAddr(); addr != "" && addr != s.cfg.Server.Listen {
+		if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+			host := s.cfg.Server.Domain
+			if h, _, err := net.SplitHostPort(host); err == nil && h != "" {
+				host = h
+			}
+			if port == "443" {
+				return host
+			}
+			return net.JoinHostPort(host, port)
+		}
+	}
+	return s.cfg.Server.Domain
 }
 
 // buildAuthenticator constructs the configured auth provider. It fails closed:
@@ -244,6 +292,7 @@ func (s *Server) routes() {
 			r.Get("/devices/{id}", s.api.HandleGetDevice)
 			r.With(admin).Delete("/devices/{id}", s.api.HandleUnenrollDevice)
 			r.With(admin).Post("/devices/{id}/lock", s.api.HandleLockDevice)
+			r.With(admin).Post("/devices/{id}/reboot", s.api.HandleRebootDevice)
 			r.With(admin).Post("/devices/{id}/wipe", s.api.HandleWipeDevice)
 			r.With(admin).Post("/devices/{id}/sync", s.api.HandleSyncDevice)
 			r.Get("/devices/{id}/commands", s.api.HandleGetDeviceCommands)
@@ -297,13 +346,14 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.cfg.TLS.Mode == "auto" {
 		tlsCfg, acmeHandler, err := buildAutoTLSConfig(
 			s.cfg.Server.Domain,
+			s.cfg.Server.MDMDomain,
 			s.cfg.TLS.CacheDir,
 			s.ca.TLSPool(),
+			s.verifyPeerCert,
 		)
 		if err != nil {
 			return fmt.Errorf("building auto-TLS config: %w", err)
 		}
-		tlsCfg.VerifyPeerCertificate = s.verifyPeerCert
 		return s.runAutoTLS(ctx, tlsCfg, acmeHandler)
 	}
 
@@ -338,38 +388,69 @@ func (s *Server) Run(ctx context.Context) error {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	var mtlsSrv *http.Server
+	if mtlsAddr := s.mtlsListenAddr(); mtlsAddr != "" && mtlsAddr != s.cfg.Server.Listen {
+		mtlsSrv = &http.Server{
+			Addr:         mtlsAddr,
+			Handler:      s.mux,
+			TLSConfig:    s.buildMTLSConfig(tlsCfg),
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 60 * time.Second,
+			IdleTimeout:  120 * time.Second,
+		}
+	}
+
 	slog.Info("Latchz MDM starting",
 		"listen", s.cfg.Server.Listen,
+		"mtls_listen", s.mtlsListenAddr(),
 		"domain", s.cfg.Server.Domain,
+		"omadm_host", s.mdmHost(),
 		"tls_mode", s.cfg.TLS.Mode,
 	)
-	return s.runHTTPS(ctx, httpSrv)
+	return s.runHTTPS(ctx, httpSrv, mtlsSrv)
 }
 
-// runHTTPS runs a TLS server and handles graceful shutdown.
-func (s *Server) runHTTPS(ctx context.Context, srv *http.Server) error {
+// runHTTPS runs the primary TLS server (and optional dedicated mTLS device
+// listener) and handles graceful shutdown.
+func (s *Server) runHTTPS(ctx context.Context, srv, mtlsSrv *http.Server) error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("server error: %w", err)
 		}
 	}()
+	if mtlsSrv != nil {
+		go func() {
+			if err := mtlsSrv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("mTLS server error (%s): %w", mtlsSrv.Addr, err)
+			}
+		}()
+	}
+
+	shutdownAll := func() error {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		err1 := srv.Shutdown(shutdownCtx)
+		if mtlsSrv != nil {
+			if err2 := mtlsSrv.Shutdown(shutdownCtx); err1 == nil {
+				err1 = err2
+			}
+		}
+		return err1
+	}
 
 	select {
 	case err := <-errCh:
+		_ = shutdownAll()
 		return err
 	case <-quit:
 		slog.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		return shutdownAll()
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		return shutdownAll()
 	}
 }
 
@@ -400,39 +481,34 @@ func (s *Server) runHTTP(ctx context.Context, srv *http.Server) error {
 	}
 }
 
-// buildTLSConfig creates a TLS config based on the configured mode.
+// buildTLSConfig creates a TLS config for the primary HTTPS listener.
+// Crucially, the enrollment listener uses tls.NoClientCert by default because
+// Windows WinHTTP (DeviceEnroller.exe) aborts the handshake immediately with
+// ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED if the server sends a TLS
+// CertificateRequest during Discovery/XCEP/WSTEP. Enrolled device mTLS is
+// handled either on the dedicated mTLS listener (mtlsListenAddr) or via SNI
+// when server.mdm_domain is configured.
 func (s *Server) buildTLSConfig() (*tls.Config, error) {
+	var cert tls.Certificate
+	var err error
+
 	switch s.cfg.TLS.Mode {
 	case "self-signed":
-		cert, err := generateSelfSignedCert(s.cfg.Server.Domain)
+		cert, err = generateSelfSignedCert(s.cfg.Server.Domain)
 		if err != nil {
 			return nil, fmt.Errorf("generating self-signed cert: %w", err)
 		}
 		slog.Warn("using self-signed TLS certificate (not suitable for production)",
 			"domain", s.cfg.Server.Domain)
-		return &tls.Config{
-			Certificates:          []tls.Certificate{cert},
-			MinVersion:            tls.VersionTLS12,
-			ClientCAs:             s.ca.TLSPool(),
-			ClientAuth:            tls.VerifyClientCertIfGiven,
-			VerifyPeerCertificate: s.verifyPeerCert,
-		}, nil
 
 	case "manual":
 		if s.cfg.TLS.CertFile == "" || s.cfg.TLS.KeyFile == "" {
 			return nil, fmt.Errorf("tls.mode=manual requires tls.cert_file and tls.key_file")
 		}
-		cert, err := tls.LoadX509KeyPair(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+		cert, err = tls.LoadX509KeyPair(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("loading TLS cert/key: %w", err)
 		}
-		return &tls.Config{
-			Certificates:          []tls.Certificate{cert},
-			MinVersion:            tls.VersionTLS12,
-			ClientCAs:             s.ca.TLSPool(),
-			ClientAuth:            tls.VerifyClientCertIfGiven,
-			VerifyPeerCertificate: s.verifyPeerCert,
-		}, nil
 
 	case "auto":
 		// Handled in Run() via runAutoTLS — should not reach here
@@ -445,6 +521,32 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 	default:
 		return nil, fmt.Errorf("unknown tls.mode %q — valid options: auto, manual, self-signed, none", s.cfg.TLS.Mode)
 	}
+
+	base := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+		ClientAuth:   tls.NoClientCert,
+	}
+	if mdmDomain := s.cfg.Server.MDMDomain; mdmDomain != "" {
+		base.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			if hello != nil && strings.EqualFold(hello.ServerName, mdmDomain) {
+				return s.buildMTLSConfig(base), nil
+			}
+			return nil, nil
+		}
+	}
+	return base, nil
+}
+
+// buildMTLSConfig clones a server tls.Config and enables optional-but-verified
+// client certificate authentication for /omadm SyncML check-ins and ROBO renewals.
+func (s *Server) buildMTLSConfig(base *tls.Config) *tls.Config {
+	mtls := base.Clone()
+	mtls.GetConfigForClient = nil
+	mtls.ClientCAs = s.ca.TLSPool()
+	mtls.ClientAuth = tls.VerifyClientCertIfGiven
+	mtls.VerifyPeerCertificate = s.verifyPeerCert
+	return mtls
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
@@ -554,9 +656,12 @@ func securityHeaders(next http.Handler) http.Handler {
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// CSP scoped to the SPA. 'unsafe-inline' for styles covers React inline
-	// style attributes; scripts are restricted to same-origin bundle files.
+	// style attributes; Google Fonts is allowed for Outfit/Inter typography;
+	// scripts remain restricted to same-origin bundle files.
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "+
+		"default-src 'self'; img-src 'self' data:; "+
+			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
+			"font-src 'self' https://fonts.gstatic.com data:; "+
 			"script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
 	webHandler().ServeHTTP(w, r)
 }

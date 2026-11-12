@@ -167,6 +167,31 @@ func (h *Handler) HandleLockDevice(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, map[string]interface{}{"status": "queued", "queue_id": queueID})
 }
 
+// HandleRebootDevice queues an immediate restart command via Reboot CSP.
+// POST /api/devices/{id}/reboot
+func (h *Handler) HandleRebootDevice(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	actor := emailFromCtx(r)
+
+	if _, err := h.getDevice(r, id); err == sql.ErrNoRows {
+		respondErr(w, http.StatusNotFound, "device not found")
+		return
+	} else if err != nil {
+		respondErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	queueID, err := enqueueRef.Reboot(h.db, id)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, "failed to queue reboot command")
+		return
+	}
+
+	h.audit(r, actor, "device.reboot", "device", id, fmt.Sprintf(`{"queue_id":%d}`, queueID))
+	slog.Info("remote reboot queued", "device_id", id, "actor", actor)
+	respondOK(w, map[string]interface{}{"status": "queued", "queue_id": queueID})
+}
+
 // HandleWipeDevice queues a factory reset command. Requires confirmation.
 // POST /api/devices/{id}/wipe
 func (h *Handler) HandleWipeDevice(w http.ResponseWriter, r *http.Request) {

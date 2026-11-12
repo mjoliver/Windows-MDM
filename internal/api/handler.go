@@ -9,6 +9,7 @@ import (
 
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/mdm"
+	"github.com/latchzmdm/latchz/internal/policy"
 )
 
 // Handler holds dependencies for all API handlers.
@@ -135,13 +136,15 @@ var enqueueRef = struct {
 // policyOps holds injectable policy functions for testing.
 // By default they call the real policy package functions.
 var policyOps = struct {
-	ApplyDevice  func(db *sql.DB, deviceID string)
-	ApplyGroup   func(db *sql.DB, groupID string)
-	ApplyProfile func(db *sql.DB, profileID string)
+	ApplyDevice   func(db *sql.DB, deviceID string)
+	ApplyGroup    func(db *sql.DB, groupID string)
+	ApplyProfile  func(db *sql.DB, profileID string)
+	ResyncDevices func(db *sql.DB, deviceIDs []string)
 }{
-	ApplyDevice:  func(db *sql.DB, deviceID string) { /* default no-op for tests */ },
-	ApplyGroup:   func(db *sql.DB, groupID string) { /* default no-op for tests */ },
-	ApplyProfile: func(db *sql.DB, profileID string) { /* default no-op for tests */ },
+	ApplyDevice:   policy.ApplyDevice,
+	ApplyGroup:    policy.ApplyGroup,
+	ApplyProfile:  policy.ApplyProfile,
+	ResyncDevices: policy.ResyncDevices,
 }
 
 // keep imports used

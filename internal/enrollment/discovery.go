@@ -23,6 +23,7 @@ const (
 // Handler handles all MS-MDE2 enrollment SOAP endpoints.
 type Handler struct {
 	domain           string
+	mdmHost          string
 	enrollmentDomain string
 }
 
@@ -30,8 +31,25 @@ type Handler struct {
 func NewHandler(domain, enrollmentDomain string) *Handler {
 	return &Handler{
 		domain:           domain,
+		mdmHost:          domain,
 		enrollmentDomain: enrollmentDomain,
 	}
+}
+
+// SetMDMHost overrides the host[:port] advertised for mTLS device endpoints
+// (/omadm and ROBO certificate-renewal /wstep) while keeping initial enrollment
+// endpoints on domain (:443 without client-certificate prompts).
+func (h *Handler) SetMDMHost(mdmHost string) {
+	if mdmHost != "" {
+		h.mdmHost = mdmHost
+	}
+}
+
+func (h *Handler) omadmHost() string {
+	if h.mdmHost != "" {
+		return h.mdmHost
+	}
+	return h.domain
 }
 
 // HandleDiscovery handles the MS-MDE2 discovery SOAP request.
@@ -73,8 +91,18 @@ func (h *Handler) HandleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"os_edition", req.Request.OSEdition,
 	)
 
-	// Build URLs for this server
+	// Build URLs for this server. If the client ONLY offered "Certificate" auth
+	// (MS-MDE2 ROBO renewal), point WSTEP at the mTLS host[:port] so the server
+	// requests the device's existing client certificate during the TLS handshake.
 	base := "https://" + h.domain
+	authPolicy := "Federated"
+	wstepURL := base + "/wstep"
+	authServiceURL := base + "/auth/login?flow=enroll"
+	if isCertificateOnlyDiscovery(req.Request.AuthPolicies) {
+		authPolicy = "Certificate"
+		wstepURL = "https://" + h.omadmHost() + "/wstep"
+		authServiceURL = ""
+	}
 	resp := SOAPEnvelope{
 		XMLName: xml.Name{Local: "s:Envelope"},
 		XmlnsS:  soapNS,
@@ -87,12 +115,11 @@ func (h *Handler) HandleDiscovery(w http.ResponseWriter, r *http.Request) {
 			DiscoverResponse: &DiscoverResponse{
 				Xmlns: enrollNS,
 				DiscoverResult: DiscoverResult{
-					// Federated = OIDC webview login
-					AuthPolicy:                 "Federated",
+					AuthPolicy:                 authPolicy,
 					EnrollmentVersion:          "4.0",
 					EnrollmentPolicyServiceUrl: base + "/xcep",
-					EnrollmentServiceUrl:       base + "/wstep",
-					AuthenticationServiceUrl:   base + "/auth/login?flow=enroll",
+					EnrollmentServiceUrl:       wstepURL,
+					AuthenticationServiceUrl:   authServiceURL,
 				},
 			},
 		},
@@ -287,4 +314,17 @@ func parseSOAPEnvelope(r *http.Request) (*SOAPEnvelope, error) {
 		return nil, fmt.Errorf("parsing SOAP: %w", err)
 	}
 	return &env, nil
+}
+
+func isCertificateOnlyDiscovery(policies []string) bool {
+	hasCert := false
+	for _, p := range policies {
+		switch strings.ToLower(strings.TrimSpace(p)) {
+		case "certificate":
+			hasCert = true
+		case "federated", "onpremise":
+			return false
+		}
+	}
+	return hasCert
 }

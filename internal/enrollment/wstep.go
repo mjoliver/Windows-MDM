@@ -83,10 +83,11 @@ const (
       </characteristic>
     </characteristic>
     <characteristic type="My">
-      <characteristic type="User">
+      <characteristic type="%s">
         <characteristic type="%s">
           <parm name="EncodedCertificate" value="%s"/>
         </characteristic>
+        <characteristic type="PrivateKeyContainer"/>
       </characteristic>
     </characteristic>
   </characteristic>
@@ -100,6 +101,7 @@ const (
     <parm name="MAXBACKOFFTIME" value="120000"/>
     <parm name="BACKCOMPATRETRYDISABLED" value=""/>
     <parm name="DEFAULTENCODING" value="application/vnd.syncml.dm+xml"/>
+    <parm name="SSLCLIENTCERTSEARCHCRITERIA" value="Subject=CN%%3D%s&amp;Stores=MY%%5C%s"/>
     <characteristic type="APPAUTH">
       <parm name="AAUTHLEVEL" value="CLIENT"/>
       <parm name="AAUTHTYPE" value="DIGEST"/>
@@ -170,6 +172,7 @@ var nowFunc = time.Now
 // DeviceInfo holds metadata extracted from the WSTEP AdditionalContext.
 type DeviceInfo struct {
 	DeviceType        string
+	EnrollmentType    string
 	DeviceName        string
 	HardwareID        string
 	OSVersion         string
@@ -300,7 +303,7 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		}
 
 		// ── Step 6: Build the provisioning document ───────────────────────
-		omaDMURL := "https://" + h.domain + "/omadm?hwid=" + info.HardwareID
+		omaDMURL := "https://" + h.omadmHost() + "/omadm?hwid=" + info.HardwareID
 		caCertDER := ca.CertDER()
 		caCertB64 := base64.StdEncoding.EncodeToString(caCertDER)
 		caThumbprint := fmt.Sprintf("%X", sha1Bytes(caCertDER))
@@ -309,12 +312,21 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		deviceCertB64 := base64.StdEncoding.EncodeToString(deviceCertDER)
 		deviceThumbprint := fmt.Sprintf("%X", sha1Bytes(deviceCertDER))
 
+		// The enrollment client generates the CSR key pair in the enrolling
+		// user's context, so the issued cert must be installed in My\User (where
+		// its private key lives). Installing it in My\System fails with
+		// MENROLL_E_PROV_SSLCERTNOTFOUND (0x80180024).
+		myStoreTarget := "User"
+
 		provisioningXML := fmt.Sprintf(provisioningXMLTemplate,
 			caThumbprint,     // Root CA Store Key
 			caCertB64,        // Root CA Cert
+			myStoreTarget,    // My Store Target (User — where the CSR private key lives)
 			deviceThumbprint, // My Store Key
 			deviceCertB64,    // Device Cert
 			omaDMURL,         // APPLICATION ADDR
+			actualDeviceID,   // SSLCLIENTCERTSEARCHCRITERIA Subject CN (device cert CN)
+			myStoreTarget,    // SSLCLIENTCERTSEARCHCRITERIA Stores=MY\<target>
 			info.HardwareID,  // APPAUTH APPSRV AAUTHNAME (using hardware ID as username)
 			"dummy-secret",   // APPAUTH APPSRV AAUTHSECRET
 			info.DeviceName,  // EntDeviceName
@@ -358,6 +370,8 @@ func extractDeviceInfo(ctx AdditionalContext) DeviceInfo {
 		switch item.Name {
 		case "DeviceType":
 			info.DeviceType = item.Value
+		case "EnrollmentType":
+			info.EnrollmentType = item.Value
 		case "DeviceName":
 			info.DeviceName = item.Value
 		case "HWDevID":

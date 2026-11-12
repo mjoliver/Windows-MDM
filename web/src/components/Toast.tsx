@@ -17,20 +17,20 @@ export interface ToastProps extends ToastData {
 const VARIANT_CONFIG = {
   error: {
     icon: AlertCircle,
-    borderColor: 'var(--md-sys-color-error)',
-    bg: 'rgba(242, 184, 181, 0.08)',
+    borderColor: 'rgba(242, 184, 181, 0.35)',
+    bg: 'rgba(28, 27, 31, 0.94)',
     iconColor: 'var(--md-sys-color-error)',
   },
   success: {
     icon: CheckCircle2,
-    borderColor: 'var(--md-sys-color-success)',
-    bg: 'rgba(180, 225, 151, 0.08)',
+    borderColor: 'rgba(180, 225, 151, 0.35)',
+    bg: 'rgba(28, 27, 31, 0.94)',
     iconColor: 'var(--md-sys-color-success)',
   },
   info: {
     icon: Info,
-    borderColor: 'var(--md-sys-color-primary)',
-    bg: 'rgba(208, 188, 255, 0.08)',
+    borderColor: 'rgba(208, 188, 255, 0.35)',
+    bg: 'rgba(28, 27, 31, 0.94)',
     iconColor: 'var(--md-sys-color-primary)',
   },
 } as const
@@ -63,7 +63,8 @@ export function Toast({ message, variant, onDismiss, duration = 4000, id }: Toas
         gap: 12,
         padding: '14px 16px',
         background: config.bg,
-        border: `1px solid ${config.borderColor}33`,
+        backdropFilter: 'blur(16px)',
+        border: `1px solid ${config.borderColor}`,
         borderRadius: 12,
         color: 'var(--md-sys-color-on-surface)',
         fontSize: '0.9rem',

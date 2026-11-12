@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, HelpCircle } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
@@ -22,6 +22,7 @@ export function DeviceDetailPage() {
   const [loading, setLoading]         = useState(true)
   const [error, setError]             = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [confirmReboot, setConfirmReboot] = useState(false)
   const [confirmWipe, setConfirmWipe]     = useState(false)
   const toast = useToast()
 
@@ -52,10 +53,32 @@ export function DeviceDetailPage() {
     refresh()
   }, [id, refresh])
 
+  // Background poll so check-ins / command results appear without a manual
+  // reload. Silent: does not toggle the full-page loading skeleton.
+  useEffect(() => {
+    if (!id) return
+    const t = setInterval(() => {
+      api.devices.get(id).then(d => { setDevice(d.device); setPendingCmds(d.pending_commands) }).catch(() => {})
+      api.compliance.device(id).then(c => setCompliance(c ?? null)).catch(() => {})
+      api.devices.getCommands(id).then(cmd => setCommands(cmd.commands ?? [])).catch(() => {})
+    }, 10000)
+    return () => clearInterval(t)
+  }, [id])
+
   const action = async (name: string, fn: () => Promise<unknown>) => {
     setActionLoading(name)
     try { 
-      await fn() 
+      const res = await fn()
+      if (name === 'sync') {
+        const queued = (res as { commands_queued?: number } | undefined)?.commands_queued ?? 0
+        if (queued === 0) {
+          toast.error('Nothing to sync — no profiles are assigned to this device\'s groups.')
+        } else {
+          toast.success(`Queued ${queued} command(s). They're delivered on the device's next check-in (Settings → Access work or school → Info → Sync).`)
+        }
+      } else if (name === 'reboot') {
+        toast.success('Reboot queued — once synced, Windows gives signed-in users a 5-minute grace period before restarting.')
+      }
       setTimeout(refresh, 500)
     } catch (e) { 
       toast.error(`Failed to ${name}: ${e instanceof Error ? e.message : String(e)}`)
@@ -113,14 +136,14 @@ export function DeviceDetailPage() {
         ]} />
 
         {/* Hero Banner */}
-        <div className="card" style={{ padding: 40, marginBottom: 32, display: 'flex', alignItems: 'center', gap: 40, background: 'radial-gradient(circle at top right, rgba(208, 188, 255, 0.1), transparent)' }}>
+        <div className="card" style={{ position: 'relative', zIndex: 2, padding: 40, marginBottom: 32, display: 'flex', alignItems: 'center', gap: 40, background: 'radial-gradient(circle at top right, rgba(208, 188, 255, 0.1), transparent)' }}>
           <div className="detail-icon-large">
             <Monitor size={36} />
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 8 }}>
               <h1 style={{ fontSize: '2.4rem', fontWeight: 800, margin: 0 }}>{device.device_name || 'Unnamed Device'}</h1>
-              <Badge status={device.compliance_status} label={device.compliance_status === 'compliant' ? 'Verified Healthy' : 'Action Required'} />
+              <Badge status={device.compliance_status} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 24, opacity: 0.6, fontSize: '1rem', fontWeight: 500 }}>
               <span>{device.manufacturer} {device.model}</span>
@@ -138,18 +161,42 @@ export function DeviceDetailPage() {
               <RefreshCw size={18} className={actionLoading === 'sync' ? 'spin' : ''} />
               Force Sync
             </button>
-            <button className="btn btn-secondary"
-              onClick={() => action('lock', () => api.devices.lock(id!))}
-              disabled={!!actionLoading}
-              style={{ width: 52, height: 52, padding: 0, borderRadius: 16 }}>
-              <Lock size={20} />
-            </button>
-            <button className="btn btn-secondary"
-              style={{ color: 'var(--md-sys-color-error)', width: 52, height: 52, padding: 0, borderRadius: 16 }}
-              onClick={() => setConfirmWipe(true)}
-              disabled={!!actionLoading}>
-              <Trash2 size={20} />
-            </button>
+            <span
+              className="tooltip-wrap"
+              data-tooltip="Restart device on next check-in">
+              <button className="btn btn-secondary"
+                aria-label="Restart device"
+                onClick={() => setConfirmReboot(true)}
+                disabled={!!actionLoading}
+                style={{ width: 52, height: 52, padding: 0, borderRadius: 16 }}>
+                <RotateCcw size={20} className={actionLoading === 'reboot' ? 'spin' : ''} />
+              </button>
+            </span>
+            <span
+              className="tooltip-wrap"
+              tabIndex={0}
+              aria-label="Remote Lock unavailable: Microsoft's RemoteLock CSP is unsupported on Windows 10/11 Desktop and returns 406 Not Acceptable."
+              data-tooltip="Remote Lock is unsupported on Windows 10/11 Desktop — Microsoft's RemoteLock CSP returns 406 Not Acceptable on PCs (same as Intune)."
+              style={{ cursor: 'not-allowed' }}>
+              <button className="btn btn-secondary"
+                disabled
+                tabIndex={-1}
+                aria-hidden="true"
+                style={{ width: 52, height: 52, padding: 0, borderRadius: 16, opacity: 0.38, pointerEvents: 'none' }}>
+                <Lock size={20} />
+              </button>
+            </span>
+            <span
+              className="tooltip-wrap"
+              data-tooltip="Factory reset device">
+              <button className="btn btn-secondary"
+                aria-label="Factory reset device"
+                style={{ color: 'var(--md-sys-color-error)', width: 52, height: 52, padding: 0, borderRadius: 16 }}
+                onClick={() => setConfirmWipe(true)}
+                disabled={!!actionLoading}>
+                <Trash2 size={20} />
+              </button>
+            </span>
           </div>
         </div>
 
@@ -225,18 +272,23 @@ export function DeviceDetailPage() {
                     ) : (
                       commands.map(cmd => (
                         <tr key={cmd.id}>
-                          <td><span style={{ fontWeight: 700, textTransform: 'uppercase', fontSize: '0.75rem', color: 'var(--md-sys-color-primary)' }}>{cmd.type}</span></td>
+                          <td>
+                            <span style={{ fontWeight: 700, textTransform: 'uppercase', fontSize: '0.75rem', color: 'var(--md-sys-color-primary)' }}>{cmd.type}</span>
+                            <div style={{ fontSize: '0.7rem', opacity: 0.5, fontFamily: 'monospace' }}>{cmd.oma_uri}</div>
+                          </td>
                           <td>
                             <Badge status={cmd.status === 'sent' ? 'pending' : cmd.status === 'success' ? 'compliant' : cmd.status} label={cmd.status} />
                           </td>
                           <td style={{ opacity: 0.6 }}>{timeAgo(cmd.created_at)}</td>
                           <td>
                             {cmd.result_code ? (
-                              <span style={{ 
-                                padding: '4px 8px', borderRadius: 6, fontSize: '0.75rem', fontFamily: 'monospace',
-                                background: cmd.status === 'failed' ? 'rgba(242,184,181,0.1)' : 'rgba(180,225,151,0.1)',
-                                color: cmd.status === 'failed' ? 'var(--md-sys-color-error)' : 'var(--md-sys-color-success)'
-                              }}>
+                              <span
+                                title={cmd.result_info || undefined}
+                                style={{ 
+                                  padding: '4px 8px', borderRadius: 6, fontSize: '0.75rem', fontFamily: 'monospace',
+                                  background: cmd.status === 'failed' ? 'rgba(242,184,181,0.1)' : 'rgba(180,225,151,0.1)',
+                                  color: cmd.status === 'failed' ? 'var(--md-sys-color-error)' : 'var(--md-sys-color-success)'
+                                }}>
                                 {formatResultCode(cmd.result_code)}
                               </span>
                             ) : '—'}
@@ -280,6 +332,28 @@ export function DeviceDetailPage() {
             </div>
           </div>
         </div>
+
+        <Modal
+          open={confirmReboot}
+          onClose={() => setConfirmReboot(false)}
+          title="Confirm Reboot"
+          maxWidth={440}
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setConfirmReboot(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={async () => {
+                setConfirmReboot(false)
+                await action('reboot', () => api.devices.reboot(id!))
+              }}>
+                Queue Reboot
+              </button>
+            </>
+          }
+        >
+          <p style={{ opacity: 0.8, lineHeight: 1.6 }}>
+            You are about to queue a <strong>Remote Reboot</strong> command (<code className="mono">RebootNow</code>). On its next check-in, Windows will notify any signed-in user and restart after a <strong>5-minute grace period</strong>.
+          </p>
+        </Modal>
 
         <Modal
           open={confirmWipe}

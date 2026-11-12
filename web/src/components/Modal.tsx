@@ -38,7 +38,11 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
 export function Modal({ open, onClose, title, maxWidth, children, footer, showClose }: ModalProps) {
   const modalRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLElement | null>(null)
-  const focusIndexRef = useRef<number>(0)
+  const onCloseRef = useRef(onClose)
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
   // Store reference to the element that triggered the modal
   useEffect(() => {
@@ -51,44 +55,46 @@ export function Modal({ open, onClose, title, maxWidth, children, footer, showCl
   useEffect(() => {
     if (!open || !modalRef.current) return
 
-    // Focus the first focusable element or the modal itself
-    const focusable = getFocusableElements(modalRef.current)
-    if (focusable.length > 0) {
-      focusable[0].focus()
-    }
-    focusIndexRef.current = 0
+    const container = modalRef.current
+    const focusable = getFocusableElements(container)
+
+    // Prefer [autofocus] or the first focusable element inside .modal-body so
+    // opening a form modal focuses the first input instead of the Close button.
+    const body = container.querySelector<HTMLElement>('.modal-body')
+    const autoFocusEl = container.querySelector<HTMLElement>('[autofocus]')
+    const bodyFocusable = body ? getFocusableElements(body) : []
+    const initialTarget = autoFocusEl ?? bodyFocusable[0] ?? focusable[0]
+    initialTarget?.focus()
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
-        onClose()
+        onCloseRef.current()
         return
       }
 
-      if (e.key === 'Tab') {
-        const focusable = getFocusableElements(modalRef.current!)
-        if (focusable.length === 0) return
+      if (e.key === 'Tab' && modalRef.current) {
+        const items = getFocusableElements(modalRef.current)
+        if (items.length === 0) return
 
-        const currentIndex = focusIndexRef.current
+        const active = document.activeElement as HTMLElement | null
+        const currentIndex = active ? items.indexOf(active) : -1
         let nextIndex: number
 
         if (e.shiftKey) {
-          // Shift+Tab: move backwards
-          nextIndex = currentIndex > 0 ? currentIndex - 1 : focusable.length - 1
+          nextIndex = currentIndex > 0 ? currentIndex - 1 : items.length - 1
         } else {
-          // Tab: move forwards
-          nextIndex = currentIndex < focusable.length - 1 ? currentIndex + 1 : 0
+          nextIndex = currentIndex >= 0 && currentIndex < items.length - 1 ? currentIndex + 1 : 0
         }
 
-        focusable[nextIndex]?.focus()
+        items[nextIndex]?.focus()
         e.preventDefault()
-        focusIndexRef.current = nextIndex
       }
     }
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [open, onClose])
+  }, [open])
 
   // Restore focus when modal closes
   useEffect(() => {

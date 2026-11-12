@@ -150,7 +150,7 @@ export function ProfileDetailPage() {
   return (
     <Layout title={`Edit Profile: ${profile.name}`}>
       {/* Editor Container - using grid/flex for split view */}
-      <div className="fade-in" style={{ display: 'flex', height: 'calc(100vh - 120px)', gap: 24, overflow: 'hidden' }}>
+      <div className="fade-in" style={{ display: 'flex', height: 'calc(100vh - 136px)', gap: 24, overflow: 'hidden' }}>
         
         {/* Left Side: Profile Construction */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>

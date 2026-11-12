@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/latchzmdm/latchz/internal/db"
-	"github.com/latchzmdm/latchz/internal/policy"
 )
 
 // Group is the JSON representation of a device group.
@@ -139,7 +138,7 @@ func (h *Handler) HandleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go policy.ResyncDevices(h.db, affected)
+	go policyOps.ResyncDevices(h.db, affected)
 
 	h.audit(r, actor, "group.delete", "group", id, "")
 	slog.Info("group deleted", "group_id", id, "actor", actor, "affected_devices", len(affected))
@@ -201,9 +200,9 @@ func (h *Handler) HandleAssignDeviceToGroup(w http.ResponseWriter, r *http.Reque
 	// Adding devices applies the group's profiles; removing them retracts those
 	// settings from the removed devices.
 	if body.Action == "add" {
-		go policy.ApplyGroup(h.db, groupID)
+		go policyOps.ApplyGroup(h.db, groupID)
 	} else {
-		go policy.ResyncDevices(h.db, body.DeviceIDs)
+		go policyOps.ResyncDevices(h.db, body.DeviceIDs)
 	}
 
 	respondOK(w, map[string]interface{}{"status": "ok", "affected": affected})
@@ -252,7 +251,7 @@ func (h *Handler) HandleAssignProfileToGroup(w http.ResponseWriter, r *http.Requ
 	// Re-apply (or retract on removal) policies for all devices in this group.
 	// ApplyGroup re-resolves each device, which both applies new settings and
 	// retracts ones no longer governed.
-	go policy.ApplyGroup(h.db, groupID)
+	go policyOps.ApplyGroup(h.db, groupID)
 
 	respondOK(w, map[string]string{"status": "ok"})
 }

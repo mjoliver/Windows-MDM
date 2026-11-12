@@ -88,7 +88,7 @@ export function DevicesPage() {
                   <td>{d.os_version || '—'}</td>
                   <td>{d.manufacturer || '—'}</td>
                   <td style={{ opacity: 0.6 }}>{timeAgo(d.last_checkin)}</td>
-                  <td><Badge status={d.compliance_status} label={d.compliance_status === 'compliant' ? 'Healthy' : 'Warning'} /></td>
+                  <td><Badge status={d.compliance_status} /></td>
                 </tr>
               ))}
             </tbody>

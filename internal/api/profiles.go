@@ -11,18 +11,18 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
-	"github.com/latchzmdm/latchz/internal/policy"
 )
 
 // Profile is the JSON representation of a configuration profile.
 type Profile struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	CreatedBy   string          `json:"created_by"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	Settings    []PolicySetting `json:"settings,omitempty"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	CreatedBy    string          `json:"created_by"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+	SettingCount int             `json:"setting_count"`
+	Settings     []PolicySetting `json:"settings,omitempty"`
 }
 
 // PolicySetting is one policy entry within a profile.
@@ -40,8 +40,12 @@ type PolicySetting struct {
 // GET /api/profiles
 func (h *Handler) HandleListProfiles(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.QueryContext(r.Context(), dbpkg.Rebind(`
-		SELECT id, name, COALESCE(description,''), COALESCE(created_by,''), created_at, updated_at
-		FROM profiles ORDER BY name ASC
+		SELECT p.id, p.name, COALESCE(p.description,''), COALESCE(p.created_by,''), p.created_at, p.updated_at,
+		       COUNT(ps.catalog_id) AS setting_count
+		FROM profiles p
+		LEFT JOIN profile_settings ps ON ps.profile_id = p.id
+		GROUP BY p.id
+		ORDER BY p.name ASC
 	`))
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, "failed to list profiles")
@@ -52,7 +56,7 @@ func (h *Handler) HandleListProfiles(w http.ResponseWriter, r *http.Request) {
 	var profiles []Profile
 	for rows.Next() {
 		var p Profile
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &p.SettingCount); err != nil {
 			continue
 		}
 		profiles = append(profiles, p)
@@ -238,7 +242,7 @@ func (h *Handler) HandleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Retract the now-removed settings from affected devices.
-	go policy.ResyncDevices(h.db, affected)
+	go policyOps.ResyncDevices(h.db, affected)
 
 	h.audit(r, actor, "profile.delete", "profile", id, "")
 	slog.Info("profile deleted", "profile_id", id, "actor", actor, "affected_devices", len(affected))
@@ -284,5 +288,6 @@ func (h *Handler) loadProfile(r *http.Request, id string) (*Profile, error) {
 		}
 		p.Settings = append(p.Settings, s)
 	}
+	p.SettingCount = len(p.Settings)
 	return &p, nil
 }

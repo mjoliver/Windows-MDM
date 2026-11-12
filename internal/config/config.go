@@ -21,8 +21,17 @@ type Config struct {
 type ServerConfig struct {
 	// Listen is the address to bind, e.g. ":8443"
 	Listen string `mapstructure:"listen"`
+	// MTLSListen is an optional dedicated mTLS address (e.g. ":8443") used for
+	// /omadm device check-ins and certificate-based WSTEP renewal when Listen
+	// serves enrollment on :443 without requesting client certificates (Windows
+	// WinHTTP aborts Discovery/XCEP/WSTEP if the :443 server requests a client cert).
+	MTLSListen string `mapstructure:"mtls_listen"`
 	// Domain is the public hostname of this MDM server, e.g. "mdm.mjo.gg"
 	Domain string `mapstructure:"domain"`
+	// MDMDomain is an optional dedicated SNI hostname on :443 (e.g. "mdm.mjo.gg")
+	// that requests device client certificates via SNI while keeping Domain
+	// client-cert-free for Windows WinHTTP enrollment.
+	MDMDomain string `mapstructure:"mdm_domain"`
 	// EnrollmentDomain is the email domain users enrol with, e.g. "mjo.gg"
 	EnrollmentDomain string `mapstructure:"enrollment_domain"`
 	// EmergencyToken bypasses normal auth for admin recovery. Keep secret.
@@ -110,7 +119,9 @@ func Load(cfgFile string) (*Config, error) {
 
 	// Defaults
 	v.SetDefault("server.listen", ":8443")
+	v.SetDefault("server.mtls_listen", "")
 	v.SetDefault("server.domain", "localhost:8443")
+	v.SetDefault("server.mdm_domain", "")
 	v.SetDefault("server.enrollment_domain", "")
 	v.SetDefault("server.master_secret", "")
 	v.SetDefault("server.emergency_token", "")
@@ -135,6 +146,8 @@ func Load(cfgFile string) (*Config, error) {
 	// Explicit env bindings for nested keys (required for AutomaticEnv to work
 	// with deeply nested viper keys — see github.com/spf13/viper#188)
 	_ = v.BindEnv("server.domain", "LATCHZ_SERVER_DOMAIN")
+	_ = v.BindEnv("server.mtls_listen", "LATCHZ_SERVER_MTLS_LISTEN")
+	_ = v.BindEnv("server.mdm_domain", "LATCHZ_SERVER_MDM_DOMAIN")
 	_ = v.BindEnv("server.enrollment_domain", "LATCHZ_SERVER_ENROLLMENT_DOMAIN")
 	_ = v.BindEnv("server.master_secret", "LATCHZ_SERVER_MASTER_SECRET")
 	_ = v.BindEnv("server.emergency_token", "LATCHZ_SERVER_EMERGENCY_TOKEN")

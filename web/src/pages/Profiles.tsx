@@ -134,7 +134,10 @@ export function ProfilesPage() {
                   </td>
                   <td>
                     <span style={{ fontWeight: 600, color: 'var(--md-sys-color-primary)' }}>
-                      {p.settings ? `${p.settings.length} Policies` : '—'}
+                      {(() => {
+                        const n = p.settings ? p.settings.length : (p.setting_count ?? 0)
+                        return `${n} ${n === 1 ? 'Policy' : 'Policies'}`
+                      })()}
                     </span>
                   </td>
                   <td style={{ opacity: 0.6 }}>{p.created_by || 'Admin'}</td>

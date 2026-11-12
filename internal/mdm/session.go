@@ -231,10 +231,14 @@ func updateCompliance(db *sql.DB, deviceID string, values map[string]string) {
 			LIMIT 1
 		`), deviceID, catalogID).Scan(&desiredValue)
 
-		isCompliant := sql.NullBool{Valid: false}
+		var isCompliant sql.NullInt64
 		if desiredValue.Valid {
-			isCompliant = sql.NullBool{
-				Bool:  desiredValue.String == actualValue,
+			var v int64
+			if desiredValue.String == actualValue {
+				v = 1
+			}
+			isCompliant = sql.NullInt64{
+				Int64: v,
 				Valid: true,
 			}
 		}
@@ -247,7 +251,7 @@ func updateCompliance(db *sql.DB, deviceID string, values map[string]string) {
 				actual_value = EXCLUDED.actual_value,
 				is_compliant = EXCLUDED.is_compliant,
 				checked_at = CURRENT_TIMESTAMP
-		`), deviceID, catalogID, desiredValue.String, actualValue, isCompliant.Bool)
+		`), deviceID, catalogID, desiredValue, actualValue, isCompliant)
 		if err != nil {
 			slog.Error("mdm: recording compliance value", "device_id", deviceID, "uri", uri, "err", err)
 		}

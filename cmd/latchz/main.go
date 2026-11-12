@@ -42,19 +42,19 @@ func (*serveCmd) Usage() string {
   Start the Latchz MDM server. Enrollment, OMA-DM, and the admin dashboard
   all run on a single HTTPS port.
 
-  Configuration is loaded from pane.yaml, environment variables (PANE_*),
+  Configuration is loaded from latchz.yaml, environment variables (LATCHZ_*),
   or the path specified with -config.
 
   Examples:
-    pane serve
-    pane serve -config /etc/pane/pane.yaml
-    PANE_DATABASE_DSN=postgres://... pane serve
+    latchz serve
+    latchz serve -config /etc/latchz/latchz.yaml
+    LATCHZ_DATABASE_DSN=postgres://... latchz serve
 
 `
 }
 
 func (s *serveCmd) SetFlags(f *flag.FlagSet) {
-	f.StringVar(&s.configFile, "config", "", "Path to config file (default: pane.yaml)")
+	f.StringVar(&s.configFile, "config", "", "Path to config file (default: latchz.yaml)")
 }
 
 func (s *serveCmd) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
@@ -68,25 +68,25 @@ func (s *serveCmd) Execute(ctx context.Context, f *flag.FlagSet, _ ...interface{
 
 	database, err := db.Open(cfg.Database.Driver, cfg.Database.DSN)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pane: database error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "latchz: database error: %v\n", err)
 		return subcommands.ExitFailure
 	}
 	defer database.Close()
 
 	ca, err := pki.Load(database.DB, cfg.Server.MasterSecret)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pane: PKI error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "latchz: PKI error: %v\n", err)
 		return subcommands.ExitFailure
 	}
 
 	srv, err := server.New(cfg, database, ca)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pane: server setup error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "latchz: server setup error: %v\n", err)
 		return subcommands.ExitFailure
 	}
 
 	if err := srv.Run(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "pane: %v\n", err)
+		fmt.Fprintf(os.Stderr, "latchz: %v\n", err)
 		return subcommands.ExitFailure
 	}
 
@@ -105,13 +105,13 @@ type adminCmd struct {
 func (*adminCmd) Name() string     { return "admin" }
 func (*adminCmd) Synopsis() string { return "Administrative operations (promote users, reset)." }
 func (*adminCmd) Usage() string {
-	return `admin -email <email> [-role <role>] [-config <file>]:
+	return `admin -email <email> [-role <role>] [-password <pw>] [-config <file>]:
   Promote a user to admin directly in the database. Use this to recover
   from a lockout when normal login is unavailable.
 
   Examples:
-    pane admin -email matt@mjo.gg
-    pane admin -email matt@mjo.gg -role super_admin
+    latchz admin -email matt@mjo.gg
+    latchz admin -email matt@mjo.gg -role super_admin -password "..."
 
 `
 }
@@ -192,6 +192,6 @@ func (*versionCmd) Synopsis() string         { return "Print version information
 func (*versionCmd) Usage() string            { return "version\n" }
 func (*versionCmd) SetFlags(_ *flag.FlagSet) {}
 func (*versionCmd) Execute(_ context.Context, _ *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
-	fmt.Printf("pane %s\n", Version)
+	fmt.Printf("latchz %s\n", Version)
 	return subcommands.ExitSuccess
 }
