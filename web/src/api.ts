@@ -533,6 +533,34 @@ export interface DeviceConnectivityItem {
   updated_at: string
 }
 
+export interface DeviceLockdownPolicy {
+  enabled: boolean
+  usb_storage_mode: 'allow' | 'read_only' | 'block_all'
+  require_password: boolean
+  min_password_length: number
+  alphanumeric_required: boolean
+  max_inactivity_minutes: number
+  max_failed_attempts: number
+  allow_camera: boolean
+  allow_bluetooth: boolean
+  kiosk_mode: 'none' | 'single_app'
+  kiosk_account: string
+  kiosk_app_aumid: string
+  target_all_devices: boolean
+  group_ids: string[]
+  enforced_devices: number
+  commands_queued?: number
+  updated_by: string
+  updated_at: string | null
+}
+
+export interface DeviceLockdownState {
+  device_id: string
+  enforced: boolean
+  kiosk_enforced: boolean
+  updated_at: string | null
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -567,6 +595,7 @@ export const api = {
     defenderUpdateSignatures: (id: string) =>
       post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/defender/update-signatures`),
     connectivity: (id: string) => get<DeviceConnectivityItem[]>(`/devices/${enc(id)}/connectivity`),
+    lockdown: (id: string) => get<DeviceLockdownState>(`/devices/${enc(id)}/lockdown`),
     pushWake: (id: string) => post<{ status: string; wns_status?: string }>(`/devices/${enc(id)}/push`),
   },
 
@@ -874,5 +903,26 @@ export const api = {
     }) => post<ConnectivityProfile>('/connectivity/profiles', data),
     deleteProfile: (id: string) =>
       del<{ deleted: boolean; commands_queued: number }>(`/connectivity/profiles/${enc(id)}`),
+  },
+
+  // Device Lockdown: Storage, DeviceLock, Camera/Bluetooth & AssignedAccess Kiosk CSPs
+  lockdown: {
+    policy: () => get<DeviceLockdownPolicy>('/lockdown/policy'),
+    updatePolicy: (data: {
+      enabled: boolean
+      usb_storage_mode: 'allow' | 'read_only' | 'block_all'
+      require_password: boolean
+      min_password_length: number
+      alphanumeric_required: boolean
+      max_inactivity_minutes: number
+      max_failed_attempts: number
+      allow_camera: boolean
+      allow_bluetooth: boolean
+      kiosk_mode: 'none' | 'single_app'
+      kiosk_account?: string
+      kiosk_app_aumid?: string
+      target_all_devices: boolean
+      group_ids: string[]
+    }) => put<DeviceLockdownPolicy>('/lockdown/policy', data),
   },
 }

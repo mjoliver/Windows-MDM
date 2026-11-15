@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, UserCheck, Save, ShieldAlert, Plus, Trash2 } from 'lucide-react'
+import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, UserCheck, Save, ShieldAlert, Plus, Trash2, Usb } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
-import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type EndpointSecurityPolicy, type FirewallRule, type Group } from '../api'
+import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type EndpointSecurityPolicy, type FirewallRule, type DeviceLockdownPolicy, type Group } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { useToast } from '../hooks/useToast'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
@@ -22,10 +22,12 @@ export function CompliancePage() {
   const [laps, setLaps]         = useState<LAPSPolicy | null>(null)
   const [secPolicy, setSecPolicy] = useState<EndpointSecurityPolicy | null>(null)
   const [fwRules, setFwRules]   = useState<FirewallRule[]>([])
+  const [lockdown, setLockdown] = useState<DeviceLockdownPolicy | null>(null)
   const [groups, setGroups]     = useState<Group[]>([])
   const [savingBL, setSavingBL] = useState(false)
   const [savingLAPS, setSavingLAPS] = useState(false)
   const [savingSec, setSavingSec] = useState(false)
+  const [savingLock, setSavingLock] = useState(false)
   const [fwName, setFwName]     = useState('')
   const [fwDir, setFwDir]       = useState<'IN' | 'OUT'>('IN')
   const [fwAction, setFwAction] = useState<number>(0)
@@ -46,8 +48,9 @@ export function CompliancePage() {
       api.laps.policy().catch(() => null),
       api.security.policy().catch(() => null),
       api.security.listFirewallRules().catch(() => []),
+      api.lockdown.policy().catch(() => null),
       api.groups.list().catch(() => []),
-    ]).then(([f, d, p, bl, lp, sp, fr, g]) => {
+    ]).then(([f, d, p, bl, lp, sp, fr, lk, g]) => {
       setFleet(f)
       setDevices(d)
       setPosture(p)
@@ -55,6 +58,7 @@ export function CompliancePage() {
       setLaps(lp)
       setSecPolicy(sp)
       setFwRules(fr)
+      setLockdown(lk)
       setGroups(g)
     }).finally(() => setLoading(false))
   }, [])
@@ -181,6 +185,39 @@ export function CompliancePage() {
       toast.success(`Deleted rule '${rule.rule_key}' (${res.commands_queued} <Delete> command(s) queued).`)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const saveLockdownPolicy = async () => {
+    if (!lockdown) return
+    setSavingLock(true)
+    try {
+      const updated = await api.lockdown.updatePolicy({
+        enabled: lockdown.enabled,
+        usb_storage_mode: lockdown.usb_storage_mode,
+        require_password: lockdown.require_password,
+        min_password_length: lockdown.min_password_length,
+        alphanumeric_required: lockdown.alphanumeric_required,
+        max_inactivity_minutes: lockdown.max_inactivity_minutes,
+        max_failed_attempts: lockdown.max_failed_attempts,
+        allow_camera: lockdown.allow_camera,
+        allow_bluetooth: lockdown.allow_bluetooth,
+        kiosk_mode: lockdown.kiosk_mode,
+        kiosk_account: lockdown.kiosk_account,
+        kiosk_app_aumid: lockdown.kiosk_app_aumid,
+        target_all_devices: lockdown.target_all_devices,
+        group_ids: lockdown.group_ids,
+      })
+      setLockdown(updated)
+      toast.success(
+        updated.enabled
+          ? `Device Lockdown saved — queued ${updated.commands_queued ?? 0} CSP command(s) across ${updated.enforced_devices} device(s).`
+          : 'Device Lockdown disabled and ungoverned Storage/DeviceLock policies retracted.'
+      )
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingLock(false)
     }
   }
 
@@ -806,6 +843,120 @@ export function CompliancePage() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Device Lockdown, USB Storage & Kiosk Controls */}
+      {lockdown && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
+            <div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Usb size={18} color="var(--accent)" />
+                Device Lockdown, USB Storage &amp; Kiosk Policy
+                <Badge status={lockdown.enabled ? 'compliant' : 'unknown'} label={lockdown.enabled ? 'Enforced' : 'Disabled'} />
+              </div>
+              <div style={{ fontSize: '0.8rem', opacity: 0.65, marginTop: 4 }}>
+                Enforce <code className="mono">Policy/Config/Storage</code>, <code className="mono">DeviceLock</code>, peripheral privacy &amp; <code className="mono">AssignedAccess</code> kiosk • {lockdown.enforced_devices} device{lockdown.enforced_devices !== 1 ? 's' : ''} enforced
+              </div>
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={saveLockdownPolicy} disabled={savingLock}>
+              <Save size={14} />
+              {savingLock ? 'Saving…' : 'Save Lockdown Policy'}
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 18 }}>
+            {[
+              { key: 'enabled', title: 'Enable Device Lockdown', sub: 'Enforce Storage & DeviceLock CSPs', val: lockdown.enabled },
+              { key: 'require_password', title: 'Require Password / PIN', sub: 'Enforce DeviceLock sign-in policy', val: lockdown.require_password },
+              { key: 'alphanumeric_required', title: 'Alphanumeric Complexity', sub: 'Require letters + digits', val: lockdown.alphanumeric_required },
+              { key: 'allow_camera', title: 'Allow Integrated Camera', sub: 'Uncheck to disable webcam', val: lockdown.allow_camera },
+            ].map(item => (
+              <label key={item.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={item.val}
+                  onChange={e => setLockdown({ ...lockdown, [item.key]: e.target.checked })}
+                />
+                <div>
+                  <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>{item.title}</div>
+                  <div style={{ fontSize: '0.72rem', opacity: 0.6 }}>{item.sub}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(195px, 1fr))', gap: 16 }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Removable USB Storage</label>
+              <select
+                className="form-input"
+                value={lockdown.usb_storage_mode}
+                onChange={e => setLockdown({ ...lockdown, usb_storage_mode: e.target.value as 'allow' | 'read_only' | 'block_all' })}
+              >
+                <option value="allow">Allow Read &amp; Write</option>
+                <option value="read_only">Read-Only (Block USB Write/Exec)</option>
+                <option value="block_all">Block All Removable Storage</option>
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Min Password Length (4–16)</label>
+              <input
+                type="number"
+                className="form-input"
+                min={4}
+                max={16}
+                value={lockdown.min_password_length}
+                onChange={e => setLockdown({ ...lockdown, min_password_length: Number(e.target.value) })}
+              />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Screen Lock Timeout (Min)</label>
+              <input
+                type="number"
+                className="form-input"
+                min={0}
+                max={999}
+                value={lockdown.max_inactivity_minutes}
+                onChange={e => setLockdown({ ...lockdown, max_inactivity_minutes: Number(e.target.value) })}
+              />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Kiosk Mode (AssignedAccess)</label>
+              <select
+                className="form-input"
+                value={lockdown.kiosk_mode}
+                onChange={e => setLockdown({ ...lockdown, kiosk_mode: e.target.value as 'none' | 'single_app' })}
+              >
+                <option value="none">Disabled (Standard Desktop)</option>
+                <option value="single_app">Single-App Kiosk</option>
+              </select>
+            </div>
+          </div>
+
+          {lockdown.kiosk_mode === 'single_app' && (
+            <div className="grid-2" style={{ gap: 16, marginTop: 14 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Kiosk Local Account</label>
+                <input
+                  className="form-input mono"
+                  value={lockdown.kiosk_account}
+                  onChange={e => setLockdown({ ...lockdown, kiosk_account: e.target.value })}
+                  placeholder="KioskUser"
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">UWP Application User Model ID (AUMID)</label>
+                <input
+                  className="form-input mono"
+                  value={lockdown.kiosk_app_aumid}
+                  onChange={e => setLockdown({ ...lockdown, kiosk_app_aumid: e.target.value })}
+                  placeholder="Microsoft.MicrosoftEdge_8wekyb3d8bbwe!MicrosoftEdge"
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
 

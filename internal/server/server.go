@@ -355,6 +355,7 @@ func (s *Server) routes() {
 			r.With(admin).Post("/devices/{id}/defender/scan", s.api.HandleDefenderScanDevice)
 			r.With(admin).Post("/devices/{id}/defender/update-signatures", s.api.HandleDefenderUpdateSignatures)
 			r.Get("/devices/{id}/connectivity", s.api.HandleGetDeviceConnectivity)
+			r.Get("/devices/{id}/lockdown", s.api.HandleGetDeviceLockdown)
 
 			// Policy catalog (order matters: specific before param)
 			r.Get("/catalog/csps", s.api.HandleListCSPs)
@@ -415,6 +416,8 @@ func (s *Server) routes() {
 			r.Get("/connectivity/profiles", s.api.HandleListConnectivityProfiles)
 			r.With(admin).Post("/connectivity/profiles", s.api.HandleCreateConnectivityProfile)
 			r.With(admin).Delete("/connectivity/profiles/{id}", s.api.HandleDeleteConnectivityProfile)
+			r.Get("/lockdown/policy", s.api.HandleGetLockdownPolicy)
+			r.With(admin).Put("/lockdown/policy", s.api.HandleUpdateLockdownPolicy)
 
 			// Administration: Users & Audit Log
 			r.With(admin).Get("/users", s.api.HandleListUsers)

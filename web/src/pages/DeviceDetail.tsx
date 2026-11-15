@@ -4,7 +4,7 @@ import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, S
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials, type DeviceSecurityState, type DeviceConnectivityItem } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials, type DeviceSecurityState, type DeviceConnectivityItem, type DeviceLockdownState } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -34,6 +34,7 @@ export function DeviceDetailPage() {
   const [laps, setLaps]               = useState<DeviceLAPSStatus | null>(null)
   const [secState, setSecState]       = useState<DeviceSecurityState | null>(null)
   const [connItems, setConnItems]     = useState<DeviceConnectivityItem[]>([])
+  const [lockState, setLockState]     = useState<DeviceLockdownState | null>(null)
   const [updateTel, setUpdateTel]     = useState<DeviceUpdateTelemetry | null>(null)
   const [apps, setApps]               = useState<DeviceAppInstall[]>([])
   const [inventory, setInventory]     = useState<DeviceSoftwareInventory | null>(null)
@@ -102,6 +103,10 @@ export function DeviceDetailPage() {
       .then(c => setConnItems(c ?? []))
       .catch(() => setConnItems([]))
 
+    api.devices.lockdown(id!)
+      .then(setLockState)
+      .catch(() => setLockState(null))
+
     api.updates.device(id!)
       .then(setUpdateTel)
       .catch(() => setUpdateTel(null))
@@ -127,6 +132,7 @@ export function DeviceDetailPage() {
       api.laps.device(id).then(setLaps).catch(() => {})
       api.devices.security(id).then(setSecState).catch(() => {})
       api.devices.connectivity(id).then(c => setConnItems(c ?? [])).catch(() => {})
+      api.devices.lockdown(id).then(setLockState).catch(() => {})
       api.updates.device(id).then(setUpdateTel).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
@@ -797,6 +803,12 @@ export function DeviceDetailPage() {
                     status={secState?.baseline_enforced ? 'compliant' : 'unknown'}
                     label={secState?.baseline_enforced ? 'Baseline Enforced' : 'Unmanaged Baseline'}
                   />
+                  {lockState?.enforced && (
+                    <Badge
+                      status="compliant"
+                      label={lockState.kiosk_enforced ? 'Lockdown + Kiosk' : 'USB & DeviceLock Enforced'}
+                    />
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button
