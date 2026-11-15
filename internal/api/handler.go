@@ -3,6 +3,7 @@
 package api
 
 import (
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -12,17 +13,21 @@ import (
 	"github.com/latchzmdm/latchz/internal/mdm"
 	"github.com/latchzmdm/latchz/internal/msi"
 	"github.com/latchzmdm/latchz/internal/policy"
+	"github.com/latchzmdm/latchz/internal/vault"
 	"github.com/latchzmdm/latchz/internal/wns"
 )
 
 // Handler holds dependencies for all API handlers.
 type Handler struct {
-	db             *sql.DB
-	wns            *wns.Client
-	contentBaseURL string
-	contentSecret  []byte
-	contentClient  *http.Client
-	packagesDir    string
+	db              *sql.DB
+	wns             *wns.Client
+	vault           *vault.Vault
+	deviceCAPool    *x509.CertPool
+	proxyCertHeader string
+	contentBaseURL  string
+	contentSecret   []byte
+	contentClient   *http.Client
+	packagesDir     string
 }
 
 // NewHandler creates an API handler.
@@ -63,6 +68,19 @@ func (h *Handler) SetContentHTTPClient(c *http.Client) {
 // uploaded Win32 .msi packages are stored and served from.
 func (h *Handler) SetPackagesDir(dir string) {
 	h.packagesDir = strings.TrimSpace(dir)
+}
+
+// SetVault configures the AES-256-GCM secret vault used for BitLocker recovery
+// key escrow and managed local administrator credentials.
+func (h *Handler) SetVault(v *vault.Vault) {
+	h.vault = v
+}
+
+// SetDeviceAuth configures X.509 client-certificate trust so enrolled devices
+// can authenticate directly to mTLS escrow endpoints.
+func (h *Handler) SetDeviceAuth(caPool *x509.CertPool, proxyHeader string) {
+	h.deviceCAPool = caPool
+	h.proxyCertHeader = proxyHeader
 }
 
 func (h *Handler) wakeDevice(deviceID string) {

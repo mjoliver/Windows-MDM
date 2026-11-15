@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap, Package } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap, Package, KeyRound, Eye, Plus, Copy } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceBitLocker } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -30,6 +30,7 @@ export function DeviceDetailPage() {
   const [, setPendingCmds]             = useState(0)
   const [compliance, setCompliance]   = useState<DeviceCompliance | null>(null)
   const [posture, setPosture]         = useState<DevicePosture | null>(null)
+  const [bitlocker, setBitlocker]     = useState<DeviceBitLocker | null>(null)
   const [apps, setApps]               = useState<DeviceAppInstall[]>([])
   const [commands, setCommands]       = useState<DeviceCommand[]>([])
   const [loading, setLoading]         = useState(true)
@@ -37,6 +38,12 @@ export function DeviceDetailPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [confirmReboot, setConfirmReboot] = useState(false)
   const [confirmWipe, setConfirmWipe]     = useState(false)
+  const [escrowOpen, setEscrowOpen]       = useState(false)
+  const [escrowVol, setEscrowVol]         = useState('C:')
+  const [escrowProt, setEscrowProt]       = useState('')
+  const [escrowPwd, setEscrowPwd]         = useState('')
+  const [escrowBusy, setEscrowBusy]       = useState(false)
+  const [revealedKey, setRevealedKey]     = useState<{ volume_letter: string; protector_id: string; recovery_password: string } | null>(null)
   const toast = useToast()
 
   const refresh = useCallback(() => {
@@ -67,6 +74,10 @@ export function DeviceDetailPage() {
     api.devices.apps(id!)
       .then(a => setApps(a ?? []))
       .catch(() => setApps([]))
+
+    api.bitlocker.device(id!)
+      .then(setBitlocker)
+      .catch(() => setBitlocker(null))
   }, [id])
 
   useEffect(() => {
@@ -84,6 +95,7 @@ export function DeviceDetailPage() {
       api.devices.getCommands(id).then(cmd => setCommands(cmd.commands ?? [])).catch(() => {})
       api.devices.posture(id).then(setPosture).catch(() => {})
       api.devices.apps(id).then(a => setApps(a ?? [])).catch(() => {})
+      api.bitlocker.device(id).then(setBitlocker).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
   }, [id])
@@ -360,6 +372,121 @@ export function DeviceDetailPage() {
               )}
             </div>
 
+            {/* BitLocker & Recovery Key Vault */}
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '24px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <KeyRound size={18} />
+                    BitLocker Recovery Key Vault
+                  </div>
+                  {bitlocker && (
+                    <Badge
+                      status={bitlocker.enforced ? 'compliant' : 'unknown'}
+                      label={bitlocker.enforced ? 'Policy Enforced' : 'Not Enforced'}
+                    />
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    disabled={!!actionLoading}
+                    onClick={() => action('bitlocker-rotate', async () => {
+                      await api.bitlocker.rotateKeys(id!)
+                      toast.success('Queued BitLocker recovery password rotation on device.')
+                    })}
+                    title="Queue RotateRecoveryPasswords via BitLocker CSP"
+                  >
+                    <RefreshCw size={13} className={actionLoading === 'bitlocker-rotate' ? 'spin' : ''} />
+                    Rotate Keys
+                  </button>
+                  <button className="btn btn-sm btn-primary" onClick={() => setEscrowOpen(true)}>
+                    <Plus size={14} />
+                    Escrow Key
+                  </button>
+                </div>
+              </div>
+
+              {bitlocker && bitlocker.status_reasons.length > 0 && (
+                <div style={{ margin: '0 32px 20px', padding: '12px 16px', borderRadius: 10, background: 'rgba(242,184,181,0.08)', border: '1px solid rgba(242,184,181,0.2)', fontSize: '0.82rem' }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4, color: 'var(--md-sys-color-error)' }}>
+                    BitLocker Status Telemetry ({bitlocker.encryption_label})
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: 18, opacity: 0.85, lineHeight: 1.5 }}>
+                    {bitlocker.status_reasons.map((r, idx) => <li key={idx}>{r}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {bitlocker && bitlocker.recovery_keys.length > 0 ? (
+                <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
+                  <table className="table-static">
+                    <thead>
+                      <tr>
+                        <th>Volume</th>
+                        <th>Protector ID</th>
+                        <th>Masked Key</th>
+                        <th>Source</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bitlocker.recovery_keys.map(k => (
+                        <tr key={k.id}>
+                          <td className="mono" style={{ fontWeight: 700 }}>{k.volume_letter}</td>
+                          <td className="mono" style={{ fontSize: '0.75rem', opacity: 0.75 }}>{k.protector_id}</td>
+                          <td className="mono">{k.key_hint}</td>
+                          <td>
+                            <Badge
+                              status={k.source === 'device_mtls' ? 'compliant' : 'unknown'}
+                              label={k.source === 'device_mtls' ? 'Device mTLS' : 'Admin Escrow'}
+                            />
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                              <button
+                                className="btn btn-sm btn-secondary"
+                                onClick={async () => {
+                                  try {
+                                    const res = await api.bitlocker.revealKey(id!, k.id)
+                                    setRevealedKey(res)
+                                  } catch (e) {
+                                    toast.error(e instanceof Error ? e.message : String(e))
+                                  }
+                                }}
+                              >
+                                <Eye size={13} />
+                                Reveal
+                              </button>
+                              <button
+                                className="btn btn-sm btn-secondary"
+                                style={{ color: 'var(--md-sys-color-error)' }}
+                                onClick={async () => {
+                                  try {
+                                    await api.bitlocker.deleteKey(id!, k.id)
+                                    toast.success('Removed escrowed protector record.')
+                                    refresh()
+                                  } catch (e) {
+                                    toast.error(e instanceof Error ? e.message : String(e))
+                                  }
+                                }}
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{ padding: '0 32px 28px', opacity: 0.55, fontSize: '0.88rem' }}>
+                  No BitLocker recovery keys escrowed in the AES-256-GCM vault for this device yet.
+                </div>
+              )}
+            </div>
+
             {/* History Table */}
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '24px 32px' }}>
@@ -575,6 +702,108 @@ export function DeviceDetailPage() {
           <p style={{ opacity: 0.8, lineHeight: 1.6 }}>
             You are about to issue a <strong>Remote Wipe</strong> command. This operation is irreversible.
           </p>
+        </Modal>
+
+        <Modal
+          open={escrowOpen}
+          onClose={() => setEscrowOpen(false)}
+          title="Escrow BitLocker Recovery Key"
+          maxWidth={480}
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setEscrowOpen(false)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                disabled={escrowBusy || !escrowPwd.trim()}
+                onClick={async () => {
+                  setEscrowBusy(true)
+                  try {
+                    await api.bitlocker.escrow(id!, {
+                      volume_letter: escrowVol,
+                      protector_id: escrowProt || undefined,
+                      recovery_password: escrowPwd,
+                    })
+                    toast.success('48-digit BitLocker recovery password encrypted with AES-256-GCM and stored in vault.')
+                    setEscrowPwd('')
+                    setEscrowProt('')
+                    setEscrowOpen(false)
+                    refresh()
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : String(e))
+                  } finally {
+                    setEscrowBusy(false)
+                  }
+                }}
+              >
+                {escrowBusy ? 'Encrypting…' : 'Encrypt & Store'}
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: 12 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Volume</label>
+                <input className="form-input mono" value={escrowVol} onChange={e => setEscrowVol(e.target.value)} placeholder="C:" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Protector GUID (optional)</label>
+                <input className="form-input mono" value={escrowProt} onChange={e => setEscrowProt(e.target.value)} placeholder="{AUTO-GENERATED}" />
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">48-Digit Recovery Password</label>
+              <input
+                className="form-input mono"
+                value={escrowPwd}
+                onChange={e => setEscrowPwd(e.target.value)}
+                placeholder="123456-123456-123456-123456-123456-123456-123456-123456"
+              />
+              <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: 6 }}>
+                Sealed at rest using AES-256-GCM bound to this device ID. Every subsequent reveal is recorded in the Audit Log.
+              </div>
+            </div>
+          </div>
+        </Modal>
+
+        <Modal
+          open={!!revealedKey}
+          onClose={() => setRevealedKey(null)}
+          title="Audited BitLocker Recovery Key"
+          maxWidth={520}
+          footer={
+            <>
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  if (revealedKey) {
+                    navigator.clipboard?.writeText(revealedKey.recovery_password)
+                    toast.success('Copied 48-digit recovery password to clipboard.')
+                  }
+                }}
+              >
+                <Copy size={14} />
+                Copy Key
+              </button>
+              <button className="btn btn-primary" onClick={() => setRevealedKey(null)}>Done</button>
+            </>
+          }
+        >
+          {revealedKey && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ fontSize: '0.82rem', opacity: 0.75 }}>
+                This decryption event has been permanently recorded in the Latchz <strong>Audit Log</strong> (<code className="mono">bitlocker.reveal_key</code>).
+              </div>
+              <div style={{ padding: '16px 18px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--md-sys-color-outline-variant)' }}>
+                <div style={{ fontSize: '0.74rem', opacity: 0.6, marginBottom: 6 }}>
+                  Volume {revealedKey.volume_letter} • Protector {revealedKey.protector_id}
+                </div>
+                <div className="mono" style={{ fontSize: '1.05rem', fontWeight: 700, wordBreak: 'break-all', letterSpacing: '0.03em' }}>
+                  {revealedKey.recovery_password}
+                </div>
+              </div>
+            </div>
+          )}
         </Modal>
       </div>
     </Layout>

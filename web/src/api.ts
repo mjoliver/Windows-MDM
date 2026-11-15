@@ -263,6 +263,48 @@ export interface MSIAppDetail {
   installs: DeviceAppInstall[]
 }
 
+export interface BitLockerPolicy {
+  enabled: boolean
+  require_device_encryption: boolean
+  silent_encryption: boolean
+  allow_standard_user: boolean
+  os_drive_cipher: number
+  os_drive_cipher_label: string
+  fixed_drive_cipher: number
+  fixed_drive_cipher_label: string
+  removable_drive_cipher: number
+  removable_drive_cipher_label: string
+  target_all_devices: boolean
+  group_ids: string[]
+  escrowed_devices: number
+  total_escrowed_keys: number
+  updated_by: string
+  updated_at: string | null
+  enforced_devices?: number
+  commands_queued?: number
+}
+
+export interface RecoveryKeyMeta {
+  id: string
+  device_id: string
+  volume_letter: string
+  protector_id: string
+  key_hint: string
+  source: string
+  escrowed_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DeviceBitLocker {
+  device_id: string
+  enforced: boolean
+  encryption_status: number | null
+  encryption_label: string
+  status_reasons: string[]
+  recovery_keys: RecoveryKeyMeta[]
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -433,5 +475,32 @@ export const api = {
       post<{ status: string; devices_targeted: number; commands_queued: number }>(`/apps/${enc(id)}/install`, { device_ids: deviceIds }),
     uninstall: (id: string, deviceIds: string[]) =>
       post<{ status: string; devices_targeted: number }>(`/apps/${enc(id)}/uninstall`, { device_ids: deviceIds }),
+  },
+
+  // BitLocker CSP & AES-256-GCM Recovery Key Vault
+  bitlocker: {
+    policy: () => get<BitLockerPolicy>('/bitlocker/policy'),
+    updatePolicy: (data: {
+      enabled: boolean
+      require_device_encryption: boolean
+      silent_encryption: boolean
+      allow_standard_user: boolean
+      os_drive_cipher: number
+      fixed_drive_cipher: number
+      removable_drive_cipher: number
+      target_all_devices: boolean
+      group_ids: string[]
+    }) => put<BitLockerPolicy>('/bitlocker/policy', data),
+    device: (deviceId: string) => get<DeviceBitLocker>(`/devices/${enc(deviceId)}/bitlocker`),
+    escrow: (deviceId: string, data: { volume_letter: string; protector_id?: string; recovery_password: string }) =>
+      post<RecoveryKeyMeta>(`/devices/${enc(deviceId)}/bitlocker/escrow`, data),
+    revealKey: (deviceId: string, keyId: string) =>
+      post<{ id: string; device_id: string; volume_letter: string; protector_id: string; recovery_password: string }>(
+        `/devices/${enc(deviceId)}/bitlocker/keys/${enc(keyId)}/reveal`
+      ),
+    deleteKey: (deviceId: string, keyId: string) =>
+      del<{ status: string }>(`/devices/${enc(deviceId)}/bitlocker/keys/${enc(keyId)}`),
+    rotateKeys: (deviceId: string) =>
+      post<{ status: string; request_id: string; commands_queued: number }>(`/devices/${enc(deviceId)}/bitlocker/rotate`),
   },
 }

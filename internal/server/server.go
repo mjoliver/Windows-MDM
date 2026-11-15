@@ -30,6 +30,7 @@ import (
 	"github.com/latchzmdm/latchz/internal/mdm"
 	"github.com/latchzmdm/latchz/internal/pki"
 	"github.com/latchzmdm/latchz/internal/policy"
+	"github.com/latchzmdm/latchz/internal/vault"
 	"github.com/latchzmdm/latchz/internal/wns"
 )
 
@@ -95,6 +96,14 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	apiHandler := api.NewHandler(database.DB)
 	apiHandler.ConfigureContentRelay("https://"+cfg.Server.Domain, jwtSecret)
 	apiHandler.SetPackagesDir(cfg.MDM.PackagesDir)
+	apiHandler.SetDeviceAuth(ca.TLSPool(), proxyCertHeader)
+	if len(cfg.Server.MasterSecret) >= vault.MinSecretLen {
+		secretVault, err := vault.New(cfg.Server.MasterSecret)
+		if err != nil {
+			return nil, fmt.Errorf("initialising secret vault: %w", err)
+		}
+		apiHandler.SetVault(secretVault)
+	}
 
 	s := &Server{
 		cfg:        cfg,
@@ -286,6 +295,7 @@ func (s *Server) routes() {
 	// ── OMA-DM endpoint ─────────────────────────────────────────────────────
 	// Enrolled devices check in here periodically (SyncML over HTTPS + mTLS)
 	r.Post("/omadm", s.mdm.HandleOMADM)
+	r.Post("/mdm/bitlocker/escrow", s.api.HandleDeviceEscrowBitLocker)
 
 	// Signed, identity-encoding MSI content relay for Windows Delivery Optimization
 	// (DoSvc). Strips Accept-Encoding upstream so CDNs like dl.google.com never
@@ -329,6 +339,11 @@ func (s *Server) routes() {
 			r.Get("/devices/{id}/apps", s.api.HandleGetDeviceApps)
 			r.Get("/devices/{id}/posture", s.api.HandleGetDevicePosture)
 			r.With(admin).Post("/devices/{id}/posture/refresh", s.api.HandleRefreshDevicePosture)
+			r.Get("/devices/{id}/bitlocker", s.api.HandleGetDeviceBitLocker)
+			r.With(admin).Post("/devices/{id}/bitlocker/escrow", s.api.HandleAdminEscrowBitLockerKey)
+			r.With(admin).Post("/devices/{id}/bitlocker/keys/{keyId}/reveal", s.api.HandleRevealBitLockerKey)
+			r.With(admin).Delete("/devices/{id}/bitlocker/keys/{keyId}", s.api.HandleDeleteBitLockerKey)
+			r.With(admin).Post("/devices/{id}/bitlocker/rotate", s.api.HandleRotateBitLockerKeys)
 
 			// Policy catalog (order matters: specific before param)
 			r.Get("/catalog/csps", s.api.HandleListCSPs)
@@ -361,10 +376,12 @@ func (s *Server) routes() {
 			r.With(admin).Post("/apps/{id}/install", s.api.HandleInstallAppOnDevices)
 			r.With(admin).Post("/apps/{id}/uninstall", s.api.HandleUninstallAppOnDevices)
 
-			// Compliance & Security Posture
+			// Compliance, Security Posture & BitLocker
 			r.Get("/compliance", s.api.HandleFleetCompliance)
 			r.Get("/compliance/{deviceId}", s.api.HandleDeviceCompliance)
 			r.Get("/posture/summary", s.api.HandleFleetPostureSummary)
+			r.Get("/bitlocker/policy", s.api.HandleGetBitLockerPolicy)
+			r.With(admin).Put("/bitlocker/policy", s.api.HandleUpdateBitLockerPolicy)
 
 			// Administration: Users & Audit Log
 			r.With(admin).Get("/users", s.api.HandleListUsers)

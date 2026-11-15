@@ -1,26 +1,74 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck } from 'lucide-react'
+import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, Save } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
-import { api, type FleetCompliance, type Device, type FleetPostureSummary } from '../api'
+import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type Group } from '../api'
 import { EmptyState } from '../components/EmptyState'
+import { useToast } from '../hooks/useToast'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
+
+const CIPHER_OPTIONS = [
+  { value: 7, label: 'XTS-AES 256-bit (Recommended)' },
+  { value: 6, label: 'XTS-AES 128-bit' },
+  { value: 4, label: 'AES-CBC 256-bit' },
+  { value: 3, label: 'AES-CBC 128-bit' },
+]
 
 export function CompliancePage() {
   const [fleet, setFleet]       = useState<FleetCompliance | null>(null)
   const [posture, setPosture]   = useState<FleetPostureSummary | null>(null)
+  const [bitlocker, setBitlocker] = useState<BitLockerPolicy | null>(null)
+  const [groups, setGroups]     = useState<Group[]>([])
+  const [savingBL, setSavingBL] = useState(false)
   const [devices, setDevices]   = useState<Device[]>([])
-  const [_loading, setLoading]   = useState(true)
+  const [, setLoading]          = useState(true)
   const navigate = useNavigate()
+  const toast = useToast()
 
   useEffect(() => {
     Promise.all([
       api.compliance.fleet(),
       api.devices.list(),
       api.compliance.postureSummary().catch(() => null),
-    ]).then(([f, d, p]) => { setFleet(f); setDevices(d); setPosture(p) }).finally(() => setLoading(false))
+      api.bitlocker.policy().catch(() => null),
+      api.groups.list().catch(() => []),
+    ]).then(([f, d, p, bl, g]) => {
+      setFleet(f)
+      setDevices(d)
+      setPosture(p)
+      setBitlocker(bl)
+      setGroups(g)
+    }).finally(() => setLoading(false))
   }, [])
+
+  const saveBitLockerPolicy = async () => {
+    if (!bitlocker) return
+    setSavingBL(true)
+    try {
+      const updated = await api.bitlocker.updatePolicy({
+        enabled: bitlocker.enabled,
+        require_device_encryption: bitlocker.require_device_encryption,
+        silent_encryption: bitlocker.silent_encryption,
+        allow_standard_user: bitlocker.allow_standard_user,
+        os_drive_cipher: bitlocker.os_drive_cipher,
+        fixed_drive_cipher: bitlocker.fixed_drive_cipher,
+        removable_drive_cipher: bitlocker.removable_drive_cipher,
+        target_all_devices: bitlocker.target_all_devices,
+        group_ids: bitlocker.group_ids,
+      })
+      setBitlocker(updated)
+      toast.success(
+        updated.enabled
+          ? `BitLocker policy saved — queued ${updated.commands_queued ?? 0} CSP command(s) across ${updated.enforced_devices ?? 0} device(s).`
+          : 'BitLocker CSP enforcement disabled and ungoverned settings retracted.'
+      )
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingBL(false)
+    }
+  }
 
   const pct   = fleet?.summary.compliance_percent ?? 0
   const total = fleet?.summary.total_devices ?? 0
@@ -185,6 +233,139 @@ export function CompliancePage() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* BitLocker CSP Enforcement & Recovery Key Vault */}
+      {bitlocker && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <KeyRound size={18} />
+                BitLocker Drive Encryption & Key Escrow Policy
+              </div>
+              <div className="card-subtitle">
+                Enforce Windows 10/11 <code className="mono">BitLocker</code> CSP ciphers silently and store AES-256-GCM encrypted 48-digit recovery passwords ({bitlocker.total_escrowed_keys} key{bitlocker.total_escrowed_keys !== 1 ? 's' : ''} escrowed across {bitlocker.escrowed_devices} device{bitlocker.escrowed_devices !== 1 ? 's' : ''})
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <Badge status={bitlocker.enabled ? 'compliant' : 'unknown'} label={bitlocker.enabled ? 'Enforced' : 'Disabled'} />
+              <button className="btn btn-primary btn-sm" onClick={saveBitLockerPolicy} disabled={savingBL}>
+                <Save size={14} />
+                {savingBL ? 'Saving…' : 'Save Policy'}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={bitlocker.enabled}
+                onChange={e => setBitlocker({ ...bitlocker, enabled: e.target.checked })}
+              />
+              <div>
+                <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Enable BitLocker Policy</div>
+                <div style={{ fontSize: '0.72rem', opacity: 0.6 }}>Enforce via OMA-DM BitLocker CSP</div>
+              </div>
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={bitlocker.silent_encryption}
+                onChange={e => setBitlocker({ ...bitlocker, silent_encryption: e.target.checked })}
+              />
+              <div>
+                <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Silent Zero-Touch Mode</div>
+                <div style={{ fontSize: '0.72rem', opacity: 0.6 }}>Suppress encryption warning UI</div>
+              </div>
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={bitlocker.allow_standard_user}
+                onChange={e => setBitlocker({ ...bitlocker, allow_standard_user: e.target.checked })}
+              />
+              <div>
+                <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Standard User Encryption</div>
+                <div style={{ fontSize: '0.72rem', opacity: 0.6 }}>Encrypt without local admin login</div>
+              </div>
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={bitlocker.target_all_devices}
+                onChange={e => setBitlocker({ ...bitlocker, target_all_devices: e.target.checked })}
+              />
+              <div>
+                <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Target Entire Fleet</div>
+                <div style={{ fontSize: '0.72rem', opacity: 0.6 }}>Apply to all active enrolled PCs</div>
+              </div>
+            </label>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">OS Drive Cipher</label>
+              <select
+                className="form-input"
+                value={bitlocker.os_drive_cipher}
+                onChange={e => setBitlocker({ ...bitlocker, os_drive_cipher: Number(e.target.value) })}
+              >
+                {CIPHER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Fixed Data Drive Cipher</label>
+              <select
+                className="form-input"
+                value={bitlocker.fixed_drive_cipher}
+                onChange={e => setBitlocker({ ...bitlocker, fixed_drive_cipher: Number(e.target.value) })}
+              >
+                {CIPHER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Removable Drive Cipher</label>
+              <select
+                className="form-input"
+                value={bitlocker.removable_drive_cipher}
+                onChange={e => setBitlocker({ ...bitlocker, removable_drive_cipher: Number(e.target.value) })}
+              >
+                {CIPHER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {!bitlocker.target_all_devices && groups.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="form-label" style={{ marginBottom: 8 }}>Assigned Device Groups</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {groups.map(g => {
+                  const selected = bitlocker.group_ids.includes(g.id)
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      className={`btn btn-sm ${selected ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => {
+                        const next = selected
+                          ? bitlocker.group_ids.filter(x => x !== g.id)
+                          : [...bitlocker.group_ids, g.id]
+                        setBitlocker({ ...bitlocker, group_ids: next })
+                      }}
+                    >
+                      {g.name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

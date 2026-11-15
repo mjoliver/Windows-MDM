@@ -147,11 +147,12 @@ func ApplyDevice(db *sql.DB, deviceID string) {
 	// the device's desired set (profile/group/device disassociation or setting
 	// removal). Without this, removed policies linger on the device forever.
 	retracted := retractUngoverned(db, deviceID, desired)
+	blQueued := ReconcileBitLockerDevice(db, deviceID)
 
-	if queued > 0 || retracted > 0 {
+	if queued > 0 || retracted > 0 || blQueued > 0 {
 		slog.Info("policy: applied settings to device",
 			"device_id", deviceID,
-			"commands_queued", queued,
+			"commands_queued", queued+blQueued,
 			"retracted", retracted,
 			"total_settings", len(settings),
 		)
