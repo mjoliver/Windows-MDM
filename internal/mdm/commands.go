@@ -184,9 +184,11 @@ func buildSyncMLCommands(session *Session, pending []PendingCommand) []interface
 		if cmd.Payload != "" {
 			item.Data = cmd.Payload
 			format := "chr"
-			// Simple heuristic: if it looks like an integer (just digits), send as int
+			// Match OMA-DM MetInf format for numeric and boolean values
 			if isNumeric(cmd.Payload) {
 				format = "int"
+			} else if isBoolean(cmd.Payload) {
+				format = "bool"
 			}
 
 			item.Meta = &Meta{
@@ -251,4 +253,8 @@ func isNumeric(s string) bool {
 		}
 	}
 	return true
+}
+
+func isBoolean(s string) bool {
+	return s == "true" || s == "false"
 }

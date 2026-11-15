@@ -103,6 +103,8 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 		mux:        chi.NewRouter(),
 	}
 	enrollHandler.SetMDMHost(s.mdmHost())
+	enrollHandler.SetPollSchedule(cfg.MDM.PollIntervalMinutes, cfg.MDM.PollOnLogin)
+	mdmHandler.SetPollSchedule(cfg.MDM.PollIntervalMinutes, cfg.MDM.PollOnLogin)
 	s.routes()
 	return s, nil
 }

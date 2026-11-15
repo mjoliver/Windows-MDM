@@ -173,8 +173,10 @@ const (
 	// previously mislabelled "FreeStorage" while pointing at LocalTime).
 	OMADevDetailLocalTime = "./DevDetail/Ext/Microsoft/LocalTime"
 
-	// DMClient — management server configuration
-	OMADMClientPollFrequency = "./Vendor/MSFT/DMClient/Provider/LatchzMDM/Poll/IntervalForRemainingScheduledRetries"
+	// DMClient — management server polling schedule configuration
+	OMADMClientPollNumRemaining = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Poll/NumberOfRemainingScheduledRetries"
+	OMADMClientPollFrequency    = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Poll/IntervalForRemainingScheduledRetries"
+	OMADMClientPollOnLogin      = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Poll/PollOnLogin"
 
 	// Policy CSPs
 	OMAPolicyPrefix = "./Device/Vendor/MSFT/Policy/Config"

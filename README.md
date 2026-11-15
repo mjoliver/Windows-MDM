@@ -130,6 +130,8 @@ All configuration values can be set in `latchz.yaml` or overridden via environme
 | `auth.oidc.client_id` | `LATCHZ_AUTH_OIDC_CLIENT_ID` | — | OIDC client ID |
 | `auth.oidc.client_secret` | `LATCHZ_AUTH_OIDC_CLIENT_SECRET` | — | OIDC client secret |
 | `auth.oidc.allowed_domains` | `LATCHZ_AUTH_OIDC_ALLOWED_DOMAINS` | — | Email domains restricted for login |
+| `mdm.poll_interval_minutes` | `LATCHZ_MDM_POLL_INTERVAL_MINUTES` | `15` | Background OMA-DM check-in interval in minutes (`0` disables) |
+| `mdm.poll_on_login` | `LATCHZ_MDM_POLL_ON_LOGIN` | `true` | Trigger an OMA-DM check-in whenever a user logs into Windows |
 
 > **Why separate `listen` and `mtls_listen` / `mdm_domain`?** Windows `DeviceEnroller.exe` uses `WinHTTP`, which aborts unauthenticated Discovery/XCEP/WSTEP requests with `0x80072f0c` (`ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED`) if the server sends a TLS `CertificateRequest` handshake message before the device has enrolled. Latchz keeps `server.listen` (`:443`) free of client-cert prompts and provisions devices to check in via `server.mtls_listen` (e.g., `:8443`) or `server.mdm_domain`.
 

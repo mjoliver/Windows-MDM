@@ -5,10 +5,12 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
@@ -26,12 +28,83 @@ type Handler struct {
 	// URL-encoded PEM client certificate forwarded by a trusted terminating
 	// proxy (tls.mode=none). Empty means only direct mTLS is accepted.
 	proxyCertHeader string
+
+	pollMu              sync.Mutex
+	pollConfigured      bool
+	pollIntervalMinutes int
+	pollOnLogin         bool
+	pollSynced          map[string]string
 }
 
 // NewHandler creates an OMA-DM handler. proxyCertHeader is "" unless a trusted
 // proxy is configured to forward the device client certificate.
 func NewHandler(db *sql.DB, caPool *x509.CertPool, domain, proxyCertHeader string) *Handler {
-	return &Handler{db: db, ca: caPool, domain: domain, store: newSessionStore(), proxyCertHeader: proxyCertHeader}
+	return &Handler{
+		db:              db,
+		ca:              caPool,
+		domain:          domain,
+		store:           newSessionStore(),
+		proxyCertHeader: proxyCertHeader,
+		pollSynced:      make(map[string]string),
+	}
+}
+
+// SetPollSchedule configures periodic background check-in settings pushed to
+// enrolled devices via the DMClient Poll CSP once per server lifecycle (or
+// whenever the configured schedule changes).
+func (h *Handler) SetPollSchedule(intervalMinutes int, pollOnLogin bool) {
+	h.pollMu.Lock()
+	defer h.pollMu.Unlock()
+	if intervalMinutes < 0 {
+		intervalMinutes = 0
+	}
+	sig := fmt.Sprintf("%d:%t", intervalMinutes, pollOnLogin)
+	prev := fmt.Sprintf("%d:%t", h.pollIntervalMinutes, h.pollOnLogin)
+	if !h.pollConfigured || sig != prev {
+		h.pollSynced = make(map[string]string)
+	}
+	h.pollConfigured = true
+	h.pollIntervalMinutes = intervalMinutes
+	h.pollOnLogin = pollOnLogin
+}
+
+// reconcilePollSchedule returns DMClient Poll CSP Replace commands if this
+// device has not yet received the active poll schedule during this server run.
+func (h *Handler) reconcilePollSchedule(deviceID string, sess *Session) []interface{} {
+	h.pollMu.Lock()
+	if !h.pollConfigured {
+		h.pollMu.Unlock()
+		return nil
+	}
+	interval := h.pollIntervalMinutes
+	onLogin := h.pollOnLogin
+	sig := fmt.Sprintf("%d:%t", interval, onLogin)
+	if h.pollSynced[deviceID] == sig {
+		h.pollMu.Unlock()
+		return nil
+	}
+	h.pollSynced[deviceID] = sig
+	h.pollMu.Unlock()
+
+	mkReplace := func(uri, data, format string) Replace {
+		return Replace{
+			CmdID: sess.nextCmdID(),
+			Items: []Item{{
+				Target: &LocURI{LocURI: uri},
+				Meta: &Meta{
+					Format: &MetaFormat{Xmlns: metInfNS, Value: format},
+					Type:   "text/plain",
+				},
+				Data: data,
+			}},
+		}
+	}
+
+	return []interface{}{
+		mkReplace(OMADMClientPollNumRemaining, "0", "int"),
+		mkReplace(OMADMClientPollFrequency, strconv.Itoa(interval), "int"),
+		mkReplace(OMADMClientPollOnLogin, strconv.FormatBool(onLogin), "bool"),
+	}
 }
 
 // HandleOMADM is the main OMA-DM endpoint. Devices POST here on every check-in.
@@ -133,6 +206,7 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Load any pending commands from the queue
+	wipeDelivered := false
 	pending, err := loadPendingCommands(h.db, deviceID)
 	if err != nil {
 		slog.Error("mdm: loading pending commands", "device_id", deviceID, "err", err)
@@ -140,7 +214,6 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		outboundCmds = append(outboundCmds, buildSyncMLCommands(sess, pending)...)
 		// Mark as sent
 		ids := make([]int, len(pending))
-		wipeDelivered := false
 		for i, c := range pending {
 			ids[i] = c.ID
 			if c.CommandType == "Exec" && c.OMAURI == OMAExecWipe {
@@ -160,6 +233,10 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		if wipeDelivered {
 			h.finalizeWipe(deviceID)
 		}
+	}
+
+	if !wipeDelivered {
+		outboundCmds = append(outboundCmds, h.reconcilePollSchedule(deviceID, sess)...)
 	}
 
 	// ── Step 7: Build SyncML response ────────────────────────────────────

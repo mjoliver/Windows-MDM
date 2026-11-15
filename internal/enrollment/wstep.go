@@ -128,7 +128,8 @@ const (
           <parm name="NumberOfSecondRetries" value="5" datatype="integer"/>
           <parm name="IntervalForSecondSetOfRetries" value="3" datatype="integer"/>
           <parm name="NumberOfRemainingScheduledRetries" value="0" datatype="integer"/>
-          <parm name="IntervalForRemainingScheduledRetries" value="1560" datatype="integer"/>
+          <parm name="IntervalForRemainingScheduledRetries" value="%d" datatype="integer"/>
+          <parm name="PollOnLogin" value="%t" datatype="boolean"/>
         </characteristic>
       </characteristic>
     </characteristic>
@@ -319,17 +320,19 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		myStoreTarget := "User"
 
 		provisioningXML := fmt.Sprintf(provisioningXMLTemplate,
-			caThumbprint,     // Root CA Store Key
-			caCertB64,        // Root CA Cert
-			myStoreTarget,    // My Store Target (User — where the CSR private key lives)
-			deviceThumbprint, // My Store Key
-			deviceCertB64,    // Device Cert
-			omaDMURL,         // APPLICATION ADDR
-			actualDeviceID,   // SSLCLIENTCERTSEARCHCRITERIA Subject CN (device cert CN)
-			myStoreTarget,    // SSLCLIENTCERTSEARCHCRITERIA Stores=MY\<target>
-			info.HardwareID,  // APPAUTH APPSRV AAUTHNAME (using hardware ID as username)
-			"dummy-secret",   // APPAUTH APPSRV AAUTHSECRET
-			info.DeviceName,  // EntDeviceName
+			caThumbprint,          // Root CA Store Key
+			caCertB64,             // Root CA Cert
+			myStoreTarget,         // My Store Target (User — where the CSR private key lives)
+			deviceThumbprint,      // My Store Key
+			deviceCertB64,         // Device Cert
+			omaDMURL,              // APPLICATION ADDR
+			actualDeviceID,        // SSLCLIENTCERTSEARCHCRITERIA Subject CN (device cert CN)
+			myStoreTarget,         // SSLCLIENTCERTSEARCHCRITERIA Stores=MY\<target>
+			info.HardwareID,       // APPAUTH APPSRV AAUTHNAME (using hardware ID as username)
+			"dummy-secret",        // APPAUTH APPSRV AAUTHSECRET
+			info.DeviceName,       // EntDeviceName
+			h.pollIntervalMinutes, // IntervalForRemainingScheduledRetries
+			h.pollOnLogin,         // PollOnLogin
 		)
 		provisioningB64 := base64.StdEncoding.EncodeToString([]byte(provisioningXML))
 

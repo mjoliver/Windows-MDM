@@ -15,6 +15,19 @@ type Config struct {
 	TLS      TLSConfig      `mapstructure:"tls"`
 	Database DatabaseConfig `mapstructure:"database"`
 	Auth     AuthConfig     `mapstructure:"auth"`
+	MDM      MDMConfig      `mapstructure:"mdm"`
+}
+
+// MDMConfig controls OMA-DM device check-in scheduling and management settings.
+type MDMConfig struct {
+	// PollIntervalMinutes sets DMClient Poll/IntervalForRemainingScheduledRetries
+	// (in minutes) during WSTEP enrollment and reconciles enrolled devices over
+	// SyncML. Default: 15 (check in every 15 minutes). Set to 0 to disable
+	// scheduled background polling.
+	PollIntervalMinutes int `mapstructure:"poll_interval_minutes"`
+	// PollOnLogin sets DMClient Poll/PollOnLogin so Windows initiates an OMA-DM
+	// management session whenever a user signs in. Default: true.
+	PollOnLogin bool `mapstructure:"poll_on_login"`
 }
 
 // ServerConfig controls the HTTP listener and domain settings.
@@ -142,6 +155,8 @@ func Load(cfgFile string) (*Config, error) {
 	v.SetDefault("auth.oidc.client_id", "")
 	v.SetDefault("auth.oidc.client_secret", "")
 	v.SetDefault("auth.oidc.allowed_domains", []string{})
+	v.SetDefault("mdm.poll_interval_minutes", 15)
+	v.SetDefault("mdm.poll_on_login", true)
 
 	// Explicit env bindings for nested keys (required for AutomaticEnv to work
 	// with deeply nested viper keys — see github.com/spf13/viper#188)
@@ -165,6 +180,8 @@ func Load(cfgFile string) (*Config, error) {
 	_ = v.BindEnv("auth.oidc.client_id", "LATCHZ_AUTH_OIDC_CLIENT_ID")
 	_ = v.BindEnv("auth.oidc.client_secret", "LATCHZ_AUTH_OIDC_CLIENT_SECRET")
 	_ = v.BindEnv("auth.oidc.allowed_domains", "LATCHZ_AUTH_OIDC_ALLOWED_DOMAINS")
+	_ = v.BindEnv("mdm.poll_interval_minutes", "LATCHZ_MDM_POLL_INTERVAL_MINUTES")
+	_ = v.BindEnv("mdm.poll_on_login", "LATCHZ_MDM_POLL_ON_LOGIN")
 
 	// Config file
 	if cfgFile != "" {
@@ -223,6 +240,10 @@ func (c *Config) validate() error {
 	// but if provided it must be strong enough to be a real signing key.
 	if c.Auth.JWTSecret != "" && len(c.Auth.JWTSecret) < 32 {
 		return fmt.Errorf("auth.jwt_secret must be at least 32 characters when set")
+	}
+
+	if c.MDM.PollIntervalMinutes < 0 || c.MDM.PollIntervalMinutes > 10080 {
+		return fmt.Errorf("mdm.poll_interval_minutes must be between 0 and 10080 (7 days), got %d", c.MDM.PollIntervalMinutes)
 	}
 
 	// Fail closed on the authentication provider: only fully-implemented,

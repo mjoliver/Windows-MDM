@@ -22,18 +22,31 @@ const (
 
 // Handler handles all MS-MDE2 enrollment SOAP endpoints.
 type Handler struct {
-	domain           string
-	mdmHost          string
-	enrollmentDomain string
+	domain              string
+	mdmHost             string
+	enrollmentDomain    string
+	pollIntervalMinutes int
+	pollOnLogin         bool
 }
 
 // NewHandler creates an enrollment handler for the given domain.
 func NewHandler(domain, enrollmentDomain string) *Handler {
 	return &Handler{
-		domain:           domain,
-		mdmHost:          domain,
-		enrollmentDomain: enrollmentDomain,
+		domain:              domain,
+		mdmHost:             domain,
+		enrollmentDomain:    enrollmentDomain,
+		pollIntervalMinutes: 15,
+		pollOnLogin:         true,
 	}
+}
+
+// SetPollSchedule configures the DMClient Poll schedule provisioned into
+// newly-enrolled Windows devices via WSTEP WAP-Provisioning XML.
+func (h *Handler) SetPollSchedule(intervalMinutes int, pollOnLogin bool) {
+	if intervalMinutes >= 0 {
+		h.pollIntervalMinutes = intervalMinutes
+	}
+	h.pollOnLogin = pollOnLogin
 }
 
 // SetMDMHost overrides the host[:port] advertised for mTLS device endpoints

@@ -130,3 +130,16 @@ auth:
     # Google account) sign in to your dashboard.
     allowed_domains:
       - example.com
+
+# ─── MDM Check-In Schedule ───────────────────────────────────────────────────
+
+mdm:
+  # Background OMA-DM check-in interval in minutes (DMClient Poll CSP:
+  # IntervalForRemainingScheduledRetries). Provisioned into Windows Task Scheduler
+  # during WSTEP enrollment and reconciled dynamically over SyncML.
+  # Set to 0 to disable periodic background polling.
+  poll_interval_minutes: 15
+
+  # Trigger an automatic OMA-DM check-in whenever a user signs in to Windows
+  # (DMClient Poll CSP: PollOnLogin).
+  poll_on_login: true

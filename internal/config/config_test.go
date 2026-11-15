@@ -46,6 +46,19 @@ auth:
 	if cfg2.Server.Listen != ":9090" {
 		t.Fatalf("PORT should set listen, got %q", cfg2.Server.Listen)
 	}
+	if cfg2.MDM.PollIntervalMinutes != 15 || !cfg2.MDM.PollOnLogin {
+		t.Fatalf("expected default MDM poll schedule (15m, on_login=true), got (%d, %v)", cfg2.MDM.PollIntervalMinutes, cfg2.MDM.PollOnLogin)
+	}
+
+	t.Setenv("LATCHZ_MDM_POLL_INTERVAL_MINUTES", "30")
+	t.Setenv("LATCHZ_MDM_POLL_ON_LOGIN", "false")
+	cfg3, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg3.MDM.PollIntervalMinutes != 30 || cfg3.MDM.PollOnLogin {
+		t.Fatalf("expected env override MDM poll schedule (30m, on_login=false), got (%d, %v)", cfg3.MDM.PollIntervalMinutes, cfg3.MDM.PollOnLogin)
+	}
 }
 
 func validBase() *Config {
@@ -88,6 +101,15 @@ func TestValidate(t *testing.T) {
 		{"builtin with bootstrap_admin ok", func(c *Config) {
 			c.Auth.Provider = "builtin"
 			c.Auth.BootstrapAdmin = "admin@example.com"
+		}, false},
+		{"negative poll interval rejected", func(c *Config) {
+			c.MDM.PollIntervalMinutes = -1
+		}, true},
+		{"excessive poll interval rejected", func(c *Config) {
+			c.MDM.PollIntervalMinutes = 20000
+		}, true},
+		{"custom poll interval ok", func(c *Config) {
+			c.MDM.PollIntervalMinutes = 60
 		}, false},
 	}
 	for _, tt := range tests {

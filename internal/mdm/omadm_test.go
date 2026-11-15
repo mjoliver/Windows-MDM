@@ -104,3 +104,59 @@ func TestHandleOMADM_RejectsUnauthenticated(t *testing.T) {
 		t.Fatalf("want 401 without a client cert, got %d", w.Code)
 	}
 }
+
+func TestHandleOMADM_ReconcilesPollScheduleOnce(t *testing.T) {
+	database := testutil.DB(t)
+	ca := testutil.CA(t, database)
+	deviceID := testutil.SeedDevice(t, database, "HW-POLL")
+	// Pre-populate OS version & build so interrogation Gets do not cloud the response.
+	if _, err := database.Exec(`UPDATE devices SET os_version = '10.0.26100.1', os_build = '26100.1' WHERE id = ?`, deviceID); err != nil {
+		t.Fatal(err)
+	}
+	cert := testutil.IssueClientCert(t, ca, deviceID, "LatchzMDMClient")
+	h := NewHandler(database.DB, ca.TLSPool(), "mdm.example.com", "")
+	h.SetPollSchedule(15, true)
+
+	checkIn := func(sessID string) string {
+		syncml := `<?xml version="1.0"?>
+<SyncML xmlns="SYNCML:SYNCML1.2">
+  <SyncHdr><VerDTD>1.2</VerDTD><VerProto>DM/1.2</VerProto><SessionID>` + sessID + `</SessionID><MsgID>1</MsgID>
+    <Source><LocURI>HW-POLL</LocURI></Source><Target><LocURI>https://mdm.example.com/omadm</LocURI></Target></SyncHdr>
+  <SyncBody><Alert><CmdID>1</CmdID><Data>1201</Data></Alert><Final/></SyncBody>
+</SyncML>`
+		req := httptest.NewRequest("POST", "/omadm", strings.NewReader(syncml))
+		req.TLS = testutil.ClientTLSState(cert)
+		w := httptest.NewRecorder()
+		h.HandleOMADM(w, req)
+		if w.Code != 200 {
+			t.Fatalf("status %d", w.Code)
+		}
+		return w.Body.String()
+	}
+
+	first := checkIn("10")
+	for _, want := range []string{
+		OMADMClientPollNumRemaining,
+		OMADMClientPollFrequency,
+		`<Data>15</Data>`,
+		OMADMClientPollOnLogin,
+		`<Data>true</Data>`,
+	} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("first check-in missing %q: %s", want, first)
+		}
+	}
+
+	// Second check-in with unchanged schedule must NOT re-send Poll Replace commands.
+	second := checkIn("11")
+	if strings.Contains(second, OMADMClientPollFrequency) {
+		t.Fatalf("expected Poll schedule not to be re-sent on subsequent check-in: %s", second)
+	}
+
+	// Updating the schedule triggers reconciliation on the next check-in.
+	h.SetPollSchedule(30, false)
+	third := checkIn("12")
+	if !strings.Contains(third, `<Data>30</Data>`) || !strings.Contains(third, `<Data>false</Data>`) {
+		t.Fatalf("expected updated Poll schedule on third check-in: %s", third)
+	}
+}

@@ -39,6 +39,7 @@ func TestHandleWSTEP_IssuesCertAndCreatesDevice(t *testing.T) {
 	database := testutil.DB(t)
 	ca := testutil.CA(t, database)
 	h := NewHandler("mdm.example.com", "example.com")
+	h.SetPollSchedule(20, true)
 
 	_, csrDER := testutil.GenerateKeyCSR(t, "LatchzMDMClient")
 	body := wstepEnvelope("enroll-token", base64.StdEncoding.EncodeToString(csrDER), "HW-WSTEP")
@@ -53,6 +54,28 @@ func TestHandleWSTEP_IssuesCertAndCreatesDevice(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "RequestSecurityTokenResponse") {
 		t.Fatalf("missing RSTR in response: %s", w.Body.String())
+	}
+	// Decode the base64 provisioning doc inside BinarySecurityToken and verify Poll schedule
+	const bstStart = `EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#base64binary">`
+	idx := strings.Index(w.Body.String(), bstStart)
+	if idx < 0 {
+		t.Fatalf("missing BinarySecurityToken in WSTEP response")
+	}
+	rest := w.Body.String()[idx+len(bstStart):]
+	endIdx := strings.Index(rest, "</BinarySecurityToken>")
+	provBytes, err := base64.StdEncoding.DecodeString(rest[:endIdx])
+	if err != nil {
+		t.Fatalf("decoding provisioning XML: %v", err)
+	}
+	provXML := string(provBytes)
+	for _, want := range []string{
+		`<parm name="PROVIDER-ID" value="LatchzMDM"/>`,
+		`<parm name="IntervalForRemainingScheduledRetries" value="20" datatype="integer"/>`,
+		`<parm name="PollOnLogin" value="true" datatype="boolean"/>`,
+	} {
+		if !strings.Contains(provXML, want) {
+			t.Fatalf("provisioning XML missing %q:\n%s", want, provXML)
+		}
 	}
 
 	var enrolledBy string
