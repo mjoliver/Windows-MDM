@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, AlertTriangle, HelpCircle, Monitor } from 'lucide-react'
+import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
-import { api, type FleetCompliance, type Device } from '../api'
+import { api, type FleetCompliance, type Device, type FleetPostureSummary } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 
 export function CompliancePage() {
   const [fleet, setFleet]       = useState<FleetCompliance | null>(null)
+  const [posture, setPosture]   = useState<FleetPostureSummary | null>(null)
   const [devices, setDevices]   = useState<Device[]>([])
   const [_loading, setLoading]   = useState(true)
   const navigate = useNavigate()
@@ -17,7 +18,8 @@ export function CompliancePage() {
     Promise.all([
       api.compliance.fleet(),
       api.devices.list(),
-    ]).then(([f, d]) => { setFleet(f); setDevices(d) }).finally(() => setLoading(false))
+      api.compliance.postureSummary().catch(() => null),
+    ]).then(([f, d, p]) => { setFleet(f); setDevices(d); setPosture(p) }).finally(() => setLoading(false))
   }, [])
 
   const pct   = fleet?.summary.compliance_percent ?? 0
@@ -152,6 +154,39 @@ export function CompliancePage() {
           )}
         </div>
       </div>
+
+      {/* Fleet Hardware & Security Posture */}
+      {posture && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <ShieldCheck size={18} />
+                Hardware & Endpoint Security Posture
+              </div>
+              <div className="card-subtitle">
+                {posture.posture_reported_devices} of {posture.total_active_devices} active device{posture.total_active_devices !== 1 ? 's' : ''} reporting OMA-DM security telemetry
+              </div>
+            </div>
+          </div>
+          <div className="stat-grid" style={{ marginBottom: 0 }}>
+            {[
+              { label: 'Secure Boot Enabled', count: posture.secure_boot_enabled },
+              { label: 'BitLocker Encrypted', count: posture.bitlocker_encrypted },
+              { label: 'Defender Active', count: posture.antivirus_healthy },
+              { label: 'Firewall Active', count: posture.firewall_healthy },
+            ].map(item => (
+              <div key={item.label} style={{ padding: '16px 20px', borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)' }}>
+                <div style={{ fontSize: '0.78rem', opacity: 0.65, marginBottom: 6 }}>{item.label}</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 800 }}>
+                  {item.count}
+                  <span style={{ fontSize: '0.9rem', fontWeight: 500, opacity: 0.5 }}> / {posture.posture_reported_devices}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Per-device table */}
       <div className="table-wrap">

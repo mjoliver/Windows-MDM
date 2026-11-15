@@ -300,6 +300,8 @@ func (s *Server) routes() {
 			r.With(admin).Post("/devices/{id}/wipe", s.api.HandleWipeDevice)
 			r.With(admin).Post("/devices/{id}/sync", s.api.HandleSyncDevice)
 			r.Get("/devices/{id}/commands", s.api.HandleGetDeviceCommands)
+			r.Get("/devices/{id}/posture", s.api.HandleGetDevicePosture)
+			r.With(admin).Post("/devices/{id}/posture/refresh", s.api.HandleRefreshDevicePosture)
 
 			// Policy catalog (order matters: specific before param)
 			r.Get("/catalog/csps", s.api.HandleListCSPs)
@@ -321,9 +323,10 @@ func (s *Server) routes() {
 			r.With(admin).Put("/groups/{id}/devices", s.api.HandleAssignDeviceToGroup)
 			r.With(admin).Put("/groups/{id}/profiles", s.api.HandleAssignProfileToGroup)
 
-			// Compliance
+			// Compliance & Security Posture
 			r.Get("/compliance", s.api.HandleFleetCompliance)
 			r.Get("/compliance/{deviceId}", s.api.HandleDeviceCompliance)
+			r.Get("/posture/summary", s.api.HandleFleetPostureSummary)
 
 			// Administration: Users & Audit Log
 			r.With(admin).Get("/users", s.api.HandleListUsers)

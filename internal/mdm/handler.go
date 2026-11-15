@@ -34,6 +34,7 @@ type Handler struct {
 	pollIntervalMinutes int
 	pollOnLogin         bool
 	pollSynced          map[string]string
+	postureSynced       map[string]bool
 }
 
 // NewHandler creates an OMA-DM handler. proxyCertHeader is "" unless a trusted
@@ -46,6 +47,7 @@ func NewHandler(db *sql.DB, caPool *x509.CertPool, domain, proxyCertHeader strin
 		store:           newSessionStore(),
 		proxyCertHeader: proxyCertHeader,
 		pollSynced:      make(map[string]string),
+		postureSynced:   make(map[string]bool),
 	}
 }
 
@@ -105,6 +107,38 @@ func (h *Handler) reconcilePollSchedule(deviceID string, sess *Session) []interf
 		mkReplace(OMADMClientPollFrequency, strconv.Itoa(interval), "int"),
 		mkReplace(OMADMClientPollOnLogin, strconv.FormatBool(onLogin), "bool"),
 	}
+}
+
+// reconcileInitialPosture queries hardware & security posture once per server
+// lifecycle for already-enrolled devices that have no device_posture record yet.
+func (h *Handler) reconcileInitialPosture(deviceID string, sess *Session) []interface{} {
+	h.pollMu.Lock()
+	if h.postureSynced[deviceID] {
+		h.pollMu.Unlock()
+		return nil
+	}
+	h.pollMu.Unlock()
+
+	var count int
+	if err := h.db.QueryRow(
+		dbpkg.Rebind(`SELECT COUNT(*) FROM device_posture WHERE device_id = ?`),
+		deviceID,
+	).Scan(&count); err != nil || count > 0 {
+		h.pollMu.Lock()
+		h.postureSynced[deviceID] = true
+		h.pollMu.Unlock()
+		return nil
+	}
+
+	h.pollMu.Lock()
+	if h.postureSynced[deviceID] {
+		h.pollMu.Unlock()
+		return nil
+	}
+	h.postureSynced[deviceID] = true
+	h.pollMu.Unlock()
+
+	return buildFirstCheckInCommands(sess)
 }
 
 // HandleOMADM is the main OMA-DM endpoint. Devices POST here on every check-in.
@@ -197,12 +231,17 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 	_ = h.db.QueryRow(dbpkg.Rebind(`SELECT os_version, os_build FROM devices WHERE id = ?`), deviceID).Scan(&osVersion, &osBuild)
 
 	infoIncomplete := !osVersion.Valid || osVersion.String == "" || !osBuild.Valid || osBuild.String == ""
+	interrogatedThisTurn := false
 	if (isFirst || infoIncomplete) && sess.Interrogations < maxInterrogations {
 		// On the first session, or until we have full info, interrogate the device.
 		// Bounded so a device that never reports complete info isn't re-queried forever.
 		slog.Info("mdm: device info incomplete — interrogating", "device_id", deviceID, "round", sess.Interrogations+1)
 		outboundCmds = append(outboundCmds, buildFirstCheckInCommands(sess)...)
 		sess.Interrogations++
+		interrogatedThisTurn = true
+		h.pollMu.Lock()
+		h.postureSynced[deviceID] = true
+		h.pollMu.Unlock()
 	}
 
 	// Load any pending commands from the queue
@@ -237,6 +276,9 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 
 	if !wipeDelivered {
 		outboundCmds = append(outboundCmds, h.reconcilePollSchedule(deviceID, sess)...)
+		if !interrogatedThisTurn {
+			outboundCmds = append(outboundCmds, h.reconcileInitialPosture(deviceID, sess)...)
+		}
 	}
 
 	// ── Step 7: Build SyncML response ────────────────────────────────────

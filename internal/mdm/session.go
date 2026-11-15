@@ -148,6 +148,9 @@ func updateDeviceFromResults(db *sql.DB, deviceID string, sess *Session, results
 	// Map OMA-URIs to device table columns
 	updateDevice(db, deviceID, updates)
 
+	// Persist hardware & security posture telemetry
+	updatePosture(db, deviceID, updates)
+
 	// The rest go to compliance_records
 	updateCompliance(db, deviceID, updates)
 }
@@ -167,8 +170,6 @@ func updateDevice(db *sql.DB, deviceID string, values map[string]string) {
 				build := strings.TrimPrefix(val, "10.0.")
 				sets = append(sets, colVal{"os_build", build})
 			}
-		case OMADevDetailOSPlatform:
-			// combine with existing
 		case OMADevDetailOSBuild:
 			sets = append(sets, colVal{"os_build", val})
 		case OMADevDetailComputerName:
@@ -177,6 +178,8 @@ func updateDevice(db *sql.DB, deviceID string, values map[string]string) {
 			sets = append(sets, colVal{"manufacturer", val})
 		case OMADevInfoMod:
 			sets = append(sets, colVal{"model", val})
+		case OMADevDetailSMBIOSSerial:
+			sets = append(sets, colVal{"serial_number", strings.TrimSpace(val)})
 		}
 	}
 
@@ -196,6 +199,119 @@ func updateDevice(db *sql.DB, deviceID string, values map[string]string) {
 
 	if _, err := db.Exec(dbpkg.Rebind(query), args...); err != nil {
 		slog.Error("mdm: updating device record from check-in results", "device_id", deviceID, "err", err)
+	}
+}
+
+func normalizePostureURI(uri string) string {
+	if !strings.HasPrefix(uri, "./") {
+		uri = "./" + uri
+	}
+	if strings.HasPrefix(uri, "./Vendor/MSFT/") {
+		return strings.Replace(uri, "./Vendor/", "./Device/Vendor/", 1)
+	}
+	return uri
+}
+
+func parseOptionalInt(s string) sql.NullInt64 {
+	v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: v, Valid: true}
+}
+
+func updatePosture(db *sql.DB, deviceID string, values map[string]string) {
+	var (
+		hasAny         bool
+		ramMB          sql.NullInt64
+		totalStorageMB sql.NullInt64
+		freeStorageMB  sql.NullInt64
+		biosVersion    sql.NullString
+		osPlatform     sql.NullString
+		tpmVersion     sql.NullString
+		secureBoot     sql.NullInt64
+		encryption     sql.NullInt64
+		antivirus      sql.NullInt64
+		firewall       sql.NullInt64
+	)
+
+	for rawURI, val := range values {
+		trimmed := strings.TrimSpace(val)
+		switch normalizePostureURI(rawURI) {
+		case OMADevDetailTotalRAM:
+			if n := parseOptionalInt(trimmed); n.Valid {
+				ramMB, hasAny = n, true
+			}
+		case OMADevDetailTotalStorage:
+			if n := parseOptionalInt(trimmed); n.Valid {
+				totalStorageMB, hasAny = n, true
+			}
+		case OMADevDetailFreeStorage:
+			if n := parseOptionalInt(trimmed); n.Valid {
+				freeStorageMB, hasAny = n, true
+			}
+		case OMADevDetailHwV:
+			if trimmed != "" {
+				biosVersion = sql.NullString{String: trimmed, Valid: true}
+				hasAny = true
+			}
+		case OMADevDetailOSPlatform:
+			if trimmed != "" {
+				osPlatform = sql.NullString{String: trimmed, Valid: true}
+				hasAny = true
+			}
+		case OMADeviceStatusTPMVersion:
+			if trimmed != "" {
+				tpmVersion = sql.NullString{String: trimmed, Valid: true}
+				hasAny = true
+			}
+		case OMADeviceStatusSecureBoot:
+			if n := parseOptionalInt(trimmed); n.Valid {
+				secureBoot, hasAny = n, true
+			}
+		case OMABitLockerEncryptionStatus:
+			if n := parseOptionalInt(trimmed); n.Valid {
+				encryption, hasAny = n, true
+			}
+		case OMADeviceStatusAntivirus:
+			if n := parseOptionalInt(trimmed); n.Valid {
+				antivirus, hasAny = n, true
+			}
+		case OMADeviceStatusFirewall:
+			if n := parseOptionalInt(trimmed); n.Valid {
+				firewall, hasAny = n, true
+			}
+		}
+	}
+
+	if !hasAny {
+		return
+	}
+
+	_, err := db.Exec(dbpkg.Rebind(`
+		INSERT INTO device_posture (
+			device_id, total_ram_mb, total_storage_mb, free_storage_mb,
+			bios_version, os_platform, tpm_version,
+			secure_boot_state, encryption_status, antivirus_status, firewall_status,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (device_id) DO UPDATE SET
+			total_ram_mb      = COALESCE(EXCLUDED.total_ram_mb, device_posture.total_ram_mb),
+			total_storage_mb  = COALESCE(EXCLUDED.total_storage_mb, device_posture.total_storage_mb),
+			free_storage_mb   = COALESCE(EXCLUDED.free_storage_mb, device_posture.free_storage_mb),
+			bios_version      = COALESCE(EXCLUDED.bios_version, device_posture.bios_version),
+			os_platform       = COALESCE(EXCLUDED.os_platform, device_posture.os_platform),
+			tpm_version       = COALESCE(EXCLUDED.tpm_version, device_posture.tpm_version),
+			secure_boot_state = COALESCE(EXCLUDED.secure_boot_state, device_posture.secure_boot_state),
+			encryption_status = COALESCE(EXCLUDED.encryption_status, device_posture.encryption_status),
+			antivirus_status  = COALESCE(EXCLUDED.antivirus_status, device_posture.antivirus_status),
+			firewall_status   = COALESCE(EXCLUDED.firewall_status, device_posture.firewall_status),
+			updated_at        = CURRENT_TIMESTAMP
+	`), deviceID, ramMB, totalStorageMB, freeStorageMB,
+		biosVersion, osPlatform, tpmVersion,
+		secureBoot, encryption, antivirus, firewall)
+	if err != nil {
+		slog.Error("mdm: updating device posture from results", "device_id", deviceID, "err", err)
 	}
 }
 

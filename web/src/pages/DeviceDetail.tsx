@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -12,12 +12,24 @@ import { InfoGrid } from '../components/InfoGrid'
 import { SkeletonLine, SkeletonBlock } from '../components/SkeletonLoader'
 import { useToast } from '../hooks/useToast'
 
+function formatMBAsGB(mb: number | null | undefined): string {
+  if (mb == null || mb <= 0) return '—'
+  return `${(mb / 1024).toFixed(1)} GB`
+}
+
+function postureBadgeStatus(ok: boolean | null): string {
+  if (ok === true) return 'compliant'
+  if (ok === false) return 'non_compliant'
+  return 'unknown'
+}
+
 export function DeviceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [device, setDevice]           = useState<Device | null>(null)
   const [, setPendingCmds]             = useState(0)
   const [compliance, setCompliance]   = useState<DeviceCompliance | null>(null)
+  const [posture, setPosture]         = useState<DevicePosture | null>(null)
   const [commands, setCommands]       = useState<DeviceCommand[]>([])
   const [loading, setLoading]         = useState(true)
   const [error, setError]             = useState<string | null>(null)
@@ -46,6 +58,10 @@ export function DeviceDetailPage() {
     api.devices.getCommands(id!)
       .then(cmd => setCommands(cmd.commands ?? []))   // Go nil slice → JSON null → guard here
       .catch(() => setCommands([]))
+
+    api.devices.posture(id!)
+      .then(setPosture)
+      .catch(() => setPosture(null))
   }, [id])
 
   useEffect(() => {
@@ -61,6 +77,7 @@ export function DeviceDetailPage() {
       api.devices.get(id).then(d => { setDevice(d.device); setPendingCmds(d.pending_commands) }).catch(() => {})
       api.compliance.device(id).then(c => setCompliance(c ?? null)).catch(() => {})
       api.devices.getCommands(id).then(cmd => setCommands(cmd.commands ?? [])).catch(() => {})
+      api.devices.posture(id).then(setPosture).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
   }, [id])
@@ -78,6 +95,9 @@ export function DeviceDetailPage() {
         }
       } else if (name === 'reboot') {
         toast.success('Reboot queued — once synced, Windows gives signed-in users a 5-minute grace period before restarting.')
+      } else if (name === 'posture') {
+        const queued = (res as { commands_queued?: number } | undefined)?.commands_queued ?? 0
+        toast.success(`Queued ${queued} inventory & security posture query command(s) for next check-in.`)
       }
       setTimeout(refresh, 500)
     } catch (e) { 
@@ -305,13 +325,84 @@ export function DeviceDetailPage() {
           {/* Sidebar Info */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
             <div className="card" style={{ padding: 24 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <div className="stat-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <ShieldCheck size={14} />
+                  Security Posture
+                </div>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  onClick={() => action('posture', () => api.devices.refreshPosture(id!))}
+                  disabled={!!actionLoading}
+                  title="Queue OMA-DM hardware & security posture queries"
+                >
+                  <RefreshCw size={12} className={actionLoading === 'posture' ? 'spin' : ''} />
+                  Refresh
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {[
+                  {
+                    label: 'Secure Boot',
+                    text: posture?.secure_boot_label ?? 'Unknown',
+                    ok: posture?.secure_boot_state == null ? null : posture.secure_boot_state === 1,
+                  },
+                  {
+                    label: 'BitLocker Drive',
+                    text: posture?.encryption_label ?? 'Unknown',
+                    ok: posture?.encryption_status == null ? null : posture.encryption_status === 0,
+                  },
+                  {
+                    label: 'Defender Antivirus',
+                    text: posture?.antivirus_label ?? 'Unknown',
+                    ok: posture?.antivirus_status == null ? null : posture.antivirus_status === 0,
+                  },
+                  {
+                    label: 'Windows Firewall',
+                    text: posture?.firewall_label ?? 'Unknown',
+                    ok: posture?.firewall_status == null ? null : posture.firewall_status === 0,
+                  },
+                ].map(item => (
+                  <div
+                    key={item.label}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '8px 0',
+                      borderBottom: '1px solid var(--md-sys-color-outline-variant)',
+                    }}
+                  >
+                    <span style={{ fontSize: '0.84rem', opacity: 0.8 }}>{item.label}</span>
+                    <Badge status={postureBadgeStatus(item.ok)} label={item.text} />
+                  </div>
+                ))}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 4 }}>
+                  <span style={{ fontSize: '0.84rem', opacity: 0.8 }}>TPM Specification</span>
+                  <span className="mono" style={{ fontSize: '0.82rem', fontWeight: 600 }}>
+                    {posture?.tpm_version || '—'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="card" style={{ padding: 24 }}>
               <div className="stat-label" style={{ marginBottom: 16 }}>Inventory Detail</div>
               <InfoGrid
                 fields={[
                   { label: 'Manufacturer', value: device.manufacturer },
                   { label: 'Model', value: device.model },
-                  { label: 'OS Version', value: device.os_version },
+                  { label: 'OS Platform', value: posture?.os_platform || device.os_version },
                   { label: 'OS Build', value: device.os_build },
+                  { label: 'Physical RAM', value: formatMBAsGB(posture?.total_ram_mb) },
+                  {
+                    label: 'Disk Storage',
+                    value:
+                      posture?.total_storage_mb != null && posture?.free_storage_mb != null
+                        ? `${formatMBAsGB(posture.free_storage_mb)} free of ${formatMBAsGB(posture.total_storage_mb)}`
+                        : formatMBAsGB(posture?.total_storage_mb),
+                  },
+                  { label: 'BIOS / Firmware', value: posture?.bios_version || '—' },
                   { label: 'Serial Number', value: device.serial_number },
                   { label: 'Hardware ID', value: device.hardware_id, mono: true },
                 ]}

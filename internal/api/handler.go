@@ -124,13 +124,15 @@ func (h *Handler) queryDeviceIDs(r *http.Request, query string, args ...interfac
 
 // enqueueRef gives api handlers access to mdm command queue without circular imports
 var enqueueRef = struct {
-	Lock   func(db *sql.DB, deviceID string) (int64, error)
-	Wipe   func(db *sql.DB, deviceID string) (int64, error)
-	Reboot func(db *sql.DB, deviceID string) (int64, error)
+	Lock           func(db *sql.DB, deviceID string) (int64, error)
+	Wipe           func(db *sql.DB, deviceID string) (int64, error)
+	Reboot         func(db *sql.DB, deviceID string) (int64, error)
+	PostureRefresh func(db *sql.DB, deviceID string) (int, error)
 }{
-	Lock:   mdm.EnqueueLock,
-	Wipe:   mdm.EnqueueWipe,
-	Reboot: mdm.EnqueueReboot,
+	Lock:           mdm.EnqueueLock,
+	Wipe:           mdm.EnqueueWipe,
+	Reboot:         mdm.EnqueueReboot,
+	PostureRefresh: mdm.EnqueuePostureRefresh,
 }
 
 // policyOps holds injectable policy functions for testing.

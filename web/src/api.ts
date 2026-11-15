@@ -145,6 +145,35 @@ export interface DeviceCompliance {
   }[]
 }
 
+export interface DevicePosture {
+  device_id: string
+  collected: boolean
+  total_ram_mb: number | null
+  total_storage_mb: number | null
+  free_storage_mb: number | null
+  bios_version: string
+  os_platform: string
+  tpm_version: string
+  secure_boot_state: number | null
+  secure_boot_label: string
+  encryption_status: number | null
+  encryption_label: string
+  antivirus_status: number | null
+  antivirus_label: string
+  firewall_status: number | null
+  firewall_label: string
+  updated_at: string | null
+}
+
+export interface FleetPostureSummary {
+  total_active_devices: number
+  posture_reported_devices: number
+  secure_boot_enabled: number
+  bitlocker_encrypted: number
+  antivirus_healthy: number
+  firewall_healthy: number
+}
+
 export interface UserSummary {
   id: string
   email: string
@@ -195,6 +224,8 @@ export const api = {
     wipe:    (id: string) => post<{ status: string }>(`/devices/${enc(id)}/wipe`, { confirm: true }),
     sync:    (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/sync`),
     getCommands: (id: string) => get<{ commands: DeviceCommand[] }>(`/devices/${enc(id)}/commands`),
+    posture: (id: string) => get<DevicePosture>(`/devices/${enc(id)}/posture`),
+    refreshPosture: (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/posture/refresh`),
   },
 
   // Profiles
@@ -232,10 +263,11 @@ export const api = {
     csps: () => get<{ name: string; count: number }[]>('/catalog/csps'),
   },
 
-  // Compliance
+  // Compliance & Security Posture
   compliance: {
-    fleet:  () => get<FleetCompliance>('/compliance'),
-    device: (id: string) => get<DeviceCompliance>(`/compliance/${enc(id)}`),
+    fleet:          () => get<FleetCompliance>('/compliance'),
+    device:         (id: string) => get<DeviceCompliance>(`/compliance/${enc(id)}`),
+    postureSummary: () => get<FleetPostureSummary>('/posture/summary'),
   },
 
   // Administration: Users & Roles

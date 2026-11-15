@@ -130,6 +130,19 @@ func EnqueueReboot(dbConn *sql.DB, deviceID string) (int64, error) {
 	return EnqueueExec(dbConn, deviceID, OMAExecReboot, "")
 }
 
+// EnqueuePostureRefresh queues OMA-DM Get commands for hardware inventory and
+// Windows security posture nodes (Secure Boot, BitLocker, Defender, Firewall, TPM, RAM/Disk).
+func EnqueuePostureRefresh(dbConn *sql.DB, deviceID string) (int, error) {
+	var queued int
+	for _, uri := range FirstCheckInURIs {
+		if _, err := EnqueueGet(dbConn, deviceID, uri); err != nil {
+			return queued, err
+		}
+		queued++
+	}
+	return queued, nil
+}
+
 func enqueue(dbConn *sql.DB, deviceID, commandType, omaURI, payload string) (int64, error) {
 	// Dedup: if an equivalent command for this (device, uri, type) is already
 	// pending, update its payload instead of piling up duplicates (repeated

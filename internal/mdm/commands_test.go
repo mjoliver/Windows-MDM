@@ -85,3 +85,46 @@ func TestForeignKeysEnforced(t *testing.T) {
 		t.Fatal("expected a foreign-key violation for an unknown device_id")
 	}
 }
+
+func TestUpdateDeviceFromResults_PopulatesSerialAndPosture(t *testing.T) {
+	database := testutil.DB(t)
+	deviceID := testutil.SeedDevice(t, database, "HW-INV")
+	sess := &Session{DeviceID: deviceID, SessionID: "1", CmdMap: make(map[string]int)}
+
+	results := []Results{{
+		CmdRef: "2",
+		Items: []Item{
+			{Source: &LocURI{LocURI: OMADevDetailSMBIOSSerial}, Data: "SN-998877"},
+			{Source: &LocURI{LocURI: OMADevDetailTotalRAM}, Data: "32768"},
+			{Source: &LocURI{LocURI: OMADevDetailTotalStorage}, Data: "1024000"},
+			{Source: &LocURI{LocURI: OMADevDetailFreeStorage}, Data: "750000"},
+			{Source: &LocURI{LocURI: OMADeviceStatusSecureBoot}, Data: "1"},
+			{Source: &LocURI{LocURI: OMABitLockerEncryptionStatus}, Data: "0"},
+			{Source: &LocURI{LocURI: OMADeviceStatusAntivirus}, Data: "0"},
+			{Source: &LocURI{LocURI: OMADeviceStatusFirewall}, Data: "0"},
+			{Source: &LocURI{LocURI: OMADeviceStatusTPMVersion}, Data: "2.0"},
+		},
+	}}
+
+	updateDeviceFromResults(database.DB, deviceID, sess, results)
+
+	var serial string
+	if err := database.QueryRow(`SELECT COALESCE(serial_number,'') FROM devices WHERE id = ?`, deviceID).Scan(&serial); err != nil {
+		t.Fatal(err)
+	}
+	if serial != "SN-998877" {
+		t.Fatalf("serial_number = %q, want SN-998877", serial)
+	}
+
+	var ram, secBoot, bitlocker int64
+	var tpm string
+	if err := database.QueryRow(`
+		SELECT total_ram_mb, secure_boot_state, encryption_status, tpm_version
+		FROM device_posture WHERE device_id = ?
+	`, deviceID).Scan(&ram, &secBoot, &bitlocker, &tpm); err != nil {
+		t.Fatalf("device_posture row not created: %v", err)
+	}
+	if ram != 32768 || secBoot != 1 || bitlocker != 0 || tpm != "2.0" {
+		t.Fatalf("unexpected posture row: ram=%d secBoot=%d bitlocker=%d tpm=%q", ram, secBoot, bitlocker, tpm)
+	}
+}

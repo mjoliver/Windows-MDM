@@ -169,9 +169,18 @@ const (
 	OMADevDetailOSPlatform   = "./DevDetail/Ext/Microsoft/OSPlatform"
 	OMADevDetailOSBuild      = "./DevDetail/Ext/Microsoft/OSBuild"
 	OMADevDetailComputerName = "./DevDetail/Ext/Microsoft/DNSComputerName"
-	// OMADevDetailLocalTime is the device local time node (the constant was
-	// previously mislabelled "FreeStorage" while pointing at LocalTime).
-	OMADevDetailLocalTime = "./DevDetail/Ext/Microsoft/LocalTime"
+	OMADevDetailLocalTime    = "./DevDetail/Ext/Microsoft/LocalTime"
+	OMADevDetailSMBIOSSerial = "./DevDetail/Ext/Microsoft/SMBIOSSerialNumber"
+	OMADevDetailTotalRAM     = "./DevDetail/Ext/Microsoft/TotalRAM"
+	OMADevDetailTotalStorage = "./DevDetail/Ext/Microsoft/TotalStorage"
+	OMADevDetailFreeStorage  = "./DevDetail/Ext/Microsoft/FreeStorage"
+
+	// DeviceStatus & BitLocker CSPs — hardware & security posture telemetry
+	OMADeviceStatusSecureBoot    = "./Device/Vendor/MSFT/DeviceStatus/SecureBootState"
+	OMADeviceStatusTPMVersion    = "./Device/Vendor/MSFT/DeviceStatus/TPM/SpecificationVersion"
+	OMADeviceStatusAntivirus     = "./Device/Vendor/MSFT/DeviceStatus/Antivirus/Status"
+	OMADeviceStatusFirewall      = "./Device/Vendor/MSFT/DeviceStatus/Firewall/Status"
+	OMABitLockerEncryptionStatus = "./Device/Vendor/MSFT/BitLocker/Status/DeviceEncryptionStatus"
 
 	// DMClient — management server polling schedule configuration
 	OMADMClientPollNumRemaining = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Poll/NumberOfRemainingScheduledRetries"
@@ -187,8 +196,8 @@ const (
 	OMAExecReboot = "./Device/Vendor/MSFT/Reboot/RebootNow"
 )
 
-// FirstCheckInURIs is the set of device info URIs we Get on the first session.
-// This populates the device record with real hardware/OS info.
+// FirstCheckInURIs is the set of device info and security posture URIs we Get
+// on initial sessions (and on-demand posture refreshes).
 var FirstCheckInURIs = []string{
 	OMADevInfoDevID,
 	OMADevInfoMan,
@@ -198,4 +207,13 @@ var FirstCheckInURIs = []string{
 	OMADevDetailOSPlatform,
 	OMADevDetailOSBuild,
 	OMADevDetailComputerName,
+	OMADevDetailSMBIOSSerial,
+	OMADevDetailTotalRAM,
+	OMADevDetailTotalStorage,
+	OMADevDetailFreeStorage,
+	OMADeviceStatusSecureBoot,
+	OMADeviceStatusTPMVersion,
+	OMADeviceStatusAntivirus,
+	OMADeviceStatusFirewall,
+	OMABitLockerEncryptionStatus,
 }
