@@ -111,6 +111,14 @@ func TestValidate(t *testing.T) {
 		{"custom poll interval ok", func(c *Config) {
 			c.MDM.PollIntervalMinutes = 60
 		}, false},
+		{"partial wns config rejected", func(c *Config) {
+			c.MDM.WNS.PackageFamilyName = "Latchz.MDM_8wekyb3d8bbwe"
+		}, true},
+		{"complete wns config ok", func(c *Config) {
+			c.MDM.WNS.PackageFamilyName = "Latchz.MDM_8wekyb3d8bbwe"
+			c.MDM.WNS.PackageSID = "ms-app://s-1-15-2-12345"
+			c.MDM.WNS.ClientSecret = "wns-secret"
+		}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -28,6 +28,27 @@ type MDMConfig struct {
 	// PollOnLogin sets DMClient Poll/PollOnLogin so Windows initiates an OMA-DM
 	// management session whenever a user signs in. Default: true.
 	PollOnLogin bool `mapstructure:"poll_on_login"`
+	// WNS configures optional Windows Push Notification Services instant wake-ups.
+	WNS WNSConfig `mapstructure:"wns"`
+}
+
+// WNSConfig holds optional Windows Push Notification Services (WNS) credentials
+// from Microsoft Partner Center / Entra App Registration for instant device wake-ups.
+// Leave all fields empty to disable WNS and rely on DMClient Poll check-ins.
+type WNSConfig struct {
+	// PackageFamilyName is provisioned into DMClient/Provider/LatchzMDM/Push/PFN
+	// (e.g. "Company.LatchzMDM_8wekyb3d8bbwe").
+	PackageFamilyName string `mapstructure:"package_family_name"`
+	// PackageSID is the OAuth2 client_id sent to login.live.com/accesstoken.srf
+	// (e.g. "ms-app://s-1-15-2-...").
+	PackageSID string `mapstructure:"package_sid"`
+	// ClientSecret is the WNS client secret paired with PackageSID.
+	ClientSecret string `mapstructure:"client_secret"`
+}
+
+// Enabled reports whether WNS instant device wake-up is fully configured.
+func (w WNSConfig) Enabled() bool {
+	return w.PackageFamilyName != "" && w.PackageSID != "" && w.ClientSecret != ""
 }
 
 // ServerConfig controls the HTTP listener and domain settings.
@@ -157,6 +178,9 @@ func Load(cfgFile string) (*Config, error) {
 	v.SetDefault("auth.oidc.allowed_domains", []string{})
 	v.SetDefault("mdm.poll_interval_minutes", 15)
 	v.SetDefault("mdm.poll_on_login", true)
+	v.SetDefault("mdm.wns.package_family_name", "")
+	v.SetDefault("mdm.wns.package_sid", "")
+	v.SetDefault("mdm.wns.client_secret", "")
 
 	// Explicit env bindings for nested keys (required for AutomaticEnv to work
 	// with deeply nested viper keys — see github.com/spf13/viper#188)
@@ -182,6 +206,9 @@ func Load(cfgFile string) (*Config, error) {
 	_ = v.BindEnv("auth.oidc.allowed_domains", "LATCHZ_AUTH_OIDC_ALLOWED_DOMAINS")
 	_ = v.BindEnv("mdm.poll_interval_minutes", "LATCHZ_MDM_POLL_INTERVAL_MINUTES")
 	_ = v.BindEnv("mdm.poll_on_login", "LATCHZ_MDM_POLL_ON_LOGIN")
+	_ = v.BindEnv("mdm.wns.package_family_name", "LATCHZ_MDM_WNS_PACKAGE_FAMILY_NAME")
+	_ = v.BindEnv("mdm.wns.package_sid", "LATCHZ_MDM_WNS_PACKAGE_SID")
+	_ = v.BindEnv("mdm.wns.client_secret", "LATCHZ_MDM_WNS_CLIENT_SECRET")
 
 	// Config file
 	if cfgFile != "" {
@@ -244,6 +271,11 @@ func (c *Config) validate() error {
 
 	if c.MDM.PollIntervalMinutes < 0 || c.MDM.PollIntervalMinutes > 10080 {
 		return fmt.Errorf("mdm.poll_interval_minutes must be between 0 and 10080 (7 days), got %d", c.MDM.PollIntervalMinutes)
+	}
+
+	wnsAny := c.MDM.WNS.PackageFamilyName != "" || c.MDM.WNS.PackageSID != "" || c.MDM.WNS.ClientSecret != ""
+	if wnsAny && !c.MDM.WNS.Enabled() {
+		return fmt.Errorf("mdm.wns requires package_family_name, package_sid, and client_secret to all be set when WNS is enabled")
 	}
 
 	// Fail closed on the authentication provider: only fully-implemented,

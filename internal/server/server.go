@@ -29,6 +29,8 @@ import (
 	"github.com/latchzmdm/latchz/internal/enrollment"
 	"github.com/latchzmdm/latchz/internal/mdm"
 	"github.com/latchzmdm/latchz/internal/pki"
+	"github.com/latchzmdm/latchz/internal/policy"
+	"github.com/latchzmdm/latchz/internal/wns"
 )
 
 // authenticator is the auth-provider contract the server depends on. Concrete
@@ -105,6 +107,21 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	enrollHandler.SetMDMHost(s.mdmHost())
 	enrollHandler.SetPollSchedule(cfg.MDM.PollIntervalMinutes, cfg.MDM.PollOnLogin)
 	mdmHandler.SetPollSchedule(cfg.MDM.PollIntervalMinutes, cfg.MDM.PollOnLogin)
+	if cfg.MDM.WNS.Enabled() {
+		wnsClient := wns.NewClient(
+			database.DB,
+			cfg.MDM.WNS.PackageFamilyName,
+			cfg.MDM.WNS.PackageSID,
+			cfg.MDM.WNS.ClientSecret,
+		)
+		enrollHandler.SetWNSPFN(cfg.MDM.WNS.PackageFamilyName)
+		mdmHandler.SetWNSPFN(cfg.MDM.WNS.PackageFamilyName)
+		apiHandler.SetWNSClient(wnsClient)
+		policy.SetWakeNotifier(wnsClient.NotifyAsync)
+		slog.Info("wns: instant device wake-up enabled", "pfn", cfg.MDM.WNS.PackageFamilyName)
+	} else {
+		policy.SetWakeNotifier(nil)
+	}
 	s.routes()
 	return s, nil
 }
@@ -299,6 +316,7 @@ func (s *Server) routes() {
 			r.With(admin).Post("/devices/{id}/reboot", s.api.HandleRebootDevice)
 			r.With(admin).Post("/devices/{id}/wipe", s.api.HandleWipeDevice)
 			r.With(admin).Post("/devices/{id}/sync", s.api.HandleSyncDevice)
+			r.With(admin).Post("/devices/{id}/push", s.api.HandlePushWakeDevice)
 			r.Get("/devices/{id}/commands", s.api.HandleGetDeviceCommands)
 			r.Get("/devices/{id}/posture", s.api.HandleGetDevicePosture)
 			r.With(admin).Post("/devices/{id}/posture/refresh", s.api.HandleRefreshDevicePosture)

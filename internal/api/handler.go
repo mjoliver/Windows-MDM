@@ -10,16 +10,29 @@ import (
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/mdm"
 	"github.com/latchzmdm/latchz/internal/policy"
+	"github.com/latchzmdm/latchz/internal/wns"
 )
 
 // Handler holds dependencies for all API handlers.
 type Handler struct {
-	db *sql.DB
+	db  *sql.DB
+	wns *wns.Client
 }
 
 // NewHandler creates an API handler.
 func NewHandler(db *sql.DB) *Handler {
 	return &Handler{db: db}
+}
+
+// SetWNSClient attaches an optional WNS push client for instant device wake-ups.
+func (h *Handler) SetWNSClient(c *wns.Client) {
+	h.wns = c
+}
+
+func (h *Handler) wakeDevice(deviceID string) {
+	if h.wns != nil && h.wns.Enabled() {
+		h.wns.NotifyAsync(deviceID)
+	}
 }
 
 // ── JSON helpers ──────────────────────────────────────────────────────────────

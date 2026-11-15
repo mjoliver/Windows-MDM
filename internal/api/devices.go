@@ -141,6 +141,10 @@ func (h *Handler) HandleUnenrollDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.wns != nil {
+		_, _ = h.db.ExecContext(r.Context(), dbpkg.Rebind(`DELETE FROM device_wns_channels WHERE device_id = ?`), id)
+	}
+
 	slog.Info("device unenrolled", "device_id", id, "actor", actor)
 	respondOK(w, map[string]string{"status": "unenrolled", "device_id": id})
 }
@@ -162,6 +166,7 @@ func (h *Handler) HandleLockDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.wakeDevice(id)
 	h.audit(r, actor, "device.lock", "device", id, fmt.Sprintf(`{"queue_id":%d}`, queueID))
 	slog.Info("remote lock queued", "device_id", id, "actor", actor)
 	respondOK(w, map[string]interface{}{"status": "queued", "queue_id": queueID})
@@ -187,6 +192,7 @@ func (h *Handler) HandleRebootDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.wakeDevice(id)
 	h.audit(r, actor, "device.reboot", "device", id, fmt.Sprintf(`{"queue_id":%d}`, queueID))
 	slog.Info("remote reboot queued", "device_id", id, "actor", actor)
 	respondOK(w, map[string]interface{}{"status": "queued", "queue_id": queueID})
@@ -220,6 +226,7 @@ func (h *Handler) HandleWipeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.wakeDevice(id)
 	h.audit(r, actor, "device.wipe", "device", id, fmt.Sprintf(`{"queue_id":%d}`, queueID))
 	slog.Warn("remote wipe queued", "device_id", id, "actor", actor)
 	respondOK(w, map[string]interface{}{"status": "queued", "queue_id": queueID, "warning": "device will be factory reset on next check-in"})
@@ -267,9 +274,41 @@ func (h *Handler) HandleSyncDevice(w http.ResponseWriter, r *http.Request) {
 
 	// Also re-evaluate profile assignments and queue Replace commands for non-compliant policies
 	policyOps.ApplyDevice(h.db, id)
+	h.wakeDevice(id)
 
 	h.audit(r, actor, "device.sync", "device", id, fmt.Sprintf(`{"queued_gets":%d}`, queued))
 	respondOK(w, map[string]interface{}{"status": "sync_queued", "commands_queued": queued})
+}
+
+// HandlePushWakeDevice sends an immediate WNS wns/raw push notification to wake
+// the target device's DMClient and initiate an OMA-DM SyncML session.
+// POST /api/devices/{id}/push
+func (h *Handler) HandlePushWakeDevice(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	actor := emailFromCtx(r)
+
+	if _, err := h.getDevice(r, id); err == sql.ErrNoRows {
+		respondErr(w, http.StatusNotFound, "device not found")
+		return
+	} else if err != nil {
+		respondErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if h.wns == nil || !h.wns.Enabled() {
+		respondErr(w, http.StatusServiceUnavailable, "WNS push notifications are not configured on this server")
+		return
+	}
+
+	res, err := h.wns.PushRaw(r.Context(), id)
+	if err != nil {
+		slog.Warn("api: WNS wake push failed", "device_id", id, "err", err)
+		respondErr(w, http.StatusBadGateway, "WNS push failed: "+err.Error())
+		return
+	}
+
+	h.audit(r, actor, "device.push_wake", "device", id, fmt.Sprintf(`{"status":%q}`, res.Status))
+	respondOK(w, res)
 }
 
 // HandleGetDeviceCommands returns the command history for a device.

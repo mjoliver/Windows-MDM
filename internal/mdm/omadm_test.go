@@ -160,3 +160,90 @@ func TestHandleOMADM_ReconcilesPollScheduleOnce(t *testing.T) {
 		t.Fatalf("expected updated Poll schedule on third check-in: %s", third)
 	}
 }
+
+func TestHandleOMADM_WNSChannelRegistrationAndSSRFFilter(t *testing.T) {
+	database := testutil.DB(t)
+	ca := testutil.CA(t, database)
+	deviceID := testutil.SeedDevice(t, database, "HW-WNS-OMADM")
+	if _, err := database.Exec(`UPDATE devices SET os_version = '10.0.26100.1', os_build = '26100.1' WHERE id = ?`, deviceID); err != nil {
+		t.Fatal(err)
+	}
+	cert := testutil.IssueClientCert(t, ca, deviceID, "LatchzMDMClient")
+	h := NewHandler(database.DB, ca.TLSPool(), "mdm.example.com", "")
+	h.SetWNSPFN("Latchz.MDM_8wekyb3d8bbwe")
+
+	postSyncML := func(xmlBody string) string {
+		req := httptest.NewRequest("POST", "/omadm", strings.NewReader(xmlBody))
+		req.TLS = testutil.ClientTLSState(cert)
+		w := httptest.NewRecorder()
+		h.HandleOMADM(w, req)
+		if w.Code != 200 {
+			t.Fatalf("status %d", w.Code)
+		}
+		return w.Body.String()
+	}
+
+	// Msg 1: server provisions Push/PFN and requests Push/ChannelURI
+	resp1 := postSyncML(`<?xml version="1.0"?>
+<SyncML xmlns="SYNCML:SYNCML1.2">
+  <SyncHdr><VerDTD>1.2</VerDTD><VerProto>DM/1.2</VerProto><SessionID>20</SessionID><MsgID>1</MsgID>
+    <Source><LocURI>HW-WNS-OMADM</LocURI></Source><Target><LocURI>https://mdm.example.com/omadm</LocURI></Target></SyncHdr>
+  <SyncBody><Alert><CmdID>1</CmdID><Data>1201</Data></Alert><Final/></SyncBody>
+</SyncML>`)
+	for _, want := range []string{OMADMClientPushPFN, "Latchz.MDM_8wekyb3d8bbwe", OMADMClientPushChannelURI} {
+		if !strings.Contains(resp1, want) {
+			t.Fatalf("expected %q in WNS provisioning SyncML: %s", want, resp1)
+		}
+	}
+
+	// Msg 2 (attacker/rogue URI): SSRF target must be rejected
+	postSyncML(`<?xml version="1.0"?>
+<SyncML xmlns="SYNCML:SYNCML1.2">
+  <SyncHdr><VerDTD>1.2</VerDTD><VerProto>DM/1.2</VerProto><SessionID>20</SessionID><MsgID>2</MsgID>
+    <Source><LocURI>HW-WNS-OMADM</LocURI></Source><Target><LocURI>https://mdm.example.com/omadm</LocURI></Target></SyncHdr>
+  <SyncBody>
+    <Results><CmdID>2</CmdID><CmdRef>3</CmdRef>
+      <Item><Source><LocURI>` + OMADMClientPushChannelURI + `</LocURI></Source><Data>https://127.0.0.1/ssrf</Data></Item>
+    </Results>
+    <Final/>
+  </SyncBody>
+</SyncML>`)
+	var cnt int
+	_ = database.QueryRow(`SELECT COUNT(*) FROM device_wns_channels WHERE device_id = ?`, deviceID).Scan(&cnt)
+	if cnt != 0 {
+		t.Fatalf("expected SSRF ChannelURI to be rejected, found %d rows", cnt)
+	}
+
+	// Msg 3 (valid WNS URI): persisted cleanly
+	validURI := "https://wns2-bl2p.notify.windows.com/?token=AwYAAACValidToken"
+	postSyncML(`<?xml version="1.0"?>
+<SyncML xmlns="SYNCML:SYNCML1.2">
+  <SyncHdr><VerDTD>1.2</VerDTD><VerProto>DM/1.2</VerProto><SessionID>21</SessionID><MsgID>1</MsgID>
+    <Source><LocURI>HW-WNS-OMADM</LocURI></Source><Target><LocURI>https://mdm.example.com/omadm</LocURI></Target></SyncHdr>
+  <SyncBody>
+    <Results><CmdID>2</CmdID><CmdRef>3</CmdRef>
+      <Item><Source><LocURI>` + OMADMClientPushChannelURI + `</LocURI></Source><Data>` + validURI + `</Data></Item>
+      <Item><Source><LocURI>` + OMADMClientPushStatus + `</LocURI></Source><Data>0</Data></Item>
+    </Results>
+    <Final/>
+  </SyncBody>
+</SyncML>`)
+	var storedURI string
+	if err := database.QueryRow(`SELECT channel_uri FROM device_wns_channels WHERE device_id = ?`, deviceID).Scan(&storedURI); err != nil {
+		t.Fatalf("expected valid WNS ChannelURI to be stored: %v", err)
+	}
+	if storedURI != validURI {
+		t.Fatalf("stored channel_uri = %q, want %q", storedURI, validURI)
+	}
+
+	// Next session: both PFN and ChannelURI are already satisfied, so neither is re-sent.
+	respNext := postSyncML(`<?xml version="1.0"?>
+<SyncML xmlns="SYNCML:SYNCML1.2">
+  <SyncHdr><VerDTD>1.2</VerDTD><VerProto>DM/1.2</VerProto><SessionID>22</SessionID><MsgID>1</MsgID>
+    <Source><LocURI>HW-WNS-OMADM</LocURI></Source><Target><LocURI>https://mdm.example.com/omadm</LocURI></Target></SyncHdr>
+  <SyncBody><Alert><CmdID>1</CmdID><Data>1201</Data></Alert><Final/></SyncBody>
+</SyncML>`)
+	if strings.Contains(respNext, OMADMClientPushPFN) || strings.Contains(respNext, OMADMClientPushChannelURI) {
+		t.Fatalf("expected no redundant WNS commands once channel is active: %s", respNext)
+	}
+}

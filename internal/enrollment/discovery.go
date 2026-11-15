@@ -27,6 +27,7 @@ type Handler struct {
 	enrollmentDomain    string
 	pollIntervalMinutes int
 	pollOnLogin         bool
+	wnsPFN              string
 }
 
 // NewHandler creates an enrollment handler for the given domain.
@@ -47,6 +48,12 @@ func (h *Handler) SetPollSchedule(intervalMinutes int, pollOnLogin bool) {
 		h.pollIntervalMinutes = intervalMinutes
 	}
 	h.pollOnLogin = pollOnLogin
+}
+
+// SetWNSPFN configures the Microsoft Partner Center Package Family Name
+// provisioned into DMClient/Provider/LatchzMDM/Push/PFN during WSTEP enrollment.
+func (h *Handler) SetWNSPFN(pfn string) {
+	h.wnsPFN = strings.TrimSpace(pfn)
 }
 
 // SetMDMHost overrides the host[:port] advertised for mTLS device endpoints

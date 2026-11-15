@@ -10,6 +10,7 @@ import (
 	"time"
 
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
+	"github.com/latchzmdm/latchz/internal/wns"
 )
 
 // Session lifetime bounds. Sessions are short-lived; abandoned ones are reaped
@@ -43,16 +44,17 @@ func newSessionStore() *sessionStore {
 // concurrent HTTP requests). All mutable fields below are guarded by mu; callers
 // must hold it for the duration of request processing for a given session.
 type Session struct {
-	mu             sync.Mutex
-	DeviceID       string
-	SessionID      string
-	NextMsgID      int
-	NextCmdID      int
-	IsFirst        bool // first session after enrollment (alert 1200)
-	Interrogations int  // device-info Get rounds issued this session
-	StartedAt      time.Time
-	LastSeen       time.Time
-	CmdMap         map[string]int // maps CmdID (from SyncML) -> queueID (from DB)
+	mu                sync.Mutex
+	DeviceID          string
+	SessionID         string
+	NextMsgID         int
+	NextCmdID         int
+	IsFirst           bool // first session after enrollment (alert 1200)
+	Interrogations    int  // device-info Get rounds issued this session
+	WNSChannelQueried bool // WNS Push/ChannelURI Get issued this session
+	StartedAt         time.Time
+	LastSeen          time.Time
+	CmdMap            map[string]int // maps CmdID (from SyncML) -> queueID (from DB)
 }
 
 // get retrieves or creates a session for the given device+session key.
@@ -150,6 +152,9 @@ func updateDeviceFromResults(db *sql.DB, deviceID string, sess *Session, results
 
 	// Persist hardware & security posture telemetry
 	updatePosture(db, deviceID, updates)
+
+	// Persist WNS Push channel URI if reported
+	updateWNSChannel(db, deviceID, updates)
 
 	// The rest go to compliance_records
 	updateCompliance(db, deviceID, updates)
@@ -312,6 +317,52 @@ func updatePosture(db *sql.DB, deviceID string, values map[string]string) {
 		secureBoot, encryption, antivirus, firewall)
 	if err != nil {
 		slog.Error("mdm: updating device posture from results", "device_id", deviceID, "err", err)
+	}
+}
+
+func updateWNSChannel(db *sql.DB, deviceID string, values map[string]string) {
+	var (
+		channelURI string
+		pushStatus sql.NullInt64
+	)
+
+	for rawURI, val := range values {
+		trimmed := strings.TrimSpace(val)
+		switch normalizePostureURI(rawURI) {
+		case OMADMClientPushChannelURI:
+			channelURI = trimmed
+		case OMADMClientPushStatus:
+			pushStatus = parseOptionalInt(trimmed)
+		}
+	}
+
+	if channelURI == "" {
+		if pushStatus.Valid {
+			_, _ = db.Exec(
+				dbpkg.Rebind(`UPDATE device_wns_channels SET push_status = ? WHERE device_id = ?`),
+				pushStatus, deviceID,
+			)
+		}
+		return
+	}
+
+	if err := wns.ValidateChannelURI(channelURI); err != nil {
+		slog.Warn("mdm: rejected invalid WNS ChannelURI from device", "device_id", deviceID, "err", err)
+		return
+	}
+
+	_, err := db.Exec(dbpkg.Rebind(`
+		INSERT INTO device_wns_channels (device_id, channel_uri, push_status, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (device_id) DO UPDATE SET
+			channel_uri = EXCLUDED.channel_uri,
+			push_status = COALESCE(EXCLUDED.push_status, device_wns_channels.push_status),
+			updated_at  = CURRENT_TIMESTAMP
+	`), deviceID, channelURI, pushStatus)
+	if err != nil {
+		slog.Error("mdm: storing WNS channel URI", "device_id", deviceID, "err", err)
+	} else {
+		slog.Info("mdm: registered WNS push channel for device", "device_id", deviceID)
 	}
 }
 

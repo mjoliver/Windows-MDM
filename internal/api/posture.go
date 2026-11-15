@@ -14,23 +14,28 @@ import (
 
 // DevicePosture represents hardware inventory and Windows security posture for a device.
 type DevicePosture struct {
-	DeviceID         string     `json:"device_id"`
-	Collected        bool       `json:"collected"`
-	TotalRAMMB       *int64     `json:"total_ram_mb"`
-	TotalStorageMB   *int64     `json:"total_storage_mb"`
-	FreeStorageMB    *int64     `json:"free_storage_mb"`
-	BIOSVersion      string     `json:"bios_version"`
-	OSPlatform       string     `json:"os_platform"`
-	TPMVersion       string     `json:"tpm_version"`
-	SecureBootState  *int64     `json:"secure_boot_state"`
-	SecureBootLabel  string     `json:"secure_boot_label"`
-	EncryptionStatus *int64     `json:"encryption_status"`
-	EncryptionLabel  string     `json:"encryption_label"`
-	AntivirusStatus  *int64     `json:"antivirus_status"`
-	AntivirusLabel   string     `json:"antivirus_label"`
-	FirewallStatus   *int64     `json:"firewall_status"`
-	FirewallLabel    string     `json:"firewall_label"`
-	UpdatedAt        *time.Time `json:"updated_at"`
+	DeviceID          string     `json:"device_id"`
+	Collected         bool       `json:"collected"`
+	TotalRAMMB        *int64     `json:"total_ram_mb"`
+	TotalStorageMB    *int64     `json:"total_storage_mb"`
+	FreeStorageMB     *int64     `json:"free_storage_mb"`
+	BIOSVersion       string     `json:"bios_version"`
+	OSPlatform        string     `json:"os_platform"`
+	TPMVersion        string     `json:"tpm_version"`
+	SecureBootState   *int64     `json:"secure_boot_state"`
+	SecureBootLabel   string     `json:"secure_boot_label"`
+	EncryptionStatus  *int64     `json:"encryption_status"`
+	EncryptionLabel   string     `json:"encryption_label"`
+	AntivirusStatus   *int64     `json:"antivirus_status"`
+	AntivirusLabel    string     `json:"antivirus_label"`
+	FirewallStatus    *int64     `json:"firewall_status"`
+	FirewallLabel     string     `json:"firewall_label"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	WNSEnabled        bool       `json:"wns_enabled"`
+	WNSChannelActive  bool       `json:"wns_channel_active"`
+	WNSUpdatedAt      *time.Time `json:"wns_updated_at"`
+	WNSLastPushAt     *time.Time `json:"wns_last_push_at"`
+	WNSLastPushStatus string     `json:"wns_last_push_status"`
 }
 
 // FleetPostureSummary aggregates security posture health across active enrolled devices.
@@ -127,15 +132,41 @@ func (h *Handler) HandleGetDevicePosture(w http.ResponseWriter, r *http.Request)
 		&updatedAt,
 	)
 
+	populateWNS := func(p *DevicePosture) {
+		p.WNSEnabled = h.wns != nil && h.wns.Enabled()
+		var (
+			channelURI     string
+			chanUpdatedAt  time.Time
+			lastPushAt     sql.NullTime
+			lastPushStatus sql.NullString
+		)
+		wErr := h.db.QueryRowContext(r.Context(), dbpkg.Rebind(`
+			SELECT channel_uri, updated_at, last_push_at, COALESCE(last_push_status, '')
+			FROM device_wns_channels
+			WHERE device_id = ?
+		`), id).Scan(&channelURI, &chanUpdatedAt, &lastPushAt, &lastPushStatus)
+		if wErr == nil && channelURI != "" {
+			p.WNSChannelActive = true
+			p.WNSUpdatedAt = &chanUpdatedAt
+			if lastPushAt.Valid {
+				t := lastPushAt.Time
+				p.WNSLastPushAt = &t
+			}
+			p.WNSLastPushStatus = lastPushStatus.String
+		}
+	}
+
 	if errors.Is(err, sql.ErrNoRows) {
-		respondOK(w, DevicePosture{
+		p := DevicePosture{
 			DeviceID:        id,
 			Collected:       false,
 			SecureBootLabel: "Unknown",
 			EncryptionLabel: "Unknown",
 			AntivirusLabel:  "Unknown",
 			FirewallLabel:   "Unknown",
-		})
+		}
+		populateWNS(&p)
+		respondOK(w, p)
 		return
 	}
 	if err != nil {
@@ -171,6 +202,7 @@ func (h *Handler) HandleGetDevicePosture(w http.ResponseWriter, r *http.Request)
 	p.EncryptionLabel = encryptionLabel(p.EncryptionStatus)
 	p.AntivirusLabel = securityMonitorLabel(p.AntivirusStatus)
 	p.FirewallLabel = securityMonitorLabel(p.FirewallStatus)
+	populateWNS(&p)
 
 	respondOK(w, p)
 }
@@ -196,6 +228,7 @@ func (h *Handler) HandleRefreshDevicePosture(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	h.wakeDevice(id)
 	h.audit(r, actor, "device.posture_refresh", "device", id, fmt.Sprintf(`{"commands_queued":%d}`, queued))
 	slog.Info("posture refresh queued", "device_id", id, "commands_queued", queued, "actor", actor)
 	respondOK(w, map[string]interface{}{"status": "queued", "commands_queued": queued})

@@ -79,4 +79,25 @@ func TestDevicePostureAndFleetSummary(t *testing.T) {
 	if sum.TotalActiveDevices != 1 || sum.PostureReportedDevices != 1 || sum.SecureBootEnabled != 1 || sum.BitLockerEncrypted != 1 || sum.AntivirusHealthy != 1 || sum.FirewallHealthy != 1 {
 		t.Fatalf("unexpected fleet posture summary: %+v", sum)
 	}
+
+	// 5. WNS push without configured WNS client -> 503 Service Unavailable
+	wPushDisabled := httptest.NewRecorder()
+	h.HandlePushWakeDevice(wPushDisabled, withRoute("POST", "/api/devices/"+devID+"/push", "", devID))
+	if wPushDisabled.Code != http.StatusServiceUnavailable {
+		t.Fatalf("push wake without WNS config: want 503, got %d", wPushDisabled.Code)
+	}
+
+	// 6. Seed WNS channel row and verify posture exposes wns_channel_active=true
+	if _, err := database.Exec(`INSERT INTO device_wns_channels (device_id, channel_uri, last_push_status) VALUES (?, ?, 'sent:received')`, devID, "https://wns2-bl2p.notify.windows.com/?token=abc"); err != nil {
+		t.Fatal(err)
+	}
+	wGotWNS := httptest.NewRecorder()
+	h.HandleGetDevicePosture(wGotWNS, withRoute("GET", "/api/devices/"+devID+"/posture", "", devID))
+	var gotWNS DevicePosture
+	if err := json.Unmarshal(wGotWNS.Body.Bytes(), &gotWNS); err != nil {
+		t.Fatal(err)
+	}
+	if !gotWNS.WNSChannelActive || gotWNS.WNSLastPushStatus != "sent:received" {
+		t.Fatalf("expected active WNS channel in posture response, got %+v", gotWNS)
+	}
 }

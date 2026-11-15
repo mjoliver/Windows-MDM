@@ -143,3 +143,11 @@ mdm:
   # Trigger an automatic OMA-DM check-in whenever a user signs in to Windows
   # (DMClient Poll CSP: PollOnLogin).
   poll_on_login: true
+
+  # Optional: Windows Push Notification Services (WNS) for instant (< 2 second)
+  # device wake-ups on Force Sync, policy updates, remote reboot, lock, and wipe.
+  # Leave empty to rely on periodic DMClient Poll check-ins.
+  # wns:
+  #   package_family_name: "Company.LatchzMDM_8wekyb3d8bbwe"
+  #   package_sid: "ms-app://s-1-15-2-..."
+  #   client_secret: "your-wns-client-secret"

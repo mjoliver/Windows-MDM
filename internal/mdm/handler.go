@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,8 @@ type Handler struct {
 	pollOnLogin         bool
 	pollSynced          map[string]string
 	postureSynced       map[string]bool
+	wnsPFN              string
+	wnsPFNSynced        map[string]string
 }
 
 // NewHandler creates an OMA-DM handler. proxyCertHeader is "" unless a trusted
@@ -48,6 +51,7 @@ func NewHandler(db *sql.DB, caPool *x509.CertPool, domain, proxyCertHeader strin
 		proxyCertHeader: proxyCertHeader,
 		pollSynced:      make(map[string]string),
 		postureSynced:   make(map[string]bool),
+		wnsPFNSynced:    make(map[string]string),
 	}
 }
 
@@ -68,6 +72,72 @@ func (h *Handler) SetPollSchedule(intervalMinutes int, pollOnLogin bool) {
 	h.pollConfigured = true
 	h.pollIntervalMinutes = intervalMinutes
 	h.pollOnLogin = pollOnLogin
+}
+
+// SetWNSPFN configures the Microsoft Partner Center Package Family Name pushed
+// to enrolled devices via DMClient/Provider/LatchzMDM/Push/PFN and triggers
+// Push/ChannelURI interrogation when no active WNS channel is stored.
+func (h *Handler) SetWNSPFN(pfn string) {
+	h.pollMu.Lock()
+	defer h.pollMu.Unlock()
+	pfn = strings.TrimSpace(pfn)
+	if pfn != h.wnsPFN {
+		h.wnsPFNSynced = make(map[string]string)
+	}
+	h.wnsPFN = pfn
+}
+
+// reconcileWNSPush provisions DMClient Push/PFN once per server lifecycle and
+// requests Push/ChannelURI + Push/Status whenever a device lacks a stored channel.
+func (h *Handler) reconcileWNSPush(deviceID string, sess *Session) []interface{} {
+	h.pollMu.Lock()
+	pfn := h.wnsPFN
+	if pfn == "" {
+		h.pollMu.Unlock()
+		return nil
+	}
+	needPFN := h.wnsPFNSynced[deviceID] != pfn
+	if needPFN {
+		h.wnsPFNSynced[deviceID] = pfn
+	}
+	h.pollMu.Unlock()
+
+	var cmds []interface{}
+	if needPFN {
+		cmds = append(cmds, Replace{
+			CmdID: sess.nextCmdID(),
+			Items: []Item{{
+				Target: &LocURI{LocURI: OMADMClientPushPFN},
+				Meta: &Meta{
+					Format: &MetaFormat{Xmlns: metInfNS, Value: "chr"},
+					Type:   "text/plain",
+				},
+				Data: pfn,
+			}},
+		})
+	}
+
+	if !sess.WNSChannelQueried {
+		needChannel := needPFN
+		if !needChannel {
+			var count int
+			if err := h.db.QueryRow(
+				dbpkg.Rebind(`SELECT COUNT(*) FROM device_wns_channels WHERE device_id = ?`),
+				deviceID,
+			).Scan(&count); err == nil && count == 0 {
+				needChannel = true
+			}
+		}
+		if needChannel {
+			sess.WNSChannelQueried = true
+			cmds = append(cmds,
+				Get{CmdID: sess.nextCmdID(), Items: []Item{{Target: &LocURI{LocURI: OMADMClientPushChannelURI}}}},
+				Get{CmdID: sess.nextCmdID(), Items: []Item{{Target: &LocURI{LocURI: OMADMClientPushStatus}}}},
+			)
+		}
+	}
+
+	return cmds
 }
 
 // reconcilePollSchedule returns DMClient Poll CSP Replace commands if this
@@ -279,6 +349,7 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		if !interrogatedThisTurn {
 			outboundCmds = append(outboundCmds, h.reconcileInitialPosture(deviceID, sess)...)
 		}
+		outboundCmds = append(outboundCmds, h.reconcileWNSPush(deviceID, sess)...)
 	}
 
 	// ── Step 7: Build SyncML response ────────────────────────────────────
@@ -436,6 +507,7 @@ func (h *Handler) finalizeWipe(deviceID string) {
 	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE certificates SET revoked = 1 WHERE device_id = ?`), deviceID); err != nil {
 		slog.Error("mdm: revoking wiped device certs", "device_id", deviceID, "err", err)
 	}
+	_, _ = h.db.Exec(dbpkg.Rebind(`DELETE FROM device_wns_channels WHERE device_id = ?`), deviceID)
 	slog.Info("mdm: remote wipe delivered — device deactivated and certs revoked", "device_id", deviceID)
 }
 

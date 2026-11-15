@@ -6,10 +6,33 @@ package policy
 import (
 	"database/sql"
 	"log/slog"
+	"sync"
 
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/mdm"
 )
+
+var (
+	wakeMu sync.RWMutex
+	wakeFn func(deviceID string)
+)
+
+// SetWakeNotifier registers an optional callback (such as wns.Client.NotifyAsync)
+// invoked whenever policy changes queue or retract OMA-DM commands for a device.
+func SetWakeNotifier(fn func(deviceID string)) {
+	wakeMu.Lock()
+	wakeFn = fn
+	wakeMu.Unlock()
+}
+
+func notifyWake(deviceID string) {
+	wakeMu.RLock()
+	fn := wakeFn
+	wakeMu.RUnlock()
+	if fn != nil {
+		fn(deviceID)
+	}
+}
 
 // resolvedSetting is a single policy value to enforce on a device.
 type resolvedSetting struct {
@@ -132,6 +155,7 @@ func ApplyDevice(db *sql.DB, deviceID string) {
 			"retracted", retracted,
 			"total_settings", len(settings),
 		)
+		notifyWake(deviceID)
 	}
 }
 

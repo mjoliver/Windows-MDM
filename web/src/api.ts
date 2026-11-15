@@ -163,6 +163,11 @@ export interface DevicePosture {
   firewall_status: number | null
   firewall_label: string
   updated_at: string | null
+  wns_enabled: boolean
+  wns_channel_active: boolean
+  wns_updated_at: string | null
+  wns_last_push_at: string | null
+  wns_last_push_status: string
 }
 
 export interface FleetPostureSummary {
@@ -226,6 +231,7 @@ export const api = {
     getCommands: (id: string) => get<{ commands: DeviceCommand[] }>(`/devices/${enc(id)}/commands`),
     posture: (id: string) => get<DevicePosture>(`/devices/${enc(id)}/posture`),
     refreshPosture: (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/posture/refresh`),
+    pushWake: (id: string) => post<{ status: string; wns_status?: string }>(`/devices/${enc(id)}/push`),
   },
 
   // Profiles

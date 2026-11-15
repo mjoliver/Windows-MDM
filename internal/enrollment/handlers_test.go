@@ -40,6 +40,7 @@ func TestHandleWSTEP_IssuesCertAndCreatesDevice(t *testing.T) {
 	ca := testutil.CA(t, database)
 	h := NewHandler("mdm.example.com", "example.com")
 	h.SetPollSchedule(20, true)
+	h.SetWNSPFN("Latchz.MDM_8wekyb3d8bbwe")
 
 	_, csrDER := testutil.GenerateKeyCSR(t, "LatchzMDMClient")
 	body := wstepEnvelope("enroll-token", base64.StdEncoding.EncodeToString(csrDER), "HW-WSTEP")
@@ -72,6 +73,8 @@ func TestHandleWSTEP_IssuesCertAndCreatesDevice(t *testing.T) {
 		`<parm name="PROVIDER-ID" value="LatchzMDM"/>`,
 		`<parm name="IntervalForRemainingScheduledRetries" value="20" datatype="integer"/>`,
 		`<parm name="PollOnLogin" value="true" datatype="boolean"/>`,
+		`<characteristic type="Push">`,
+		`<parm name="PFN" value="Latchz.MDM_8wekyb3d8bbwe" datatype="string"/>`,
 	} {
 		if !strings.Contains(provXML, want) {
 			t.Fatalf("provisioning XML missing %q:\n%s", want, provXML)

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
@@ -98,6 +98,15 @@ export function DeviceDetailPage() {
       } else if (name === 'posture') {
         const queued = (res as { commands_queued?: number } | undefined)?.commands_queued ?? 0
         toast.success(`Queued ${queued} inventory & security posture query command(s) for next check-in.`)
+      } else if (name === 'push') {
+        const st = (res as { status?: string; wns_status?: string } | undefined)?.status
+        if (st === 'sent') {
+          toast.success('Instant WNS wake-up push delivered — device is initiating an OMA-DM sync.')
+        } else if (st === 'no_channel') {
+          toast.error('No WNS channel registered for this device yet — channel URI will be collected on next check-in.')
+        } else if (st === 'expired_channel') {
+          toast.error('WNS channel had expired and was cleared — device will register a fresh channel on next check-in.')
+        }
       }
       setTimeout(refresh, 500)
     } catch (e) { 
@@ -181,6 +190,19 @@ export function DeviceDetailPage() {
               <RefreshCw size={18} className={actionLoading === 'sync' ? 'spin' : ''} />
               Force Sync
             </button>
+            {posture?.wns_enabled && (
+              <span
+                className="tooltip-wrap"
+                data-tooltip="Send instant WNS wake-up push">
+                <button className="btn btn-secondary"
+                  aria-label="Wake device via WNS"
+                  onClick={() => action('push', () => api.devices.pushWake(id!))}
+                  disabled={!!actionLoading}
+                  style={{ width: 52, height: 52, padding: 0, borderRadius: 16 }}>
+                  <Zap size={20} className={actionLoading === 'push' ? 'spin' : ''} />
+                </button>
+              </span>
+            )}
             <span
               className="tooltip-wrap"
               data-tooltip="Restart device on next check-in">
@@ -377,11 +399,30 @@ export function DeviceDetailPage() {
                     <Badge status={postureBadgeStatus(item.ok)} label={item.text} />
                   </div>
                 ))}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}>
                   <span style={{ fontSize: '0.84rem', opacity: 0.8 }}>TPM Specification</span>
                   <span className="mono" style={{ fontSize: '0.82rem', fontWeight: 600 }}>
                     {posture?.tpm_version || '—'}
                   </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 4 }}>
+                  <span style={{ fontSize: '0.84rem', opacity: 0.8 }}>WNS Instant Wake</span>
+                  <Badge
+                    status={
+                      posture?.wns_enabled
+                        ? posture.wns_channel_active
+                          ? 'compliant'
+                          : 'pending'
+                        : 'unknown'
+                    }
+                    label={
+                      posture?.wns_enabled
+                        ? posture.wns_channel_active
+                          ? 'Connected'
+                          : 'Awaiting Channel'
+                        : 'Scheduled Poll'
+                    }
+                  />
                 </div>
               </div>
             </div>

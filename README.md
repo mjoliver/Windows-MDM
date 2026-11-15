@@ -132,6 +132,9 @@ All configuration values can be set in `latchz.yaml` or overridden via environme
 | `auth.oidc.allowed_domains` | `LATCHZ_AUTH_OIDC_ALLOWED_DOMAINS` | — | Email domains restricted for login |
 | `mdm.poll_interval_minutes` | `LATCHZ_MDM_POLL_INTERVAL_MINUTES` | `15` | Background OMA-DM check-in interval in minutes (`0` disables) |
 | `mdm.poll_on_login` | `LATCHZ_MDM_POLL_ON_LOGIN` | `true` | Trigger an OMA-DM check-in whenever a user logs into Windows |
+| `mdm.wns.package_family_name` | `LATCHZ_MDM_WNS_PACKAGE_FAMILY_NAME` | `""` | Optional Microsoft Partner Center WNS Package Family Name (`DMClient` Push PFN) |
+| `mdm.wns.package_sid` | `LATCHZ_MDM_WNS_PACKAGE_SID` | `""` | Optional WNS OAuth2 `client_id` (`ms-app://s-1-15-2-...`) |
+| `mdm.wns.client_secret` | `LATCHZ_MDM_WNS_CLIENT_SECRET` | `""` | Optional WNS OAuth2 `client_secret` for instant `wns/raw` wake-ups |
 
 > **Why separate `listen` and `mtls_listen` / `mdm_domain`?** Windows `DeviceEnroller.exe` uses `WinHTTP`, which aborts unauthenticated Discovery/XCEP/WSTEP requests with `0x80072f0c` (`ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED`) if the server sends a TLS `CertificateRequest` handshake message before the device has enrolled. Latchz keeps `server.listen` (`:443`) free of client-cert prompts and provisions devices to check in via `server.mtls_listen` (e.g., `:8443`) or `server.mdm_domain`.
 
@@ -254,11 +257,13 @@ The embedded React dashboard provides the following pages:
 |------|-------------|
 | **Overview** | System health, device counts, compliance summary |
 | **Devices** | List of all enrolled devices with status |
-| **Device Detail** | Per-device info, policy assignments, compliance history |
+| **Device Detail** | Per-device hardware & security posture, WNS wake-up, policy compliance, remote actions |
 | **Groups** | Device groups for bulk policy assignment |
-| **Compliance** | Device compliance status and violations |
+| **Compliance** | Fleet security posture (BitLocker, Secure Boot, Defender, Firewall) and violations |
 | **Profiles** | Configuration profiles (policies) created for devices |
 | **Profile Detail** | Profile settings, catalog browsing, device targeting |
+| **Users & Roles** | RBAC user management (`super_admin`, `admin`, `user`) |
+| **Audit Log** | Searchable administrative & enrollment security audit trail |
 | **Login** | OIDC or builtin authentication |
 
 ### Emergency Access
@@ -353,7 +358,7 @@ make clean        # Remove build artifacts
 │   ├── reverse-proxy.md     # Nginx / Caddy / Traefik reverse-proxy & mTLS setup
 │   └── self-hosting.md      # Google Cloud Run & self-hosting walkthrough
 ├── internal/
-│   ├── api/                 # REST API handlers (catalog, compliance, devices, groups, profiles)
+│   ├── api/                 # REST API handlers (catalog, compliance, devices, groups, profiles, posture, users, audit)
 │   ├── auth/                # OIDC + builtin auth, JWT token management
 │   ├── config/              # YAML config loading with Viper
 │   ├── db/                  # Database layer + versioned migrations (SQLite + PostgreSQL)
@@ -362,7 +367,8 @@ make clean        # Remove build artifacts
 │   ├── mdm/                 # OMA-DM/SyncML protocol handler + device commands
 │   ├── pki/                 # RSA 4096-bit CA + certificate issuance
 │   ├── policy/              # ADMX policy resolution + DDF catalog integration
-│   └── server/              # HTTP server, middleware, TLS, embedded web assets
+│   ├── server/              # HTTP server, middleware, TLS, embedded web assets
+│   └── wns/                 # Windows Push Notification Services (WNS) OAuth2 + wns/raw wake-up client
 ├── web/                     # React + TypeScript frontend (Vite)
 │   ├── src/
 │   │   ├── components/      # Shared UI components (Badge, Layout)

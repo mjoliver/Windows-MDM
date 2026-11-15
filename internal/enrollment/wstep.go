@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -130,7 +131,7 @@ const (
           <parm name="NumberOfRemainingScheduledRetries" value="0" datatype="integer"/>
           <parm name="IntervalForRemainingScheduledRetries" value="%d" datatype="integer"/>
           <parm name="PollOnLogin" value="%t" datatype="boolean"/>
-        </characteristic>
+        </characteristic>%s
       </characteristic>
     </characteristic>
   </characteristic>
@@ -323,6 +324,11 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		// MENROLL_E_PROV_SSLCERTNOTFOUND (0x80180024).
 		myStoreTarget := "User"
 
+		pushXML := ""
+		if h.wnsPFN != "" {
+			pushXML = fmt.Sprintf("\n        <characteristic type=\"Push\">\n          <parm name=\"PFN\" value=\"%s\" datatype=\"string\"/>\n        </characteristic>", html.EscapeString(h.wnsPFN))
+		}
+
 		provisioningXML := fmt.Sprintf(provisioningXMLTemplate,
 			caThumbprint,          // Root CA Store Key
 			caCertB64,             // Root CA Cert
@@ -337,6 +343,7 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 			info.DeviceName,       // EntDeviceName
 			h.pollIntervalMinutes, // IntervalForRemainingScheduledRetries
 			h.pollOnLogin,         // PollOnLogin
+			pushXML,               // Optional Push PFN characteristic
 		)
 		provisioningB64 := base64.StdEncoding.EncodeToString([]byte(provisioningXML))
 

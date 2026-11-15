@@ -182,10 +182,13 @@ const (
 	OMADeviceStatusFirewall      = "./Device/Vendor/MSFT/DeviceStatus/Firewall/Status"
 	OMABitLockerEncryptionStatus = "./Device/Vendor/MSFT/BitLocker/Status/DeviceEncryptionStatus"
 
-	// DMClient — management server polling schedule configuration
+	// DMClient — management server polling schedule & WNS push configuration
 	OMADMClientPollNumRemaining = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Poll/NumberOfRemainingScheduledRetries"
 	OMADMClientPollFrequency    = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Poll/IntervalForRemainingScheduledRetries"
 	OMADMClientPollOnLogin      = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Poll/PollOnLogin"
+	OMADMClientPushPFN          = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Push/PFN"
+	OMADMClientPushChannelURI   = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Push/ChannelURI"
+	OMADMClientPushStatus       = "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Push/Status"
 
 	// Policy CSPs
 	OMAPolicyPrefix = "./Device/Vendor/MSFT/Policy/Config"
