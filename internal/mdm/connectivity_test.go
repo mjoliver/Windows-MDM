@@ -136,6 +136,10 @@ func TestTrustedCertWiFiVaultResolutionAndVPNAtomicSyncML(t *testing.T) {
 	}
 	out := string(rawSyncML)
 
+	// Verify RootCATrustedCertificates EncodedCertificate uses <Format>b64</Format>
+	if !strings.Contains(out, `EncodedCertificate</LocURI></Target><Meta><Format xmlns="syncml:metinf">b64</Format>`) {
+		t.Fatalf("expected <Format>b64</Format> on EncodedCertificate in SyncML output: %s", out)
+	}
 	// Verify Wi-Fi PSK was decrypted & XML-escaped inside WLANProfile (& -> &amp; inside escaped XML -> &amp;amp;)
 	if strings.Contains(out, VaultWiFiSentinelPrefix) {
 		t.Fatalf("vault sentinel was not resolved in SyncML: %s", out)
@@ -143,8 +147,13 @@ func TestTrustedCertWiFiVaultResolutionAndVPNAtomicSyncML(t *testing.T) {
 	if !strings.Contains(out, "SuperSecretWiFi") {
 		t.Fatalf("expected decrypted Wi-Fi PSK in SyncML output: %s", out)
 	}
-	// Verify VPNv2 ProfileXML is wrapped inside <Atomic>
-	if !strings.Contains(out, "./Vendor/MSFT/VPNv2/Latchz-Corp-VPN/ProfileXML") || !strings.Contains(out, "<Atomic>") {
+	// Verify VPNv2 ProfileXML is wrapped inside <Atomic> with strict XSD sequence (RoutingPolicyType before NativeProtocolType)
+	if !strings.Contains(out, "./Device/Vendor/MSFT/VPNv2/Latchz-Corp-VPN/ProfileXML") || !strings.Contains(out, "<Atomic>") {
 		t.Fatalf("expected Atomic VPNv2 ProfileXML in SyncML output: %s", out)
+	}
+	idxRouting := strings.Index(out, "RoutingPolicyType")
+	idxProto := strings.Index(out, "NativeProtocolType")
+	if idxRouting <= 0 || idxProto <= idxRouting {
+		t.Fatalf("expected RoutingPolicyType before NativeProtocolType per Microsoft VPNv2 XSD: %s", out)
 	}
 }

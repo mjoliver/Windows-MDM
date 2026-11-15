@@ -27,17 +27,17 @@ func TestDeviceLockdownInvertedPasswordAndUSBStorageModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnqueueDeviceLockdown: %v", err)
 	}
-	if q < 11 || !kioskNow {
-		t.Fatalf("expected >=11 commands and kioskNow=true, got q=%d kioskNow=%t", q, kioskNow)
+	if q < 8 || !kioskNow {
+		t.Fatalf("expected >=8 commands (6 Replace + 1 Atomic DeviceLock + 1 Kiosk) and kioskNow=true, got q=%d kioskNow=%t", q, kioskNow)
 	}
 
-	// Verify inverted DevicePasswordEnabled = "0" when RequirePassword == true!
-	var pwdEnabled string
-	if err := database.DB.QueryRow(`SELECT payload FROM command_queue WHERE device_id = ? AND oma_uri = ?`, devID, OMADeviceLockPasswordEnabled).Scan(&pwdEnabled); err != nil {
+	// Verify inverted DevicePasswordEnabled = "0" inside <Atomic> DeviceLock payload when RequirePassword == true!
+	var atomicPayload string
+	if err := database.DB.QueryRow(`SELECT payload FROM command_queue WHERE device_id = ? AND command_type = 'Atomic' AND oma_uri = ?`, devID, OMADeviceLockAtomicURI).Scan(&atomicPayload); err != nil {
 		t.Fatal(err)
 	}
-	if pwdEnabled != "0" {
-		t.Fatalf("CRITICAL: DevicePasswordEnabled must be '0' (Enabled) when RequirePassword=true, got %q", pwdEnabled)
+	if !strings.Contains(atomicPayload, `"oma_uri":"`+OMADeviceLockPasswordEnabled+`","payload":"0"`) {
+		t.Fatalf("CRITICAL: Atomic DeviceLock must set DevicePasswordEnabled='0' (Enabled) when RequirePassword=true, got %s", atomicPayload)
 	}
 
 	// Verify read_only USB storage sets DenyWrite=1, DenyRead=0

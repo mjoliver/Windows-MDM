@@ -387,13 +387,25 @@ func buildSyncMLCommands(session *Session, pending []PendingCommand) []interface
 						Value: "xml",
 					},
 				}
+			} else if strings.HasSuffix(cmd.OMAURI, "/EncodedCertificate") {
+				// RootCATrustedCertificates / CertificateStore EncodedCertificate requires <Format>b64</Format>.
+				item.Meta = &Meta{
+					Format: &MetaFormat{
+						Xmlns: metInfNS,
+						Value: "b64",
+					},
+				}
 			} else {
 				format := "chr"
-				// Match OMA-DM MetInf format for numeric and boolean values
-				if isNumeric(cmd.Payload) {
-					format = "int"
-				} else if isBoolean(cmd.Payload) {
-					format = "bool"
+				// Match OMA-DM MetInf format for numeric and boolean values unless the CSP
+				// node explicitly requires string/chr format even for digit payloads
+				// (e.g. ./Device/Vendor/MSFT/Defender/Scan expects <Format>chr</Format> "1"/"2").
+				if !explicitChrFormatURI(cmd.OMAURI) {
+					if isNumeric(cmd.Payload) {
+						format = "int"
+					} else if isBoolean(cmd.Payload) {
+						format = "bool"
+					}
 				}
 
 				item.Meta = &Meta{
@@ -512,4 +524,8 @@ func isNumeric(s string) bool {
 
 func isBoolean(s string) bool {
 	return s == "true" || s == "false"
+}
+
+func explicitChrFormatURI(omaURI string) bool {
+	return omaURI == OMADefenderExecScan
 }

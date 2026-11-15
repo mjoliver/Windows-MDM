@@ -115,4 +115,23 @@ func TestDefenderScanSignatureAndBaselineQueueing(t *testing.T) {
 	if scanPayload != "2" {
 		t.Fatalf("want full scan payload '2', got %q", scanPayload)
 	}
+
+	// Verify Defender/Scan uses <Format>chr</Format> (not int!) in SyncML
+	sess := &Session{NextCmdID: 1, CmdMap: map[string]int{}}
+	rawScanXML, err := xml.Marshal(SyncML{
+		SyncBody: SyncBody{
+			Commands: buildSyncMLCommands(sess, []PendingCommand{{
+				ID:          99,
+				CommandType: "Exec",
+				OMAURI:      OMADefenderExecScan,
+				Payload:     "1",
+			}}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rawScanXML), `Defender/Scan</LocURI></Target><Meta><Format xmlns="syncml:metinf">chr</Format>`) {
+		t.Fatalf("Defender/Scan must use <Format>chr</Format>, got: %s", string(rawScanXML))
+	}
 }

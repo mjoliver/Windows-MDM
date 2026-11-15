@@ -15,7 +15,9 @@ const (
 	OMAStorageDenyExecute = "./Device/Vendor/MSFT/Policy/Config/Storage/RemovableDiskDenyExecuteAccess"
 	OMASystemStorageCard  = "./Device/Vendor/MSFT/Policy/Config/System/AllowStorageCard" // 0=Block, 1=Allow
 
-	// DeviceLock Policy CSP nodes (NOTE: DevicePasswordEnabled is INVERTED: 0=Enabled, 1=Disabled!)
+	// DeviceLock Policy CSP nodes (NOTE: DevicePasswordEnabled is INVERTED: 0=Enabled, 1=Disabled,
+	// and Windows desktop Policy CSP mandates wrapping DeviceLock Replace operations in <Atomic>!)
+	OMADeviceLockAtomicURI       = "./Device/Vendor/MSFT/Policy/Config/DeviceLock"
 	OMADeviceLockPasswordEnabled = "./Device/Vendor/MSFT/Policy/Config/DeviceLock/DevicePasswordEnabled"
 	OMADeviceLockMinLength       = "./Device/Vendor/MSFT/Policy/Config/DeviceLock/MinDevicePasswordLength"
 	OMADeviceLockAlphanumeric    = "./Device/Vendor/MSFT/Policy/Config/DeviceLock/AlphanumericDevicePasswordRequired"
@@ -99,6 +101,7 @@ func EnqueueDeviceLockdown(dbConn *sql.DB, deviceID string, spec DeviceLockdownS
 		{OMASystemStorageCard, allowCard},
 	}
 
+	var deviceLockOps []AtomicSubCommand
 	if spec.RequirePassword {
 		minLen := spec.MinPasswordLength
 		if minLen < 4 {
@@ -125,16 +128,21 @@ func EnqueueDeviceLockdown(dbConn *sql.DB, deviceID string, spec DeviceLockdownS
 		if failed > 16 {
 			failed = 16
 		}
-		// CRITICAL: DevicePasswordEnabled = 0 means ENABLED (password required)!
-		items = append(items,
-			struct{ uri, val string }{OMADeviceLockPasswordEnabled, "0"},
-			struct{ uri, val string }{OMADeviceLockMinLength, strconv.Itoa(minLen)},
-			struct{ uri, val string }{OMADeviceLockAlphanumeric, alpha},
-			struct{ uri, val string }{OMADeviceLockMaxInactivity, strconv.Itoa(inact)},
-			struct{ uri, val string }{OMADeviceLockMaxFailed, strconv.Itoa(failed)},
-		)
+		// CRITICAL: DevicePasswordEnabled = 0 means ENABLED (password required), and Windows desktop
+		// Policy CSP requires DeviceLock Replace operations to be wrapped inside an <Atomic> block!
+		deviceLockOps = []AtomicSubCommand{
+			{CommandType: "Replace", OMAURI: OMADeviceLockPasswordEnabled, Payload: "0", Format: "int"},
+			{CommandType: "Replace", OMAURI: OMADeviceLockMinLength, Payload: strconv.Itoa(minLen), Format: "int"},
+			{CommandType: "Replace", OMAURI: OMADeviceLockAlphanumeric, Payload: alpha, Format: "int"},
+			{CommandType: "Replace", OMAURI: OMADeviceLockMaxInactivity, Payload: strconv.Itoa(inact), Format: "int"},
+			{CommandType: "Replace", OMAURI: OMADeviceLockMaxFailed, Payload: strconv.Itoa(failed), Format: "int"},
+		}
 	} else {
-		items = append(items, struct{ uri, val string }{OMADeviceLockPasswordEnabled, "1"})
+		// Per Microsoft DeviceLock CSP docs, when disabling DevicePasswordEnabled (1), it must be
+		// the only policy set from the DeviceLock group, wrapped in <Atomic>.
+		deviceLockOps = []AtomicSubCommand{
+			{CommandType: "Replace", OMAURI: OMADeviceLockPasswordEnabled, Payload: "1", Format: "int"},
+		}
 	}
 
 	camVal := "0"
@@ -156,6 +164,10 @@ func EnqueueDeviceLockdown(dbConn *sql.DB, deviceID string, spec DeviceLockdownS
 		}
 		queued++
 	}
+	if _, qerr := EnqueueAtomic(dbConn, deviceID, OMADeviceLockAtomicURI, deviceLockOps); qerr != nil {
+		return queued, false, qerr
+	}
+	queued++
 
 	if strings.EqualFold(strings.TrimSpace(spec.KioskMode), "single_app") {
 		payload, jerr := BuildKioskModeAppJSON(spec.KioskAccount, spec.KioskAppAUMID)
@@ -179,25 +191,39 @@ func EnqueueDeviceLockdown(dbConn *sql.DB, deviceID string, spec DeviceLockdownS
 // RetractDeviceLockdown queues <Delete> commands to remove MDM Storage, DeviceLock,
 // hardware peripheral, and AssignedAccess kiosk overrides from a device.
 func RetractDeviceLockdown(dbConn *sql.DB, deviceID string, prevKioskEnforced bool) (int, error) {
-	uris := []string{
+	directDeletes := []string{
 		OMAStorageDenyWrite,
 		OMAStorageDenyRead,
 		OMAStorageDenyExecute,
 		OMASystemStorageCard,
+		OMACameraAllow,
+		OMAConnectivityAllow,
+	}
+	if prevKioskEnforced {
+		directDeletes = append(directDeletes, OMAAssignedAccessKioskApp)
+	}
+	var queued int
+	for _, u := range directDeletes {
+		if _, err := EnqueueDelete(dbConn, deviceID, u); err != nil {
+			return queued, err
+		}
+		queued++
+	}
+
+	// Windows desktop Policy CSP requires DeviceLock operations (including Delete)
+	// to be wrapped in <Atomic>. Delete dependent child policies before DevicePasswordEnabled,
+	// each in its own <Atomic> so an unconfigured optional child never rolls back parent removal.
+	deviceLockDeletes := []string{
 		OMADeviceLockMinLength,
 		OMADeviceLockAlphanumeric,
 		OMADeviceLockMaxInactivity,
 		OMADeviceLockMaxFailed,
 		OMADeviceLockPasswordEnabled,
-		OMACameraAllow,
-		OMAConnectivityAllow,
 	}
-	if prevKioskEnforced {
-		uris = append(uris, OMAAssignedAccessKioskApp)
-	}
-	var queued int
-	for _, u := range uris {
-		if _, err := EnqueueDelete(dbConn, deviceID, u); err != nil {
+	for _, u := range deviceLockDeletes {
+		if _, err := EnqueueAtomic(dbConn, deviceID, u+"#delete", []AtomicSubCommand{
+			{CommandType: "Delete", OMAURI: u},
+		}); err != nil {
 			return queued, err
 		}
 		queued++

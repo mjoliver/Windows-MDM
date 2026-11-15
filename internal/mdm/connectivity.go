@@ -19,7 +19,7 @@ import (
 const (
 	OMARootCATrustedPrefix = "./Device/Vendor/MSFT/RootCATrustedCertificates"
 	OMAWiFiProfilePrefix   = "./Device/Vendor/MSFT/WiFi/Profile"
-	OMAVPNv2Prefix         = "./Vendor/MSFT/VPNv2"
+	OMAVPNv2Prefix         = "./Device/Vendor/MSFT/VPNv2"
 
 	// WiFiVaultAADPrefix binds encrypted Wi-Fi PSKs in network_pki_profiles to their profile ID.
 	WiFiVaultAADPrefix = "wifi_psk:"
@@ -234,21 +234,25 @@ func BuildVPNProfileXML(spec VPNProfileSpec) (string, error) {
 		routing = "SplitTunnel"
 	}
 
+	// Microsoft VPNv2 ProfileXML enforces strict xs:sequence element ordering:
+	//   VPNProfile: RememberCredentials -> AlwaysOn -> TrustedNetworkDetection -> NativeProfile
+	//   NativeProfile: Servers -> RoutingPolicyType -> NativeProtocolType -> Authentication
 	var b strings.Builder
 	b.WriteString(`<VPNProfile>`)
-	if tn := strings.TrimSpace(spec.TrustedNetwork); tn != "" {
-		b.WriteString(`<TrustedNetworkDetection>` + xmlEscapeText(tn) + `</TrustedNetworkDetection>`)
-	}
+	b.WriteString(`<RememberCredentials>true</RememberCredentials>`)
 	if spec.AlwaysOn {
 		b.WriteString(`<AlwaysOn>true</AlwaysOn>`)
 	}
-	b.WriteString(`<RememberCredentials>true</RememberCredentials>`)
+	if tn := strings.TrimSpace(spec.TrustedNetwork); tn != "" {
+		b.WriteString(`<TrustedNetworkDetection>` + xmlEscapeText(tn) + `</TrustedNetworkDetection>`)
+	}
 	b.WriteString(`<NativeProfile>`)
 	b.WriteString(`<Servers>` + xmlEscapeText(srv) + `</Servers>`)
+	b.WriteString(`<RoutingPolicyType>` + routing + `</RoutingPolicyType>`)
 	b.WriteString(`<NativeProtocolType>` + proto + `</NativeProtocolType>`)
 	b.WriteString(`<Authentication>`)
 	if strings.EqualFold(strings.TrimSpace(spec.AuthMethod), "Certificate") {
-		b.WriteString(`<MachineMethod>Certificate</MachineMethod>`)
+		b.WriteString(`<UserMethod>Certificate</UserMethod>`)
 	} else {
 		b.WriteString(`<UserMethod>Eap</UserMethod>`)
 		b.WriteString(`<Eap><Configuration>`)
@@ -259,7 +263,6 @@ func BuildVPNProfileXML(spec VPNProfileSpec) (string, error) {
 		b.WriteString(`</Configuration></Eap>`)
 	}
 	b.WriteString(`</Authentication>`)
-	b.WriteString(`<RoutingPolicyType>` + routing + `</RoutingPolicyType>`)
 	b.WriteString(`</NativeProfile>`)
 	b.WriteString(`</VPNProfile>`)
 	return b.String(), nil

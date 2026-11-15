@@ -128,7 +128,7 @@ func TestConnectivityProfilesLifecycle(t *testing.T) {
 	var delCmdCount int
 	if err := database.DB.QueryRow(`
 		SELECT COUNT(*) FROM command_queue
-		WHERE device_id = ? AND command_type = 'Delete' AND oma_uri = './Vendor/MSFT/VPNv2/Corp-IKEv2-VPN'
+		WHERE device_id = ? AND command_type = 'Delete' AND oma_uri = './Device/Vendor/MSFT/VPNv2/Corp-IKEv2-VPN'
 	`, devID).Scan(&delCmdCount); err != nil {
 		t.Fatal(err)
 	}
