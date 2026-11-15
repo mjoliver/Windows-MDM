@@ -8,7 +8,12 @@
 //	Device executes commands, reports results in next check-in
 package mdm
 
-import "encoding/xml"
+import (
+	"encoding/xml"
+	"fmt"
+	"net/url"
+	"strings"
+)
 
 const (
 	syncMLNS    = "SYNCML:SYNCML1.2"
@@ -25,10 +30,12 @@ const (
 	StatusOK            = "200"
 	StatusCreated       = "201"
 	StatusAccepted      = "202"
+	StatusNoContent     = "204"
 	StatusNotModified   = "304"
 	StatusBadRequest    = "400"
 	StatusUnauthorized  = "401"
 	StatusNotFound      = "404"
+	StatusAlreadyExists = "418"
 	StatusCommandFailed = "500"
 	StatusNotExecuted   = "215"
 	StatusAtomicFailed  = "507"
@@ -104,6 +111,34 @@ type Item struct {
 	Target *LocURI `xml:"Target,omitempty"`
 	Meta   *Meta   `xml:"Meta,omitempty"`
 	Data   string  `xml:"Data,omitempty"`
+	RawXML bool    `xml:"-"`
+}
+
+// MarshalXML emits escaped character data by default (required for ADMX-backed
+// Policy CSP values like "<enabled/>"), or raw inner XML when RawXML is set
+// (required by EnterpriseDesktopAppManagement CSP <MsiInstallJob> payloads).
+func (i Item) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	if !i.RawXML {
+		type plainItem Item
+		return e.EncodeElement(plainItem(i), start)
+	}
+	type rawData struct {
+		Inner string `xml:",innerxml"`
+	}
+	aux := struct {
+		Source *LocURI  `xml:"Source,omitempty"`
+		Target *LocURI  `xml:"Target,omitempty"`
+		Meta   *Meta    `xml:"Meta,omitempty"`
+		Data   *rawData `xml:"Data,omitempty"`
+	}{
+		Source: i.Source,
+		Target: i.Target,
+		Meta:   i.Meta,
+	}
+	if i.Data != "" {
+		aux.Data = &rawData{Inner: i.Data}
+	}
+	return e.EncodeElement(aux, start)
 }
 
 // Meta describes the format and type of item data.
@@ -193,11 +228,102 @@ const (
 	// Policy CSPs
 	OMAPolicyPrefix = "./Device/Vendor/MSFT/Policy/Config"
 
+	// EnterpriseDesktopAppManagement CSP — Win32 MSI deployment
+	OMAEnterpriseDesktopMSIPrefix = "./Device/Vendor/MSFT/EnterpriseDesktopAppManagement/MSI"
+
 	// Remote actions
 	OMAExecWipe   = "./Vendor/MSFT/RemoteWipe/doWipe"
 	OMAExecLock   = "./Vendor/MSFT/RemoteLock/Lock"
 	OMAExecReboot = "./Device/Vendor/MSFT/Reboot/RebootNow"
 )
+
+// CanonicalMSIProductCode normalizes an MSI ProductCode into "{UPPER-GUID}".
+func CanonicalMSIProductCode(productCode string) string {
+	s := strings.ToUpper(strings.TrimSpace(productCode))
+	s = strings.ReplaceAll(s, "%7B", "{")
+	s = strings.ReplaceAll(s, "%7D", "}")
+	if s != "" && !strings.HasPrefix(s, "{") {
+		s = "{" + s
+	}
+	if s != "" && !strings.HasSuffix(s, "}") {
+		s = s + "}"
+	}
+	return s
+}
+
+// EncodeMSIProductURI builds an EnterpriseDesktopAppManagement MSI LocURI with
+// curly braces encoded as %7B / %7D per the MS-MDM specification.
+func EncodeMSIProductURI(productCode, leaf string) string {
+	canon := CanonicalMSIProductCode(productCode)
+	encoded := strings.ReplaceAll(strings.ReplaceAll(canon, "{", "%7B"), "}", "%7D")
+	base := OMAEnterpriseDesktopMSIPrefix + "/" + encoded
+	if leaf == "" {
+		return base
+	}
+	return base + "/" + strings.TrimPrefix(leaf, "/")
+}
+
+// ParseMSIProductURI extracts the canonical "{UPPER-GUID}" ProductCode and
+// trailing leaf node (e.g. "Status", "LastError", "LastErrorDesc", or "") from
+// an EnterpriseDesktopAppManagement MSI LocURI.
+func ParseMSIProductURI(rawURI string) (productCode, leaf string, ok bool) {
+	u := strings.TrimSpace(rawURI)
+	if !strings.HasPrefix(u, "./") {
+		u = "./" + u
+	}
+	if strings.HasPrefix(u, "./Vendor/MSFT/") {
+		u = strings.Replace(u, "./Vendor/", "./Device/Vendor/", 1)
+	}
+	prefix := OMAEnterpriseDesktopMSIPrefix + "/"
+	if len(u) <= len(prefix) || !strings.EqualFold(u[:len(prefix)], prefix) {
+		return "", "", false
+	}
+	rest := u[len(prefix):]
+	seg := rest
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		seg = rest[:slash]
+		leaf = rest[slash+1:]
+	}
+	if unesc, err := url.PathUnescape(seg); err == nil {
+		seg = unesc
+	}
+	canon := CanonicalMSIProductCode(seg)
+	if len(canon) < 3 {
+		return "", "", false
+	}
+	return canon, leaf, true
+}
+
+// MSIStatusLabel maps an EnterpriseDesktopAppManagement CSP Status integer to
+// a human-readable deployment state.
+func MSIStatusLabel(code int) string {
+	switch code {
+	case 0:
+		return "Uninstalled"
+	case 10:
+		return "Initialized"
+	case 20:
+		return "Downloading"
+	case 25:
+		return "Download Queued"
+	case 30:
+		return "Download Failed"
+	case 40:
+		return "Downloaded"
+	case 48:
+		return "Pending User Session"
+	case 50:
+		return "Installing"
+	case 55:
+		return "Pending Reboot"
+	case 60:
+		return "Install Failed"
+	case 70:
+		return "Installed"
+	default:
+		return fmt.Sprintf("Status %d", code)
+	}
+}
 
 // FirstCheckInURIs is the set of device info and security posture URIs we Get
 // on initial sessions (and on-demand posture refreshes).

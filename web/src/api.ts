@@ -208,6 +208,59 @@ export interface AuditPage {
   offset: number
 }
 
+export interface MSIInspectResult {
+  product_code: string
+  name: string
+  version: string
+  publisher: string
+  upgrade_code: string
+  sha256: string
+  file_size_bytes: number
+}
+
+export interface MSIApp {
+  id: string
+  name: string
+  publisher: string
+  version: string
+  product_code: string
+  upgrade_code: string
+  content_url: string
+  sha256: string
+  file_size_bytes: number
+  command_line: string
+  timeout_minutes: number
+  retry_count: number
+  retry_interval_minutes: number
+  created_at: string
+  updated_at: string
+  group_count: number
+  installed_count: number
+  target_device_count: number
+}
+
+export interface DeviceAppInstall {
+  device_id: string
+  device_name: string
+  app_id: string
+  app_name: string
+  publisher: string
+  version: string
+  product_code: string
+  desired_action: 'install' | 'uninstall'
+  status_code: number | null
+  status_label: string
+  last_error: string
+  last_error_desc: string
+  updated_at: string
+}
+
+export interface MSIAppDetail {
+  app: MSIApp
+  group_ids: string[]
+  installs: DeviceAppInstall[]
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -229,6 +282,7 @@ export const api = {
     wipe:    (id: string) => post<{ status: string }>(`/devices/${enc(id)}/wipe`, { confirm: true }),
     sync:    (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/sync`),
     getCommands: (id: string) => get<{ commands: DeviceCommand[] }>(`/devices/${enc(id)}/commands`),
+    apps:    (id: string) => get<DeviceAppInstall[]>(`/devices/${enc(id)}/apps`),
     posture: (id: string) => get<DevicePosture>(`/devices/${enc(id)}/posture`),
     refreshPosture: (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/posture/refresh`),
     pushWake: (id: string) => post<{ status: string; wns_status?: string }>(`/devices/${enc(id)}/push`),
@@ -297,5 +351,33 @@ export const api = {
       if (params?.offset)      q.set('offset', String(params.offset))
       return get<AuditPage>(`/audit?${q}`)
     },
+  },
+
+  // Applications (Win32 MSI via EnterpriseDesktopAppManagement CSP)
+  apps: {
+    list:    () => get<MSIApp[]>('/apps'),
+    get:     (id: string) => get<MSIAppDetail>(`/apps/${enc(id)}`),
+    inspect: (contentUrl: string) => post<MSIInspectResult>('/apps/inspect', { content_url: contentUrl }),
+    create:  (data: {
+      content_url: string
+      name?: string
+      publisher?: string
+      version?: string
+      product_code?: string
+      upgrade_code?: string
+      sha256?: string
+      file_size_bytes?: number
+      command_line?: string
+      timeout_minutes?: number
+      retry_count?: number
+      retry_interval_minutes?: number
+    }) => post<MSIApp>('/apps', data),
+    delete:  (id: string) => del<{ status: string }>(`/apps/${enc(id)}`),
+    assignGroups: (id: string, groupIds: string[], action: 'add' | 'remove') =>
+      put<{ status: string; devices_targeted: number }>(`/apps/${enc(id)}/groups`, { group_ids: groupIds, action }),
+    install: (id: string, deviceIds: string[]) =>
+      post<{ status: string; devices_targeted: number; commands_queued: number }>(`/apps/${enc(id)}/install`, { device_ids: deviceIds }),
+    uninstall: (id: string, deviceIds: string[]) =>
+      post<{ status: string; devices_targeted: number }>(`/apps/${enc(id)}/uninstall`, { device_ids: deviceIds }),
   },
 }

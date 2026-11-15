@@ -2,6 +2,7 @@ package mdm
 
 import (
 	"database/sql"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"strings"
@@ -64,7 +65,11 @@ func markCommandsSent(dbConn *sql.DB, ids []int) error {
 
 func markCommandResult(dbConn *sql.DB, queueID int, resultCode, resultData string) error {
 	status := "success"
-	if resultCode != StatusOK && resultCode != StatusCreated && resultCode != StatusAccepted {
+	if resultCode != StatusOK &&
+		resultCode != StatusCreated &&
+		resultCode != StatusAccepted &&
+		resultCode != StatusNoContent &&
+		resultCode != StatusAlreadyExists {
 		status = "failed"
 	}
 
@@ -100,10 +105,158 @@ func EnqueueExec(dbConn *sql.DB, deviceID, omaURI, payload string) (int64, error
 	return enqueue(dbConn, deviceID, "Exec", formatDeviceURI(omaURI), payload)
 }
 
+// EnqueueAdd adds an Add (create node) command to the queue.
+func EnqueueAdd(dbConn *sql.DB, deviceID, omaURI, payload string) (int64, error) {
+	return enqueue(dbConn, deviceID, "Add", formatDeviceURI(omaURI), payload)
+}
+
 // EnqueueDelete adds a Delete command, used to retract a previously-applied
 // policy node from the device.
 func EnqueueDelete(dbConn *sql.DB, deviceID, omaURI string) (int64, error) {
 	return enqueue(dbConn, deviceID, "Delete", formatDeviceURI(omaURI), "")
+}
+
+// MSIInstallSpec describes a Win32 MSI deployment job for the
+// EnterpriseDesktopAppManagement CSP.
+type MSIInstallSpec struct {
+	ProductCode          string
+	Version              string
+	ContentURL           string
+	SHA256               string
+	CommandLine          string
+	TimeoutMinutes       int
+	RetryCount           int
+	RetryIntervalMinutes int
+}
+
+type msiInstallJobXML struct {
+	XMLName xml.Name      `xml:"MsiInstallJob"`
+	ID      string        `xml:"id,attr"`
+	Product msiProductXML `xml:"Product"`
+}
+
+type msiProductXML struct {
+	Version     string            `xml:"Version,attr"`
+	Download    msiDownloadXML    `xml:"Download"`
+	Validation  *msiValidationXML `xml:"Validation,omitempty"`
+	Enforcement msiEnforcementXML `xml:"Enforcement"`
+}
+
+type msiDownloadXML struct {
+	ContentURLs []string `xml:"ContentURLList>ContentURL"`
+}
+
+type msiValidationXML struct {
+	FileHash string `xml:"FileHash"`
+}
+
+type msiEnforcementXML struct {
+	CommandLine   string `xml:"CommandLine"`
+	TimeOut       int    `xml:"TimeOut"`
+	RetryCount    int    `xml:"RetryCount"`
+	RetryInterval int    `xml:"RetryInterval"`
+}
+
+// BuildMSIInstallJobXML serializes an <MsiInstallJob> XML payload conforming to
+// Microsoft's EnterpriseDesktopAppManagement CSP specification.
+func BuildMSIInstallJobXML(spec MSIInstallSpec) string {
+	prodCode := CanonicalMSIProductCode(spec.ProductCode)
+	version := strings.TrimSpace(spec.Version)
+	if version == "" {
+		version = "1.0.0"
+	}
+	cmdLine := strings.TrimSpace(spec.CommandLine)
+	if cmdLine == "" {
+		cmdLine = "/quiet /norestart"
+	}
+	timeout := spec.TimeoutMinutes
+	if timeout <= 0 {
+		timeout = 15
+	}
+	retries := spec.RetryCount
+	if retries < 0 {
+		retries = 3
+	}
+	retryInterval := spec.RetryIntervalMinutes
+	if retryInterval <= 0 {
+		retryInterval = 5
+	}
+
+	job := msiInstallJobXML{
+		ID: prodCode,
+		Product: msiProductXML{
+			Version: version,
+			Download: msiDownloadXML{
+				ContentURLs: []string{strings.TrimSpace(spec.ContentURL)},
+			},
+			Enforcement: msiEnforcementXML{
+				CommandLine:   cmdLine,
+				TimeOut:       timeout,
+				RetryCount:    retries,
+				RetryInterval: retryInterval,
+			},
+		},
+	}
+	if hash := strings.ToUpper(strings.TrimSpace(spec.SHA256)); hash != "" {
+		job.Product.Validation = &msiValidationXML{FileHash: hash}
+	}
+
+	raw, err := xml.Marshal(job)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// EnqueueMSIStatusGets queues OMA-DM Get commands for Status, LastError, and
+// LastErrorDesc of an MSI ProductCode on the target device.
+func EnqueueMSIStatusGets(dbConn *sql.DB, deviceID, productCode string) (int, error) {
+	leaves := []string{"Status", "LastError", "LastErrorDesc"}
+	var queued int
+	for _, leaf := range leaves {
+		if _, err := EnqueueGet(dbConn, deviceID, EncodeMSIProductURI(productCode, leaf)); err != nil {
+			return queued, err
+		}
+		queued++
+	}
+	return queued, nil
+}
+
+// EnqueueMSIInstall queues the EnterpriseDesktopAppManagement <Add>, <Exec>,
+// and initial <Get> status commands in strict FIFO order.
+func EnqueueMSIInstall(dbConn *sql.DB, deviceID string, spec MSIInstallSpec) (int, error) {
+	installURI := EncodeMSIProductURI(spec.ProductCode, "DownloadInstall")
+	rootURI := EncodeMSIProductURI(spec.ProductCode, "")
+
+	// Clear any pending install/uninstall commands for this product so <Add> is
+	// guaranteed to precede <Exec> in command_queue id ASC order.
+	_, _ = dbConn.Exec(db.Rebind(`
+		DELETE FROM command_queue
+		WHERE device_id = ? AND status = 'pending' AND oma_uri IN (?, ?)
+	`), deviceID, installURI, rootURI)
+
+	if _, err := EnqueueAdd(dbConn, deviceID, installURI, ""); err != nil {
+		return 0, err
+	}
+	if _, err := EnqueueExec(dbConn, deviceID, installURI, BuildMSIInstallJobXML(spec)); err != nil {
+		return 1, err
+	}
+	gets, err := EnqueueMSIStatusGets(dbConn, deviceID, spec.ProductCode)
+	return 2 + gets, err
+}
+
+// EnqueueMSIUninstall cancels any pending install for productCode and queues
+// an EnterpriseDesktopAppManagement <Delete> command on the product node.
+func EnqueueMSIUninstall(dbConn *sql.DB, deviceID, productCode string) (int64, error) {
+	installURI := EncodeMSIProductURI(productCode, "DownloadInstall")
+	rootURI := EncodeMSIProductURI(productCode, "")
+
+	_, _ = dbConn.Exec(db.Rebind(`
+		DELETE FROM command_queue
+		WHERE device_id = ? AND status = 'pending' AND oma_uri = ?
+	`), deviceID, installURI)
+
+	return EnqueueDelete(dbConn, deviceID, rootURI)
 }
 
 // formatDeviceURI ensures that Policy CSP URIs have the required ./Device/ prefix
@@ -196,20 +349,30 @@ func buildSyncMLCommands(session *Session, pending []PendingCommand) []interface
 		}
 		if cmd.Payload != "" {
 			item.Data = cmd.Payload
-			format := "chr"
-			// Match OMA-DM MetInf format for numeric and boolean values
-			if isNumeric(cmd.Payload) {
-				format = "int"
-			} else if isBoolean(cmd.Payload) {
-				format = "bool"
-			}
+			if strings.HasPrefix(strings.TrimSpace(cmd.Payload), "<MsiInstallJob") {
+				item.RawXML = true
+				item.Meta = &Meta{
+					Format: &MetaFormat{
+						Xmlns: metInfNS,
+						Value: "xml",
+					},
+				}
+			} else {
+				format := "chr"
+				// Match OMA-DM MetInf format for numeric and boolean values
+				if isNumeric(cmd.Payload) {
+					format = "int"
+				} else if isBoolean(cmd.Payload) {
+					format = "bool"
+				}
 
-			item.Meta = &Meta{
-				Format: &MetaFormat{
-					Xmlns: metInfNS,
-					Value: format,
-				},
-				Type: "text/plain",
+				item.Meta = &Meta{
+					Format: &MetaFormat{
+						Xmlns: metInfNS,
+						Value: format,
+					},
+					Type: "text/plain",
+				}
 			}
 		}
 

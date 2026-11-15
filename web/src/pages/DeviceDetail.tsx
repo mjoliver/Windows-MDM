@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap, Package } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -30,6 +30,7 @@ export function DeviceDetailPage() {
   const [, setPendingCmds]             = useState(0)
   const [compliance, setCompliance]   = useState<DeviceCompliance | null>(null)
   const [posture, setPosture]         = useState<DevicePosture | null>(null)
+  const [apps, setApps]               = useState<DeviceAppInstall[]>([])
   const [commands, setCommands]       = useState<DeviceCommand[]>([])
   const [loading, setLoading]         = useState(true)
   const [error, setError]             = useState<string | null>(null)
@@ -62,6 +63,10 @@ export function DeviceDetailPage() {
     api.devices.posture(id!)
       .then(setPosture)
       .catch(() => setPosture(null))
+
+    api.devices.apps(id!)
+      .then(a => setApps(a ?? []))
+      .catch(() => setApps([]))
   }, [id])
 
   useEffect(() => {
@@ -78,6 +83,7 @@ export function DeviceDetailPage() {
       api.compliance.device(id).then(c => setCompliance(c ?? null)).catch(() => {})
       api.devices.getCommands(id).then(cmd => setCommands(cmd.commands ?? [])).catch(() => {})
       api.devices.posture(id).then(setPosture).catch(() => {})
+      api.devices.apps(id).then(a => setApps(a ?? [])).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
   }, [id])
@@ -290,6 +296,67 @@ export function DeviceDetailPage() {
                   description="No policy configuration received from device yet."
                   style={{ padding: 60 }}
                 />
+              )}
+            </div>
+
+            {/* Managed MSI Applications */}
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '24px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Package size={18} />
+                  Managed Applications
+                </div>
+                <button className="btn btn-sm btn-secondary" onClick={() => navigate('/apps')}>
+                  Manage Catalog
+                </button>
+              </div>
+              {apps.length > 0 ? (
+                <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
+                  <table className="table-static">
+                    <thead>
+                      <tr>
+                        <th>Application</th>
+                        <th>Version</th>
+                        <th>Status</th>
+                        <th>Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {apps.map(app => (
+                        <tr key={app.app_id}>
+                          <td>
+                            <div style={{ fontWeight: 600 }}>{app.app_name}</div>
+                            <div className="mono" style={{ fontSize: '0.7rem', opacity: 0.5 }}>{app.product_code}</div>
+                          </td>
+                          <td>{app.version}</td>
+                          <td>
+                            <Badge
+                              status={
+                                app.status_code === 70
+                                  ? 'compliant'
+                                  : app.status_code === 30 || app.status_code === 60
+                                    ? 'non_compliant'
+                                    : 'pending'
+                              }
+                              label={app.status_label}
+                              dot
+                            />
+                            {app.last_error && app.last_error !== '0' && (
+                              <div style={{ fontSize: '0.7rem', color: 'var(--md-sys-color-error)', marginTop: 4 }}>
+                                {app.last_error}{app.last_error_desc ? `: ${app.last_error_desc}` : ''}
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ opacity: 0.6 }}>{timeAgo(app.updated_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{ padding: '0 32px 28px', opacity: 0.55, fontSize: '0.88rem' }}>
+                  No MSI applications deployed to this device yet.
+                </div>
               )}
             </div>
 

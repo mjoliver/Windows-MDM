@@ -211,6 +211,61 @@ func (h *Handler) reconcileInitialPosture(deviceID string, sess *Session) []inte
 	return buildFirstCheckInCommands(sess)
 }
 
+// reconcileActiveAppPolls issues Status/LastError/LastErrorDesc Get commands once
+// per OMA-DM session for any MSI deployment on this device that has not yet
+// reached a terminal state (30=Download Failed, 60=Install Failed, 70=Installed).
+func (h *Handler) reconcileActiveAppPolls(deviceID string, sess *Session, alreadySent []PendingCommand) []interface{} {
+	if sess.AppStatusQueried {
+		return nil
+	}
+
+	sentURIs := make(map[string]bool, len(alreadySent))
+	for _, c := range alreadySent {
+		if c.CommandType == "Get" {
+			sentURIs[c.OMAURI] = true
+		}
+	}
+
+	rows, err := h.db.Query(dbpkg.Rebind(`
+		SELECT product_code
+		FROM device_app_installs
+		WHERE device_id = ?
+		  AND desired_action = 'install'
+		  AND COALESCE(status_code, -1) NOT IN (30, 60, 70)
+	`), deviceID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var prodCodes []string
+	for rows.Next() {
+		var code string
+		if rows.Scan(&code) == nil && code != "" {
+			prodCodes = append(prodCodes, code)
+		}
+	}
+	if len(prodCodes) == 0 {
+		return nil
+	}
+
+	sess.AppStatusQueried = true
+	var cmds []interface{}
+	for _, code := range prodCodes {
+		for _, leaf := range []string{"Status", "LastError", "LastErrorDesc"} {
+			uri := EncodeMSIProductURI(code, leaf)
+			if sentURIs[uri] {
+				continue
+			}
+			cmds = append(cmds, Get{
+				CmdID: sess.nextCmdID(),
+				Items: []Item{{Target: &LocURI{LocURI: uri}}},
+			})
+		}
+	}
+	return cmds
+}
+
 // HandleOMADM is the main OMA-DM endpoint. Devices POST here on every check-in.
 //
 // Flow:
@@ -350,6 +405,7 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 			outboundCmds = append(outboundCmds, h.reconcileInitialPosture(deviceID, sess)...)
 		}
 		outboundCmds = append(outboundCmds, h.reconcileWNSPush(deviceID, sess)...)
+		outboundCmds = append(outboundCmds, h.reconcileActiveAppPolls(deviceID, sess, pending)...)
 	}
 
 	// ── Step 7: Build SyncML response ────────────────────────────────────
@@ -490,8 +546,39 @@ func (h *Handler) processStatuses(deviceID string, sess *Session, statuses []Sta
 			continue
 		}
 
+		// Look up command metadata so MSI Delete / Exec statuses also update device_app_installs
+		var cmdType, cmdURI string
+		_ = h.db.QueryRow(dbpkg.Rebind(`SELECT command_type, oma_uri FROM command_queue WHERE id = ?`), queueID).Scan(&cmdType, &cmdURI)
+
+		resultCodeForQueue := s.Data
+		if prodCode, leaf, isMSI := ParseMSIProductURI(cmdURI); isMSI {
+			if cmdType == "Delete" && leaf == "" && (s.Data == StatusOK || s.Data == StatusNoContent || s.Data == StatusNotFound) {
+				resultCodeForQueue = StatusOK
+				_, _ = h.db.Exec(dbpkg.Rebind(`
+					UPDATE device_app_installs
+					SET status_code = 0,
+					    status_label = 'Uninstalled',
+					    last_error = '',
+					    last_error_desc = '',
+					    updated_at = CURRENT_TIMESTAMP
+					WHERE device_id = ? AND product_code = ?
+				`), deviceID, prodCode)
+			} else if cmdType == "Exec" && strings.EqualFold(leaf, "DownloadInstall") &&
+				s.Data != StatusOK && s.Data != StatusCreated && s.Data != StatusAccepted && s.Data != StatusNoContent {
+				_, _ = h.db.Exec(dbpkg.Rebind(`
+					UPDATE device_app_installs
+					SET status_code = 60,
+					    status_label = 'Install Failed',
+					    last_error = ?,
+					    last_error_desc = 'SyncML Exec rejected by device',
+					    updated_at = CURRENT_TIMESTAMP
+					WHERE device_id = ? AND product_code = ?
+				`), s.Data, deviceID, prodCode)
+			}
+		}
+
 		// Update command status in DB
-		if err := markCommandResult(h.db, queueID, s.Data, ""); err != nil {
+		if err := markCommandResult(h.db, queueID, resultCodeForQueue, ""); err != nil {
 			slog.Error("mdm: failed to mark command result", "queue_id", queueID, "err", err)
 		}
 	}

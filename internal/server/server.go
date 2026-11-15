@@ -318,6 +318,7 @@ func (s *Server) routes() {
 			r.With(admin).Post("/devices/{id}/sync", s.api.HandleSyncDevice)
 			r.With(admin).Post("/devices/{id}/push", s.api.HandlePushWakeDevice)
 			r.Get("/devices/{id}/commands", s.api.HandleGetDeviceCommands)
+			r.Get("/devices/{id}/apps", s.api.HandleGetDeviceApps)
 			r.Get("/devices/{id}/posture", s.api.HandleGetDevicePosture)
 			r.With(admin).Post("/devices/{id}/posture/refresh", s.api.HandleRefreshDevicePosture)
 
@@ -340,6 +341,16 @@ func (s *Server) routes() {
 			r.With(admin).Delete("/groups/{id}", s.api.HandleDeleteGroup)
 			r.With(admin).Put("/groups/{id}/devices", s.api.HandleAssignDeviceToGroup)
 			r.With(admin).Put("/groups/{id}/profiles", s.api.HandleAssignProfileToGroup)
+
+			// Applications (Win32 MSI via EnterpriseDesktopAppManagement CSP)
+			r.With(admin).Post("/apps/inspect", s.api.HandleInspectMSI)
+			r.Get("/apps", s.api.HandleListApps)
+			r.With(admin).Post("/apps", s.api.HandleCreateApp)
+			r.Get("/apps/{id}", s.api.HandleGetApp)
+			r.With(admin).Delete("/apps/{id}", s.api.HandleDeleteApp)
+			r.With(admin).Put("/apps/{id}/groups", s.api.HandleAssignAppGroups)
+			r.With(admin).Post("/apps/{id}/install", s.api.HandleInstallAppOnDevices)
+			r.With(admin).Post("/apps/{id}/uninstall", s.api.HandleUninstallAppOnDevices)
 
 			// Compliance & Security Posture
 			r.Get("/compliance", s.api.HandleFleetCompliance)

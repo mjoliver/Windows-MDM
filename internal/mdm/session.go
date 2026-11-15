@@ -52,6 +52,7 @@ type Session struct {
 	IsFirst           bool // first session after enrollment (alert 1200)
 	Interrogations    int  // device-info Get rounds issued this session
 	WNSChannelQueried bool // WNS Push/ChannelURI Get issued this session
+	AppStatusQueried  bool // MSI deployment Status Get issued this session
 	StartedAt         time.Time
 	LastSeen          time.Time
 	CmdMap            map[string]int // maps CmdID (from SyncML) -> queueID (from DB)
@@ -155,6 +156,9 @@ func updateDeviceFromResults(db *sql.DB, deviceID string, sess *Session, results
 
 	// Persist WNS Push channel URI if reported
 	updateWNSChannel(db, deviceID, updates)
+
+	// Persist EnterpriseDesktopAppManagement MSI install status if reported
+	updateAppInstalls(db, deviceID, updates)
 
 	// The rest go to compliance_records
 	updateCompliance(db, deviceID, updates)
@@ -364,6 +368,107 @@ func updateWNSChannel(db *sql.DB, deviceID string, values map[string]string) {
 	} else {
 		slog.Info("mdm: registered WNS push channel for device", "device_id", deviceID)
 	}
+}
+
+func updateAppInstalls(db *sql.DB, deviceID string, values map[string]string) {
+	type appReport struct {
+		hasStatus   bool
+		statusCode  int
+		hasLastErr  bool
+		lastErr     string
+		hasLastDesc bool
+		lastDesc    string
+	}
+	reports := make(map[string]*appReport)
+
+	for rawURI, val := range values {
+		prodCode, leaf, ok := ParseMSIProductURI(rawURI)
+		if !ok || leaf == "" {
+			continue
+		}
+		rep := reports[prodCode]
+		if rep == nil {
+			rep = &appReport{}
+			reports[prodCode] = rep
+		}
+		trimmed := strings.TrimSpace(val)
+		switch strings.ToLower(leaf) {
+		case "status":
+			if n, err := strconv.Atoi(trimmed); err == nil {
+				rep.hasStatus = true
+				rep.statusCode = n
+			}
+		case "lasterror":
+			rep.hasLastErr = true
+			rep.lastErr = trimmed
+		case "lasterrordesc":
+			rep.hasLastDesc = true
+			rep.lastDesc = trimmed
+		}
+	}
+
+	for prodCode, rep := range reports {
+		if rep.hasStatus {
+			label := MSIStatusLabel(rep.statusCode)
+			lastErr := rep.lastErr
+			lastDesc := rep.lastDesc
+			if rep.statusCode == 70 && (lastErr == "0" || lastErr == "0x0" || lastErr == "0x00000000") {
+				lastErr = ""
+				lastDesc = ""
+			}
+			res, err := db.Exec(dbpkg.Rebind(`
+				UPDATE device_app_installs
+				SET status_code = ?,
+				    status_label = ?,
+				    last_error = CASE WHEN ? = 1 THEN ? ELSE last_error END,
+				    last_error_desc = CASE WHEN ? = 1 THEN ? ELSE last_error_desc END,
+				    updated_at = CURRENT_TIMESTAMP
+				WHERE device_id = ? AND product_code = ?
+			`),
+				rep.statusCode, label,
+				boolToInt(rep.hasLastErr || rep.statusCode == 70), lastErr,
+				boolToInt(rep.hasLastDesc || rep.statusCode == 70), lastDesc,
+				deviceID, prodCode,
+			)
+			if err != nil {
+				slog.Error("mdm: updating MSI app status", "device_id", deviceID, "product_code", prodCode, "err", err)
+				continue
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				var appID string
+				if qErr := db.QueryRow(dbpkg.Rebind(`SELECT id FROM msi_apps WHERE product_code = ?`), prodCode).Scan(&appID); qErr == nil && appID != "" {
+					_, _ = db.Exec(dbpkg.Rebind(`
+						INSERT INTO device_app_installs (
+							device_id, app_id, product_code, desired_action,
+							status_code, status_label, last_error, last_error_desc, updated_at
+						) VALUES (?, ?, ?, 'install', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+					`), deviceID, appID, prodCode, rep.statusCode, label, lastErr, lastDesc)
+				}
+			}
+			continue
+		}
+
+		if rep.hasLastErr || rep.hasLastDesc {
+			_, _ = db.Exec(dbpkg.Rebind(`
+				UPDATE device_app_installs
+				SET last_error = CASE WHEN ? = 1 THEN ? ELSE last_error END,
+				    last_error_desc = CASE WHEN ? = 1 THEN ? ELSE last_error_desc END,
+				    updated_at = CURRENT_TIMESTAMP
+				WHERE device_id = ? AND product_code = ?
+			`),
+				boolToInt(rep.hasLastErr), rep.lastErr,
+				boolToInt(rep.hasLastDesc), rep.lastDesc,
+				deviceID, prodCode,
+			)
+		}
+	}
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func updateCompliance(db *sql.DB, deviceID string, values map[string]string) {
