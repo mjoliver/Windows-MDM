@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, ShieldAlert, Zap, Package, Layers, Search, KeyRound, UserCheck, Eye, Plus, Copy } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, ShieldAlert, GlobeLock, Zap, Package, Layers, Search, KeyRound, UserCheck, Eye, Plus, Copy } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials, type DeviceSecurityState } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials, type DeviceSecurityState, type DeviceConnectivityItem } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -33,6 +33,7 @@ export function DeviceDetailPage() {
   const [bitlocker, setBitlocker]     = useState<DeviceBitLocker | null>(null)
   const [laps, setLaps]               = useState<DeviceLAPSStatus | null>(null)
   const [secState, setSecState]       = useState<DeviceSecurityState | null>(null)
+  const [connItems, setConnItems]     = useState<DeviceConnectivityItem[]>([])
   const [updateTel, setUpdateTel]     = useState<DeviceUpdateTelemetry | null>(null)
   const [apps, setApps]               = useState<DeviceAppInstall[]>([])
   const [inventory, setInventory]     = useState<DeviceSoftwareInventory | null>(null)
@@ -97,6 +98,10 @@ export function DeviceDetailPage() {
       .then(setSecState)
       .catch(() => setSecState(null))
 
+    api.devices.connectivity(id!)
+      .then(c => setConnItems(c ?? []))
+      .catch(() => setConnItems([]))
+
     api.updates.device(id!)
       .then(setUpdateTel)
       .catch(() => setUpdateTel(null))
@@ -121,6 +126,7 @@ export function DeviceDetailPage() {
       api.bitlocker.device(id).then(setBitlocker).catch(() => {})
       api.laps.device(id).then(setLaps).catch(() => {})
       api.devices.security(id).then(setSecState).catch(() => {})
+      api.devices.connectivity(id).then(c => setConnItems(c ?? [])).catch(() => {})
       api.updates.device(id).then(setUpdateTel).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
@@ -847,6 +853,39 @@ export function DeviceDetailPage() {
                   </span>
                 )}
               </div>
+            </div>
+
+            {/* Connectivity & PKI Profiles */}
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '24px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <GlobeLock size={18} />
+                    Connectivity &amp; PKI Profiles
+                  </div>
+                  <Badge status={connItems.length > 0 ? 'compliant' : 'unknown'} label={`${connItems.length} deployed`} />
+                </div>
+                <button className="btn btn-sm btn-secondary" onClick={() => navigate('/connectivity')}>
+                  Manage Profiles
+                </button>
+              </div>
+              {connItems.length > 0 ? (
+                <div style={{ padding: '0 32px 26px', display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                  {connItems.map(it => (
+                    <div
+                      key={it.profile_id}
+                      style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)' }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: '0.86rem' }}>{it.profile_name}</div>
+                      <div className="mono" style={{ fontSize: '0.7rem', opacity: 0.6 }}>{it.profile_type} • {it.delete_oma_uri}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ padding: '0 32px 28px', opacity: 0.55, fontSize: '0.88rem' }}>
+                  No Root CA certificates, Wi-Fi, or VPNv2 profiles deployed to this device yet.
+                </div>
+              )}
             </div>
 
             {/* History Table */}

@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Monitor, Shield, Users,
-  CheckSquare, LogOut, UserCog, ScrollText, Package, RefreshCw
+  CheckSquare, LogOut, UserCog, ScrollText, Package, RefreshCw, GlobeLock
 } from 'lucide-react'
 import { api, type Me } from '../api'
 import { useEffect, useState } from 'react'
@@ -13,9 +13,10 @@ const navItems = [
   { to: '/devices',   icon: Monitor,         label: 'Devices' },
   { to: '/profiles',  icon: Shield,          label: 'Profiles' },
   { to: '/groups',    icon: Users,           label: 'Groups' },
-  { to: '/apps',      icon: Package,         label: 'Applications' },
-  { to: '/updates',   icon: RefreshCw,       label: 'Update Rings' },
-  { to: '/compliance',icon: CheckSquare,     label: 'Compliance' },
+  { to: '/apps',        icon: Package,         label: 'Applications' },
+  { to: '/updates',     icon: RefreshCw,       label: 'Update Rings' },
+  { to: '/connectivity',icon: GlobeLock,       label: 'Connectivity & PKI' },
+  { to: '/compliance',  icon: CheckSquare,     label: 'Compliance' },
 ]
 
 const adminNavItems = [

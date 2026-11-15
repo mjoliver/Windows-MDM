@@ -498,6 +498,41 @@ export interface DeviceSecurityState {
   updated_at: string | null
 }
 
+export interface ConnectivityProfile {
+  id: string
+  name: string
+  profile_type: 'root_ca' | 'intermediate_ca' | 'wifi' | 'vpn'
+  cert_thumbprint?: string
+  cert_subject?: string
+  cert_not_after?: string | null
+  wifi_ssid?: string
+  wifi_security?: string
+  wifi_auto_connect: boolean
+  wifi_hidden: boolean
+  has_wifi_psk: boolean
+  vpn_server?: string
+  vpn_protocol?: string
+  vpn_auth_method?: string
+  vpn_split_tunnel: boolean
+  vpn_always_on: boolean
+  vpn_trusted_network?: string
+  target_all_devices: boolean
+  group_ids: string[]
+  deployed_devices: number
+  created_by: string
+  created_at: string
+  updated_at: string
+  commands_queued?: number
+}
+
+export interface DeviceConnectivityItem {
+  profile_id: string
+  profile_name: string
+  profile_type: string
+  delete_oma_uri: string
+  updated_at: string
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -531,6 +566,7 @@ export const api = {
       post<{ status: string; scan_type: string; commands_queued: number }>(`/devices/${enc(id)}/defender/scan`, { scan_type: scanType }),
     defenderUpdateSignatures: (id: string) =>
       post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/defender/update-signatures`),
+    connectivity: (id: string) => get<DeviceConnectivityItem[]>(`/devices/${enc(id)}/connectivity`),
     pushWake: (id: string) => post<{ status: string; wns_status?: string }>(`/devices/${enc(id)}/push`),
   },
 
@@ -813,5 +849,30 @@ export const api = {
     }) => post<FirewallRule>('/security/firewall-rules', data),
     deleteFirewallRule: (id: string) =>
       del<{ deleted: boolean; rule_key: string; commands_queued: number }>(`/security/firewall-rules/${enc(id)}`),
+  },
+
+  // Connectivity & PKI: RootCATrustedCertificates, WiFi & VPNv2 CSPs
+  connectivity: {
+    listProfiles: () => get<ConnectivityProfile[]>('/connectivity/profiles'),
+    createProfile: (data: {
+      name: string
+      profile_type: 'root_ca' | 'intermediate_ca' | 'wifi' | 'vpn'
+      certificate_pem?: string
+      wifi_ssid?: string
+      wifi_security?: string
+      wifi_auto_connect?: boolean
+      wifi_hidden?: boolean
+      wifi_psk?: string
+      vpn_server?: string
+      vpn_protocol?: string
+      vpn_auth_method?: string
+      vpn_split_tunnel?: boolean
+      vpn_always_on?: boolean
+      vpn_trusted_network?: string
+      target_all_devices?: boolean
+      group_ids?: string[]
+    }) => post<ConnectivityProfile>('/connectivity/profiles', data),
+    deleteProfile: (id: string) =>
+      del<{ deleted: boolean; commands_queued: number }>(`/connectivity/profiles/${enc(id)}`),
   },
 }

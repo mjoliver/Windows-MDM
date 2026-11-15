@@ -392,23 +392,45 @@ func (h *Handler) resolveVaultPayloads(deviceID string, pending []PendingCommand
 		return
 	}
 	for i := range pending {
-		if pending[i].Payload != VaultLAPSSentinel {
+		if pending[i].Payload == VaultLAPSSentinel {
+			var encPwd string
+			err := h.db.QueryRow(dbpkg.Rebind(`
+				SELECT pending_password_encrypted FROM device_local_admins WHERE device_id = ?
+			`), deviceID).Scan(&encPwd)
+			if err != nil || encPwd == "" {
+				slog.Error("mdm: missing encrypted pending LAPS password", "device_id", deviceID, "err", err)
+				continue
+			}
+			plain, err := h.vault.Decrypt(encPwd, LAPSVaultAADPrefix+deviceID)
+			if err != nil {
+				slog.Error("mdm: decrypting pending LAPS password for SyncML delivery", "device_id", deviceID, "err", err)
+				continue
+			}
+			pending[i].Payload = plain
 			continue
 		}
-		var encPwd string
-		err := h.db.QueryRow(dbpkg.Rebind(`
-			SELECT pending_password_encrypted FROM device_local_admins WHERE device_id = ?
-		`), deviceID).Scan(&encPwd)
-		if err != nil || encPwd == "" {
-			slog.Error("mdm: missing encrypted pending LAPS password", "device_id", deviceID, "err", err)
-			continue
+
+		if idx := strings.Index(pending[i].Payload, VaultWiFiSentinelPrefix); idx >= 0 {
+			rest := pending[i].Payload[idx+len(VaultWiFiSentinelPrefix):]
+			if end := strings.IndexByte(rest, ']'); end > 0 {
+				profID := rest[:end]
+				sentinel := VaultWiFiSentinelPrefix + profID + "]"
+				var encPSK string
+				err := h.db.QueryRow(dbpkg.Rebind(`
+					SELECT wifi_psk_encrypted FROM network_pki_profiles WHERE id = ?
+				`), profID).Scan(&encPSK)
+				if err != nil || encPSK == "" {
+					slog.Error("mdm: missing encrypted Wi-Fi PSK", "profile_id", profID, "err", err)
+					continue
+				}
+				plainPSK, err := h.vault.Decrypt(encPSK, WiFiVaultAADPrefix+profID)
+				if err != nil {
+					slog.Error("mdm: decrypting Wi-Fi PSK for SyncML delivery", "profile_id", profID, "err", err)
+					continue
+				}
+				pending[i].Payload = strings.ReplaceAll(pending[i].Payload, sentinel, xmlEscapeText(plainPSK))
+			}
 		}
-		plain, err := h.vault.Decrypt(encPwd, LAPSVaultAADPrefix+deviceID)
-		if err != nil {
-			slog.Error("mdm: decrypting pending LAPS password for SyncML delivery", "device_id", deviceID, "err", err)
-			continue
-		}
-		pending[i].Payload = plain
 	}
 }
 
