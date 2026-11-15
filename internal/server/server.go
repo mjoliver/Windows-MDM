@@ -351,6 +351,9 @@ func (s *Server) routes() {
 			r.With(admin).Post("/devices/{id}/laps/reveal", s.api.HandleRevealDeviceLAPS)
 			r.With(admin).Post("/devices/{id}/laps/rotate", s.api.HandleRotateDeviceLAPS)
 			r.Get("/devices/{id}/updates", s.api.HandleGetDeviceUpdates)
+			r.Get("/devices/{id}/security", s.api.HandleGetDeviceSecurity)
+			r.With(admin).Post("/devices/{id}/defender/scan", s.api.HandleDefenderScanDevice)
+			r.With(admin).Post("/devices/{id}/defender/update-signatures", s.api.HandleDefenderUpdateSignatures)
 
 			// Policy catalog (order matters: specific before param)
 			r.Get("/catalog/csps", s.api.HandleListCSPs)
@@ -403,6 +406,11 @@ func (s *Server) routes() {
 			r.With(admin).Put("/bitlocker/policy", s.api.HandleUpdateBitLockerPolicy)
 			r.Get("/laps/policy", s.api.HandleGetLAPSPolicy)
 			r.With(admin).Put("/laps/policy", s.api.HandleUpdateLAPSPolicy)
+			r.Get("/security/policy", s.api.HandleGetEndpointSecurityPolicy)
+			r.With(admin).Put("/security/policy", s.api.HandleUpdateEndpointSecurityPolicy)
+			r.Get("/security/firewall-rules", s.api.HandleListFirewallRules)
+			r.With(admin).Post("/security/firewall-rules", s.api.HandleCreateFirewallRule)
+			r.With(admin).Delete("/security/firewall-rules/{id}", s.api.HandleDeleteFirewallRule)
 
 			// Administration: Users & Audit Log
 			r.With(admin).Get("/users", s.api.HandleListUsers)

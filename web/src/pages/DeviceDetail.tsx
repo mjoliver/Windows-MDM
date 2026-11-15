@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap, Package, Layers, Search, KeyRound, UserCheck, Eye, Plus, Copy } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, ShieldAlert, Zap, Package, Layers, Search, KeyRound, UserCheck, Eye, Plus, Copy } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials, type DeviceSecurityState } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -32,6 +32,7 @@ export function DeviceDetailPage() {
   const [posture, setPosture]         = useState<DevicePosture | null>(null)
   const [bitlocker, setBitlocker]     = useState<DeviceBitLocker | null>(null)
   const [laps, setLaps]               = useState<DeviceLAPSStatus | null>(null)
+  const [secState, setSecState]       = useState<DeviceSecurityState | null>(null)
   const [updateTel, setUpdateTel]     = useState<DeviceUpdateTelemetry | null>(null)
   const [apps, setApps]               = useState<DeviceAppInstall[]>([])
   const [inventory, setInventory]     = useState<DeviceSoftwareInventory | null>(null)
@@ -92,6 +93,10 @@ export function DeviceDetailPage() {
       .then(setLaps)
       .catch(() => setLaps(null))
 
+    api.devices.security(id!)
+      .then(setSecState)
+      .catch(() => setSecState(null))
+
     api.updates.device(id!)
       .then(setUpdateTel)
       .catch(() => setUpdateTel(null))
@@ -115,6 +120,7 @@ export function DeviceDetailPage() {
       api.devices.inventory(id).then(setInventory).catch(() => {})
       api.bitlocker.device(id).then(setBitlocker).catch(() => {})
       api.laps.device(id).then(setLaps).catch(() => {})
+      api.devices.security(id).then(setSecState).catch(() => {})
       api.updates.device(id).then(setUpdateTel).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
@@ -771,6 +777,76 @@ export function DeviceDetailPage() {
                   No ephemeral local administrator account provisioned yet. Enable Cloud LAPS on the Compliance page or click <strong>Provision Admin</strong> above.
                 </div>
               )}
+            </div>
+
+            {/* Microsoft Defender Antivirus & Firewall CSP Controls */}
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '24px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <ShieldAlert size={18} />
+                    Defender Antivirus & Firewall
+                  </div>
+                  <Badge
+                    status={secState?.baseline_enforced ? 'compliant' : 'unknown'}
+                    label={secState?.baseline_enforced ? 'Baseline Enforced' : 'Unmanaged Baseline'}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    disabled={!!actionLoading}
+                    onClick={() => action('def-sig', async () => {
+                      await api.devices.defenderUpdateSignatures(id!)
+                      toast.success('Queued Microsoft Defender security intelligence update (UpdateSignature CSP).')
+                    })}
+                  >
+                    <RefreshCw size={13} className={actionLoading === 'def-sig' ? 'spin' : ''} />
+                    Update Signatures
+                  </button>
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    disabled={!!actionLoading}
+                    onClick={() => action('def-quick', async () => {
+                      await api.devices.defenderScan(id!, 'quick')
+                      toast.success('Queued Microsoft Defender Quick Scan via Defender CSP.')
+                    })}
+                  >
+                    <ShieldCheck size={13} />
+                    Quick Scan
+                  </button>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    disabled={!!actionLoading}
+                    onClick={() => action('def-full', async () => {
+                      await api.devices.defenderScan(id!, 'full')
+                      toast.success('Queued Microsoft Defender Full Scan via Defender CSP.')
+                    })}
+                  >
+                    Full Scan
+                  </button>
+                </div>
+              </div>
+              <div style={{ padding: '0 32px 26px', display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center', fontSize: '0.84rem' }}>
+                <span style={{ opacity: 0.7 }}>
+                  Last Remote Action:{' '}
+                  <strong>
+                    {secState?.last_defender_action
+                      ? `${secState.last_defender_action.replace(/_/g, ' ')} (${secState.last_defender_action_at ? timeAgo(secState.last_defender_action_at) : 'queued'})`
+                      : 'None'}
+                  </strong>
+                </span>
+                {(secState?.deployed_rule_keys?.length ?? 0) > 0 && (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <span style={{ opacity: 0.7 }}>Custom Firewall Rules:</span>
+                    {secState!.deployed_rule_keys.map(rk => (
+                      <code key={rk} className="mono" style={{ padding: '2px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', fontSize: '0.75rem' }}>
+                        {rk}
+                      </code>
+                    ))}
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* History Table */}

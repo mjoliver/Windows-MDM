@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, UserCheck, Save } from 'lucide-react'
+import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, UserCheck, Save, ShieldAlert, Plus, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
-import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type Group } from '../api'
+import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type EndpointSecurityPolicy, type FirewallRule, type Group } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { useToast } from '../hooks/useToast'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
@@ -20,9 +20,18 @@ export function CompliancePage() {
   const [posture, setPosture]   = useState<FleetPostureSummary | null>(null)
   const [bitlocker, setBitlocker] = useState<BitLockerPolicy | null>(null)
   const [laps, setLaps]         = useState<LAPSPolicy | null>(null)
+  const [secPolicy, setSecPolicy] = useState<EndpointSecurityPolicy | null>(null)
+  const [fwRules, setFwRules]   = useState<FirewallRule[]>([])
   const [groups, setGroups]     = useState<Group[]>([])
   const [savingBL, setSavingBL] = useState(false)
   const [savingLAPS, setSavingLAPS] = useState(false)
+  const [savingSec, setSavingSec] = useState(false)
+  const [fwName, setFwName]     = useState('')
+  const [fwDir, setFwDir]       = useState<'IN' | 'OUT'>('IN')
+  const [fwAction, setFwAction] = useState<number>(0)
+  const [fwProto, setFwProto]   = useState<number>(6)
+  const [fwPorts, setFwPorts]   = useState('')
+  const [addingFw, setAddingFw] = useState(false)
   const [devices, setDevices]   = useState<Device[]>([])
   const [, setLoading]          = useState(true)
   const navigate = useNavigate()
@@ -35,13 +44,17 @@ export function CompliancePage() {
       api.compliance.postureSummary().catch(() => null),
       api.bitlocker.policy().catch(() => null),
       api.laps.policy().catch(() => null),
+      api.security.policy().catch(() => null),
+      api.security.listFirewallRules().catch(() => []),
       api.groups.list().catch(() => []),
-    ]).then(([f, d, p, bl, lp, g]) => {
+    ]).then(([f, d, p, bl, lp, sp, fr, g]) => {
       setFleet(f)
       setDevices(d)
       setPosture(p)
       setBitlocker(bl)
       setLaps(lp)
+      setSecPolicy(sp)
+      setFwRules(fr)
       setGroups(g)
     }).finally(() => setLoading(false))
   }, [])
@@ -97,6 +110,77 @@ export function CompliancePage() {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setSavingLAPS(false)
+    }
+  }
+
+  const saveSecurityPolicy = async () => {
+    if (!secPolicy) return
+    setSavingSec(true)
+    try {
+      const updated = await api.security.updatePolicy({
+        enabled: secPolicy.enabled,
+        allow_realtime_monitoring: secPolicy.allow_realtime_monitoring,
+        allow_behavior_monitoring: secPolicy.allow_behavior_monitoring,
+        allow_cloud_protection: secPolicy.allow_cloud_protection,
+        cloud_block_level: secPolicy.cloud_block_level,
+        pua_protection: secPolicy.pua_protection,
+        enable_network_protection: secPolicy.enable_network_protection,
+        check_sigs_before_scan: secPolicy.check_sigs_before_scan,
+        firewall_domain_enabled: secPolicy.firewall_domain_enabled,
+        firewall_private_enabled: secPolicy.firewall_private_enabled,
+        firewall_public_enabled: secPolicy.firewall_public_enabled,
+        block_inbound_domain: secPolicy.block_inbound_domain,
+        block_inbound_private: secPolicy.block_inbound_private,
+        block_inbound_public: secPolicy.block_inbound_public,
+        target_all_devices: secPolicy.target_all_devices,
+        group_ids: secPolicy.group_ids,
+      })
+      setSecPolicy(updated)
+      toast.success(
+        updated.enabled
+          ? `Defender & Firewall baseline saved — queued ${updated.commands_queued ?? 0} CSP command(s) across ${updated.enforced_devices} device(s).`
+          : 'Defender CSP baseline disabled and retracted.'
+      )
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingSec(false)
+    }
+  }
+
+  const addFirewallRule = async () => {
+    if (!fwName.trim()) {
+      toast.error('Enter a rule name first.')
+      return
+    }
+    setAddingFw(true)
+    try {
+      const created = await api.security.createFirewallRule({
+        name: fwName.trim(),
+        direction: fwDir,
+        action: fwAction,
+        protocol: fwProto,
+        local_port_ranges: (fwProto === 6 || fwProto === 17) ? fwPorts.trim() : '',
+        profiles: 7,
+      })
+      setFwRules(prev => [created, ...prev])
+      setFwName('')
+      setFwPorts('')
+      toast.success(`Deployed Atomic Firewall CSP rule '${created.rule_key}' (${created.commands_queued ?? 0} command(s) queued).`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAddingFw(false)
+    }
+  }
+
+  const removeFirewallRule = async (rule: FirewallRule) => {
+    try {
+      const res = await api.security.deleteFirewallRule(rule.id)
+      setFwRules(prev => prev.filter(r => r.id !== rule.id))
+      toast.success(`Deleted rule '${rule.rule_key}' (${res.commands_queued} <Delete> command(s) queued).`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -519,6 +603,209 @@ export function CompliancePage() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Microsoft Defender Antivirus & Windows Firewall CSP Baseline */}
+      {secPolicy && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
+            <div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <ShieldAlert size={18} color="var(--accent)" />
+                Defender Antivirus & Firewall CSP Baseline
+                <Badge status={secPolicy.enabled ? 'compliant' : 'unknown'} label={secPolicy.enabled ? 'Enforced' : 'Disabled'} />
+              </div>
+              <div style={{ fontSize: '0.8rem', opacity: 0.65, marginTop: 4 }}>
+                Enforce <code className="mono">Policy/Config/Defender</code>, <code className="mono">Firewall/MdmStore</code> profiles & transactional <code className="mono">&lt;Atomic&gt;</code> custom firewall rules • {secPolicy.enforced_devices} device{secPolicy.enforced_devices !== 1 ? 's' : ''} enforced
+              </div>
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={saveSecurityPolicy} disabled={savingSec}>
+              <Save size={14} />
+              {savingSec ? 'Saving…' : 'Save Security Baseline'}
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 16 }}>
+            {[
+              { key: 'enabled', title: 'Enable Security Baseline', sub: 'Enforce Defender + Firewall CSPs', val: secPolicy.enabled },
+              { key: 'allow_realtime_monitoring', title: 'Real-Time Monitoring', sub: 'Continuous Defender AV scanning', val: secPolicy.allow_realtime_monitoring },
+              { key: 'allow_cloud_protection', title: 'MAPS Cloud Protection', sub: 'Real-time cloud block telemetry', val: secPolicy.allow_cloud_protection },
+              { key: 'firewall_public_enabled', title: 'All Firewall Profiles On', sub: 'Domain, Private & Public inbound block', val: secPolicy.firewall_public_enabled },
+            ].map(item => (
+              <label key={item.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={item.val}
+                  onChange={e => {
+                    const v = e.target.checked
+                    if (item.key === 'firewall_public_enabled') {
+                      setSecPolicy({
+                        ...secPolicy,
+                        firewall_domain_enabled: v,
+                        firewall_private_enabled: v,
+                        firewall_public_enabled: v,
+                        block_inbound_domain: v,
+                        block_inbound_private: v,
+                        block_inbound_public: v,
+                      })
+                    } else {
+                      setSecPolicy({ ...secPolicy, [item.key]: v })
+                    }
+                  }}
+                />
+                <div>
+                  <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>{item.title}</div>
+                  <div style={{ fontSize: '0.72rem', opacity: 0.6 }}>{item.sub}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 16, marginBottom: 22 }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Cloud Block Level</label>
+              <select
+                className="form-input"
+                value={secPolicy.cloud_block_level}
+                onChange={e => setSecPolicy({ ...secPolicy, cloud_block_level: Number(e.target.value) })}
+              >
+                <option value={0}>Default</option>
+                <option value={2}>High (Recommended)</option>
+                <option value={4}>High Plus</option>
+                <option value={6}>Zero Tolerance</option>
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">PUA Protection</label>
+              <select
+                className="form-input"
+                value={secPolicy.pua_protection}
+                onChange={e => setSecPolicy({ ...secPolicy, pua_protection: Number(e.target.value) })}
+              >
+                <option value={1}>Block Potentially Unwanted Apps</option>
+                <option value={2}>Audit Only</option>
+                <option value={0}>Disabled</option>
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">SmartScreen Network Protection</label>
+              <select
+                className="form-input"
+                value={secPolicy.enable_network_protection}
+                onChange={e => setSecPolicy({ ...secPolicy, enable_network_protection: Number(e.target.value) })}
+              >
+                <option value={1}>Block Malicious IPs/Domains</option>
+                <option value={2}>Audit Mode</option>
+                <option value={0}>Disabled</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Custom Firewall Rules */}
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 18 }}>
+            <div style={{ fontSize: '0.86rem', fontWeight: 700, marginBottom: 10 }}>
+              Custom Windows Firewall Rules (<code className="mono">Firewall/MdmStore/FirewallRules</code>)
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 110px 110px 120px 140px auto', gap: 10, alignItems: 'end', marginBottom: 14 }}>
+              <div>
+                <label className="form-label">Rule Name</label>
+                <input
+                  className="form-input"
+                  placeholder="e.g. Block Inbound SMB 445"
+                  value={fwName}
+                  onChange={e => setFwName(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="form-label">Direction</label>
+                <select className="form-input" value={fwDir} onChange={e => setFwDir(e.target.value as 'IN' | 'OUT')}>
+                  <option value="IN">Inbound</option>
+                  <option value="OUT">Outbound</option>
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Action</label>
+                <select className="form-input" value={fwAction} onChange={e => setFwAction(Number(e.target.value))}>
+                  <option value={0}>Block</option>
+                  <option value={1}>Allow</option>
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Protocol</label>
+                <select className="form-input" value={fwProto} onChange={e => setFwProto(Number(e.target.value))}>
+                  <option value={6}>TCP</option>
+                  <option value={17}>UDP</option>
+                  <option value={1}>ICMPv4</option>
+                  <option value={256}>Any</option>
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Local Port(s)</label>
+                <input
+                  className="form-input mono"
+                  placeholder="445 or 8000-8080"
+                  disabled={fwProto !== 6 && fwProto !== 17}
+                  value={fwPorts}
+                  onChange={e => setFwPorts(e.target.value)}
+                />
+              </div>
+              <button className="btn btn-secondary" onClick={addFirewallRule} disabled={addingFw}>
+                <Plus size={14} />
+                {addingFw ? 'Adding…' : 'Add Rule'}
+              </button>
+            </div>
+
+            {fwRules.length > 0 && (
+              <div className="table-wrap" style={{ marginTop: 8 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Rule</th>
+                      <th>Direction</th>
+                      <th>Action</th>
+                      <th>Protocol / Ports</th>
+                      <th>Deployed</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fwRules.map(r => (
+                      <tr key={r.id}>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{r.name}</div>
+                          <div className="mono" style={{ fontSize: '0.72rem', opacity: 0.55 }}>{r.rule_key}</div>
+                        </td>
+                        <td><Badge status="unknown" label={r.direction === 'IN' ? 'Inbound' : 'Outbound'} dot={false} /></td>
+                        <td>
+                          <Badge
+                            status={r.action === 0 ? 'non_compliant' : 'compliant'}
+                            label={r.action === 0 ? 'Block' : 'Allow'}
+                            dot={false}
+                          />
+                        </td>
+                        <td className="mono" style={{ fontSize: '0.8rem' }}>
+                          {r.protocol === 6 ? 'TCP' : r.protocol === 17 ? 'UDP' : r.protocol === 1 ? 'ICMPv4' : 'Any'}
+                          {r.local_port_ranges ? ` : ${r.local_port_ranges}` : ''}
+                        </td>
+                        <td>{r.deployed_devices} PC{r.deployed_devices !== 1 ? 's' : ''}</td>
+                        <td style={{ textAlign: 'right' }}>
+                          <button
+                            className="btn btn-sm btn-secondary"
+                            style={{ color: 'var(--md-sys-color-error)' }}
+                            onClick={() => removeFirewallRule(r)}
+                            title="Delete firewall rule from fleet"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

@@ -149,11 +149,12 @@ func ApplyDevice(db *sql.DB, deviceID string) {
 	retracted := retractUngoverned(db, deviceID, desired)
 	blQueued := ReconcileBitLockerDevice(db, deviceID)
 	wuQueued := ReconcileUpdateRingDevice(db, deviceID)
+	secQueued := ReconcileEndpointSecurityDevice(db, deviceID)
 
-	if queued > 0 || retracted > 0 || blQueued > 0 || wuQueued > 0 {
+	if queued > 0 || retracted > 0 || blQueued > 0 || wuQueued > 0 || secQueued > 0 {
 		slog.Info("policy: applied settings to device",
 			"device_id", deviceID,
-			"commands_queued", queued+blQueued+wuQueued,
+			"commands_queued", queued+blQueued+wuQueued+secQueued,
 			"retracted", retracted,
 			"total_settings", len(settings),
 		)

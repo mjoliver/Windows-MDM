@@ -189,6 +189,14 @@ type Exec struct {
 	Items   []Item   `xml:"Item"`
 }
 
+// Atomic wraps child commands in an all-or-nothing SyncML transaction
+// (required by CSPs such as Firewall/MdmStore/FirewallRules).
+type Atomic struct {
+	XMLName  xml.Name      `xml:"Atomic"`
+	CmdID    string        `xml:"CmdID"`
+	Commands []interface{} `xml:",omitempty"`
+}
+
 // ── Well-known OMA-URIs used by Latchz ───────────────────────────────────────
 
 const (

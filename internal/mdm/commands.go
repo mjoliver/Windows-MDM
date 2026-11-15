@@ -2,6 +2,7 @@ package mdm
 
 import (
 	"database/sql"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -114,6 +115,24 @@ func EnqueueAdd(dbConn *sql.DB, deviceID, omaURI, payload string) (int64, error)
 // policy node from the device.
 func EnqueueDelete(dbConn *sql.DB, deviceID, omaURI string) (int64, error) {
 	return enqueue(dbConn, deviceID, "Delete", formatDeviceURI(omaURI), "")
+}
+
+// AtomicSubCommand represents a single child SyncML operation inside an <Atomic> block.
+type AtomicSubCommand struct {
+	CommandType string `json:"cmd"`            // "Add", "Replace", "Delete", "Exec"
+	OMAURI      string `json:"uri"`            // target OMA-URI
+	Payload     string `json:"data,omitempty"` // optional <Data> value
+	Format      string `json:"fmt,omitempty"`  // optional explicit MetInf format ("chr", "int", "bool", "xml")
+}
+
+// EnqueueAtomic queues a transactional <Atomic> SyncML block keyed by logicalURI
+// (used for deduplication in command_queue).
+func EnqueueAtomic(dbConn *sql.DB, deviceID, logicalURI string, subs []AtomicSubCommand) (int64, error) {
+	raw, err := json.Marshal(subs)
+	if err != nil {
+		return 0, fmt.Errorf("marshaling atomic commands: %w", err)
+	}
+	return enqueue(dbConn, deviceID, "Atomic", logicalURI, string(raw))
 }
 
 // MSIInstallSpec describes a Win32 MSI deployment job for the
@@ -413,6 +432,55 @@ func buildSyncMLCommands(session *Session, pending []PendingCommand) []interface
 				CmdID: cmdID,
 				Items: []Item{item},
 			})
+		case "Atomic":
+			var subs []AtomicSubCommand
+			if err := json.Unmarshal([]byte(cmd.Payload), &subs); err == nil && len(subs) > 0 {
+				var inner []interface{}
+				for _, sc := range subs {
+					subID := session.nextCmdID()
+					subItem := Item{
+						Target: &LocURI{LocURI: formatDeviceURI(sc.OMAURI)},
+					}
+					if sc.Payload != "" || sc.Format == "null" {
+						if sc.Format == "null" {
+							subItem.Meta = &Meta{
+								Format: &MetaFormat{Xmlns: metInfNS, Value: "null"},
+							}
+						} else {
+							subItem.Data = sc.Payload
+							fmtVal := sc.Format
+							if fmtVal == "" {
+								fmtVal = "chr"
+								if isNumeric(sc.Payload) {
+									fmtVal = "int"
+								} else if isBoolean(sc.Payload) {
+									fmtVal = "bool"
+								}
+							}
+							subItem.Meta = &Meta{
+								Format: &MetaFormat{Xmlns: metInfNS, Value: fmtVal},
+								Type:   "text/plain",
+							}
+						}
+					}
+					switch sc.CommandType {
+					case "Add":
+						inner = append(inner, Add{CmdID: subID, Items: []Item{subItem}})
+					case "Replace":
+						inner = append(inner, Replace{CmdID: subID, Items: []Item{subItem}})
+					case "Delete":
+						inner = append(inner, Delete{CmdID: subID, Items: []Item{subItem}})
+					case "Exec":
+						inner = append(inner, Exec{CmdID: subID, Items: []Item{subItem}})
+					}
+				}
+				if len(inner) > 0 {
+					commands = append(commands, Atomic{
+						CmdID:    cmdID,
+						Commands: inner,
+					})
+				}
+			}
 		}
 	}
 	return commands

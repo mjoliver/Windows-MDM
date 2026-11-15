@@ -445,6 +445,59 @@ export interface RevealedLAPSCredentials {
   rotate_after_reveal_minutes: number
 }
 
+export interface EndpointSecurityPolicy {
+  enabled: boolean
+  allow_realtime_monitoring: boolean
+  allow_behavior_monitoring: boolean
+  allow_cloud_protection: boolean
+  cloud_block_level: number
+  pua_protection: number
+  enable_network_protection: number
+  check_sigs_before_scan: boolean
+  firewall_domain_enabled: boolean
+  firewall_private_enabled: boolean
+  firewall_public_enabled: boolean
+  block_inbound_domain: boolean
+  block_inbound_private: boolean
+  block_inbound_public: boolean
+  target_all_devices: boolean
+  group_ids: string[]
+  enforced_devices: number
+  commands_queued?: number
+  updated_by: string
+  updated_at: string | null
+}
+
+export interface FirewallRule {
+  id: string
+  rule_key: string
+  name: string
+  description: string
+  direction: 'IN' | 'OUT'
+  action: number
+  protocol: number
+  local_port_ranges: string
+  remote_port_ranges: string
+  profiles: number
+  enabled: boolean
+  target_all_devices: boolean
+  group_ids: string[]
+  deployed_devices: number
+  created_by: string
+  created_at: string
+  updated_at: string
+  commands_queued?: number
+}
+
+export interface DeviceSecurityState {
+  device_id: string
+  baseline_enforced: boolean
+  last_defender_action: string
+  last_defender_action_at: string | null
+  deployed_rule_keys: string[]
+  updated_at: string | null
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -473,6 +526,11 @@ export const api = {
       post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/inventory/sync`),
     posture: (id: string) => get<DevicePosture>(`/devices/${enc(id)}/posture`),
     refreshPosture: (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/posture/refresh`),
+    security: (id: string) => get<DeviceSecurityState>(`/devices/${enc(id)}/security`),
+    defenderScan: (id: string, scanType: 'quick' | 'full' = 'quick') =>
+      post<{ status: string; scan_type: string; commands_queued: number }>(`/devices/${enc(id)}/defender/scan`, { scan_type: scanType }),
+    defenderUpdateSignatures: (id: string) =>
+      post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/defender/update-signatures`),
     pushWake: (id: string) => post<{ status: string; wns_status?: string }>(`/devices/${enc(id)}/push`),
   },
 
@@ -715,5 +773,45 @@ export const api = {
     reveal: (deviceId: string) => post<RevealedLAPSCredentials>(`/devices/${enc(deviceId)}/laps/reveal`),
     rotate: (deviceId: string) =>
       post<{ status: string; pending_account: string; commands_queued: number }>(`/devices/${enc(deviceId)}/laps/rotate`),
+  },
+
+  // Endpoint Security: Defender Antivirus + Windows Firewall CSP Baseline & Atomic Rules
+  security: {
+    policy: () => get<EndpointSecurityPolicy>('/security/policy'),
+    updatePolicy: (data: {
+      enabled: boolean
+      allow_realtime_monitoring: boolean
+      allow_behavior_monitoring: boolean
+      allow_cloud_protection: boolean
+      cloud_block_level: number
+      pua_protection: number
+      enable_network_protection: number
+      check_sigs_before_scan: boolean
+      firewall_domain_enabled: boolean
+      firewall_private_enabled: boolean
+      firewall_public_enabled: boolean
+      block_inbound_domain: boolean
+      block_inbound_private: boolean
+      block_inbound_public: boolean
+      target_all_devices: boolean
+      group_ids: string[]
+    }) => put<EndpointSecurityPolicy>('/security/policy', data),
+    listFirewallRules: () => get<FirewallRule[]>('/security/firewall-rules'),
+    createFirewallRule: (data: {
+      name: string
+      rule_key?: string
+      description?: string
+      direction: 'IN' | 'OUT'
+      action: number
+      protocol: number
+      local_port_ranges?: string
+      remote_port_ranges?: string
+      profiles?: number
+      enabled?: boolean
+      target_all_devices?: boolean
+      group_ids?: string[]
+    }) => post<FirewallRule>('/security/firewall-rules', data),
+    deleteFirewallRule: (id: string) =>
+      del<{ deleted: boolean; rule_key: string; commands_queued: number }>(`/security/firewall-rules/${enc(id)}`),
   },
 }
