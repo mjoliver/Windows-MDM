@@ -16,6 +16,7 @@ import (
 
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/devauth"
+	"github.com/latchzmdm/latchz/internal/vault"
 )
 
 // Handler handles OMA-DM SyncML check-ins from enrolled devices.
@@ -24,6 +25,7 @@ type Handler struct {
 	ca     *x509.CertPool // root CA pool for mTLS device auth
 	domain string
 	store  *sessionStore
+	vault  *vault.Vault
 
 	// proxyCertHeader, when non-empty, names a request header carrying a
 	// URL-encoded PEM client certificate forwarded by a trusted terminating
@@ -85,6 +87,12 @@ func (h *Handler) SetWNSPFN(pfn string) {
 		h.wnsPFNSynced = make(map[string]string)
 	}
 	h.wnsPFN = pfn
+}
+
+// SetVault attaches the AES-256-GCM secret vault so encrypted LAPS local admin
+// passwords can be unsealed strictly in memory during mTLS SyncML delivery.
+func (h *Handler) SetVault(v *vault.Vault) {
+	h.vault = v
 }
 
 // reconcileWNSPush provisions DMClient Push/PFN once per server lifecycle and
@@ -369,12 +377,16 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		h.pollMu.Unlock()
 	}
 
+	// Reconcile governed Cloud LAPS provisioning / expired password rotation
+	h.ensureLAPSQueued(deviceID)
+
 	// Load any pending commands from the queue
 	wipeDelivered := false
 	pending, err := loadPendingCommands(h.db, deviceID)
 	if err != nil {
 		slog.Error("mdm: loading pending commands", "device_id", deviceID, "err", err)
 	} else {
+		h.resolveVaultPayloads(deviceID, pending)
 		outboundCmds = append(outboundCmds, buildSyncMLCommands(sess, pending)...)
 		// Mark as sent
 		ids := make([]int, len(pending))
@@ -579,6 +591,9 @@ func (h *Handler) processStatuses(deviceID string, sess *Session, statuses []Sta
 				`), s.Data, deviceID, prodCode)
 			}
 		}
+
+		// Promote or fail any pending Cloud LAPS rotation tied to this queue entry
+		h.handleLAPSCommandStatus(deviceID, queueID, s.Data)
 
 		// Update command status in DB
 		if err := markCommandResult(h.db, queueID, resultCodeForQueue, ""); err != nil {

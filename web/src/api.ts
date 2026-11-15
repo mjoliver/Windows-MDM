@@ -370,6 +370,51 @@ export interface DeviceUpdateTelemetry {
   updated_at: string | null
 }
 
+export interface LAPSPolicy {
+  enabled: boolean
+  account_prefix: string
+  password_length: number
+  rotation_days: number
+  rotate_after_reveal_minutes: number
+  target_all_devices: boolean
+  group_ids: string[]
+  active_devices: number
+  rotating_devices: number
+  updated_by: string
+  updated_at: string | null
+  governed_devices?: number
+  commands_queued?: number
+}
+
+export interface DeviceLAPSStatus {
+  device_id: string
+  governed: boolean
+  status: 'unconfigured' | 'provisioning' | 'active' | 'rotating' | 'revoked' | 'failed' | string
+  active_account: string
+  previous_account: string
+  pending_account: string
+  has_active_password: boolean
+  has_previous_password: boolean
+  has_pending_password: boolean
+  last_error: string
+  last_rotated_at: string | null
+  expires_at: string | null
+  updated_at: string | null
+}
+
+export interface RevealedLAPSCredentials {
+  device_id: string
+  status: string
+  active_account: string
+  active_password?: string
+  previous_account?: string
+  previous_password?: string
+  pending_account?: string
+  pending_password?: string
+  expires_at: string | null
+  rotate_after_reveal_minutes: number
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -613,5 +658,23 @@ export const api = {
     pauseRing: (id: string, target: 'quality' | 'feature' | 'both', paused: boolean) =>
       post<UpdateRing>(`/updates/rings/${enc(id)}/pause`, { target, paused }),
     device: (deviceId: string) => get<DeviceUpdateTelemetry>(`/devices/${enc(deviceId)}/updates`),
+  },
+
+  // Agentless Cloud LAPS (Accounts CSP + Policy/Config/LocalUsersAndGroups + AES-256-GCM Vault)
+  laps: {
+    policy: () => get<LAPSPolicy>('/laps/policy'),
+    updatePolicy: (data: {
+      enabled: boolean
+      account_prefix: string
+      password_length: number
+      rotation_days: number
+      rotate_after_reveal_minutes: number
+      target_all_devices: boolean
+      group_ids: string[]
+    }) => put<LAPSPolicy>('/laps/policy', data),
+    device: (deviceId: string) => get<DeviceLAPSStatus>(`/devices/${enc(deviceId)}/laps`),
+    reveal: (deviceId: string) => post<RevealedLAPSCredentials>(`/devices/${enc(deviceId)}/laps/reveal`),
+    rotate: (deviceId: string) =>
+      post<{ status: string; pending_account: string; commands_queued: number }>(`/devices/${enc(deviceId)}/laps/rotate`),
   },
 }

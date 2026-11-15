@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, Save } from 'lucide-react'
+import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, UserCheck, Save } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
-import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type Group } from '../api'
+import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type Group } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { useToast } from '../hooks/useToast'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
@@ -19,8 +19,10 @@ export function CompliancePage() {
   const [fleet, setFleet]       = useState<FleetCompliance | null>(null)
   const [posture, setPosture]   = useState<FleetPostureSummary | null>(null)
   const [bitlocker, setBitlocker] = useState<BitLockerPolicy | null>(null)
+  const [laps, setLaps]         = useState<LAPSPolicy | null>(null)
   const [groups, setGroups]     = useState<Group[]>([])
   const [savingBL, setSavingBL] = useState(false)
+  const [savingLAPS, setSavingLAPS] = useState(false)
   const [devices, setDevices]   = useState<Device[]>([])
   const [, setLoading]          = useState(true)
   const navigate = useNavigate()
@@ -32,12 +34,14 @@ export function CompliancePage() {
       api.devices.list(),
       api.compliance.postureSummary().catch(() => null),
       api.bitlocker.policy().catch(() => null),
+      api.laps.policy().catch(() => null),
       api.groups.list().catch(() => []),
-    ]).then(([f, d, p, bl, g]) => {
+    ]).then(([f, d, p, bl, lp, g]) => {
       setFleet(f)
       setDevices(d)
       setPosture(p)
       setBitlocker(bl)
+      setLaps(lp)
       setGroups(g)
     }).finally(() => setLoading(false))
   }, [])
@@ -67,6 +71,32 @@ export function CompliancePage() {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setSavingBL(false)
+    }
+  }
+
+  const saveLAPSPolicy = async () => {
+    if (!laps) return
+    setSavingLAPS(true)
+    try {
+      const updated = await api.laps.updatePolicy({
+        enabled: laps.enabled,
+        account_prefix: laps.account_prefix,
+        password_length: laps.password_length,
+        rotation_days: laps.rotation_days,
+        rotate_after_reveal_minutes: laps.rotate_after_reveal_minutes,
+        target_all_devices: laps.target_all_devices,
+        group_ids: laps.group_ids,
+      })
+      setLaps(updated)
+      toast.success(
+        updated.enabled
+          ? `Cloud LAPS saved — reconciled ${updated.governed_devices ?? 0} device(s) (${updated.commands_queued ?? 0} CSP command(s) queued).`
+          : 'Cloud LAPS disabled — queued Administrators privilege revocation across previously governed devices.'
+      )
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingLAPS(false)
     }
   }
 
@@ -357,6 +387,129 @@ export function CompliancePage() {
                           ? bitlocker.group_ids.filter(x => x !== g.id)
                           : [...bitlocker.group_ids, g.id]
                         setBitlocker({ ...bitlocker, group_ids: next })
+                      }}
+                    >
+                      {g.name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Agentless Cloud LAPS Policy Card */}
+      {laps && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
+            <div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <UserCheck size={17} color="var(--accent)" />
+                Cloud LAPS — Ephemeral Local Administrator
+                <Badge status={laps.enabled ? 'compliant' : 'unknown'} label={laps.enabled ? 'Enabled' : 'Disabled'} />
+              </div>
+              <div style={{ fontSize: '0.8rem', opacity: 0.65, marginTop: 4 }}>
+                Agentless rotation via Windows <code className="mono">Accounts</code> & <code className="mono">LocalUsersAndGroups</code> CSPs • {laps.active_devices} active, {laps.rotating_devices} provisioning/rotating
+              </div>
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={saveLAPSPolicy} disabled={savingLAPS}>
+              <Save size={14} />
+              {savingLAPS ? 'Saving…' : 'Save LAPS Policy'}
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 18 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={laps.enabled}
+                onChange={e => setLaps({ ...laps, enabled: e.target.checked })}
+              />
+              <div>
+                <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Enable Cloud LAPS</div>
+                <div style={{ fontSize: '0.72rem', opacity: 0.6 }}>Provision & rotate unique local admin per PC</div>
+              </div>
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={laps.target_all_devices}
+                onChange={e => setLaps({ ...laps, target_all_devices: e.target.checked })}
+              />
+              <div>
+                <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>Target Entire Fleet</div>
+                <div style={{ fontSize: '0.72rem', opacity: 0.6 }}>Govern all active enrolled Windows PCs</div>
+              </div>
+            </label>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 16 }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Username Prefix (≤12 chars)</label>
+              <input
+                className="form-input mono"
+                value={laps.account_prefix}
+                maxLength={12}
+                onChange={e => setLaps({ ...laps, account_prefix: e.target.value })}
+                placeholder="lzadm"
+              />
+              <div style={{ fontSize: '0.7rem', opacity: 0.55, marginTop: 4 }}>
+                Provisions <code className="mono">{laps.account_prefix || 'lzadm'}-xxxx</code>
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Password Length (14–32)</label>
+              <input
+                type="number"
+                className="form-input"
+                min={14}
+                max={32}
+                value={laps.password_length}
+                onChange={e => setLaps({ ...laps, password_length: Number(e.target.value) })}
+              />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Rotation Interval (Days)</label>
+              <input
+                type="number"
+                className="form-input"
+                min={1}
+                max={90}
+                value={laps.rotation_days}
+                onChange={e => setLaps({ ...laps, rotation_days: Number(e.target.value) })}
+              />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Post-Reveal Auto-Rotate (Min)</label>
+              <input
+                type="number"
+                className="form-input"
+                min={0}
+                max={1440}
+                value={laps.rotate_after_reveal_minutes}
+                onChange={e => setLaps({ ...laps, rotate_after_reveal_minutes: Number(e.target.value) })}
+              />
+            </div>
+          </div>
+
+          {!laps.target_all_devices && groups.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="form-label" style={{ marginBottom: 8 }}>Assigned Device Groups</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {groups.map(g => {
+                  const selected = laps.group_ids.includes(g.id)
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      className={`btn btn-sm ${selected ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => {
+                        const next = selected
+                          ? laps.group_ids.filter(x => x !== g.id)
+                          : [...laps.group_ids, g.id]
+                        setLaps({ ...laps, group_ids: next })
                       }}
                     >
                       {g.name}

@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap, Package, KeyRound, Eye, Plus, Copy } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap, Package, KeyRound, UserCheck, Eye, Plus, Copy } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceBitLocker, type DeviceUpdateTelemetry } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -31,6 +31,7 @@ export function DeviceDetailPage() {
   const [compliance, setCompliance]   = useState<DeviceCompliance | null>(null)
   const [posture, setPosture]         = useState<DevicePosture | null>(null)
   const [bitlocker, setBitlocker]     = useState<DeviceBitLocker | null>(null)
+  const [laps, setLaps]               = useState<DeviceLAPSStatus | null>(null)
   const [updateTel, setUpdateTel]     = useState<DeviceUpdateTelemetry | null>(null)
   const [apps, setApps]               = useState<DeviceAppInstall[]>([])
   const [commands, setCommands]       = useState<DeviceCommand[]>([])
@@ -45,6 +46,7 @@ export function DeviceDetailPage() {
   const [escrowPwd, setEscrowPwd]         = useState('')
   const [escrowBusy, setEscrowBusy]       = useState(false)
   const [revealedKey, setRevealedKey]     = useState<{ volume_letter: string; protector_id: string; recovery_password: string } | null>(null)
+  const [revealedLAPS, setRevealedLAPS]   = useState<RevealedLAPSCredentials | null>(null)
   const toast = useToast()
 
   const refresh = useCallback(() => {
@@ -80,6 +82,10 @@ export function DeviceDetailPage() {
       .then(setBitlocker)
       .catch(() => setBitlocker(null))
 
+    api.laps.device(id!)
+      .then(setLaps)
+      .catch(() => setLaps(null))
+
     api.updates.device(id!)
       .then(setUpdateTel)
       .catch(() => setUpdateTel(null))
@@ -101,6 +107,7 @@ export function DeviceDetailPage() {
       api.devices.posture(id).then(setPosture).catch(() => {})
       api.devices.apps(id).then(a => setApps(a ?? [])).catch(() => {})
       api.bitlocker.device(id).then(setBitlocker).catch(() => {})
+      api.laps.device(id).then(setLaps).catch(() => {})
       api.updates.device(id).then(setUpdateTel).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
@@ -493,6 +500,112 @@ export function DeviceDetailPage() {
               )}
             </div>
 
+            {/* Cloud LAPS — Ephemeral Local Administrator */}
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '24px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <UserCheck size={18} />
+                    Local Administrator (Cloud LAPS)
+                  </div>
+                  {laps && (
+                    <Badge
+                      status={
+                        laps.status === 'active'
+                          ? 'compliant'
+                          : laps.status === 'provisioning' || laps.status === 'rotating'
+                            ? 'pending'
+                            : laps.status === 'failed'
+                              ? 'non_compliant'
+                              : 'unknown'
+                      }
+                      label={
+                        laps.status === 'active'
+                          ? 'Active'
+                          : laps.status === 'provisioning'
+                            ? 'Provisioning'
+                            : laps.status === 'rotating'
+                              ? 'Rotating'
+                              : laps.status === 'revoked'
+                                ? 'Revoked'
+                                : laps.status === 'failed'
+                                  ? 'Failed'
+                                  : laps.governed
+                                    ? 'Awaiting Sync'
+                                    : 'Unmanaged'
+                      }
+                    />
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {(laps?.has_active_password || laps?.has_previous_password || laps?.has_pending_password) && (
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      disabled={!!actionLoading}
+                      onClick={async () => {
+                        try {
+                          const res = await api.laps.reveal(id!)
+                          setRevealedLAPS(res)
+                          refresh()
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : String(e))
+                        }
+                      }}
+                    >
+                      <Eye size={13} />
+                      Reveal Credentials
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-sm btn-primary"
+                    disabled={!!actionLoading}
+                    onClick={() => action('laps-rotate', async () => {
+                      const res = await api.laps.rotate(id!)
+                      toast.success(`Queued ephemeral local admin rotation (${res.pending_account}) — will apply on next check-in.`)
+                    })}
+                  >
+                    <RefreshCw size={13} className={actionLoading === 'laps-rotate' ? 'spin' : ''} />
+                    {laps?.active_account ? 'Rotate Now' : 'Provision Admin'}
+                  </button>
+                </div>
+              </div>
+
+              {laps && (laps.active_account || laps.pending_account || laps.previous_account) ? (
+                <div style={{ padding: '0 32px 26px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
+                  <div style={{ padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)' }}>
+                    <div style={{ fontSize: '0.72rem', opacity: 0.6, marginBottom: 4 }}>Active Admin Account</div>
+                    <div className="mono" style={{ fontWeight: 700, fontSize: '0.92rem' }}>
+                      {laps.active_account ? `.\\${laps.active_account}` : '—'}
+                    </div>
+                  </div>
+                  {laps.pending_account && (
+                    <div style={{ padding: '12px 14px', borderRadius: 12, background: 'rgba(208,188,255,0.06)', border: '1px solid var(--md-sys-color-outline-variant)' }}>
+                      <div style={{ fontSize: '0.72rem', opacity: 0.65, marginBottom: 4 }}>Pending Rotation</div>
+                      <div className="mono" style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--md-sys-color-primary)' }}>
+                        .\{laps.pending_account}
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)' }}>
+                    <div style={{ fontSize: '0.72rem', opacity: 0.6, marginBottom: 4 }}>Last Rotated</div>
+                    <div style={{ fontSize: '0.86rem' }}>
+                      {laps.last_rotated_at ? timeAgo(laps.last_rotated_at) : 'Awaiting device ACK'}
+                    </div>
+                  </div>
+                  <div style={{ padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)' }}>
+                    <div style={{ fontSize: '0.72rem', opacity: 0.6, marginBottom: 4 }}>Next Auto-Rotation</div>
+                    <div style={{ fontSize: '0.86rem' }}>
+                      {laps.expires_at ? new Date(laps.expires_at).toLocaleString() : '—'}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: '0 32px 28px', opacity: 0.55, fontSize: '0.88rem' }}>
+                  No ephemeral local administrator account provisioned yet. Enable Cloud LAPS on the Compliance page or click <strong>Provision Admin</strong> above.
+                </div>
+              )}
+            </div>
+
             {/* History Table */}
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '24px 32px' }}>
@@ -827,6 +940,85 @@ export function DeviceDetailPage() {
                   {revealedKey.recovery_password}
                 </div>
               </div>
+            </div>
+          )}
+        </Modal>
+
+        <Modal
+          open={!!revealedLAPS}
+          onClose={() => setRevealedLAPS(null)}
+          title="Audited Local Administrator Credentials"
+          maxWidth={540}
+          footer={
+            <button className="btn btn-primary" onClick={() => setRevealedLAPS(null)}>Done</button>
+          }
+        >
+          {revealedLAPS && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ fontSize: '0.82rem', opacity: 0.78, lineHeight: 1.5 }}>
+                This decryption has been recorded in the Latchz <strong>Audit Log</strong> (<code className="mono">laps.reveal_password</code>).
+                {revealedLAPS.rotate_after_reveal_minutes > 0 && revealedLAPS.active_account
+                  ? ` Credentials will automatically rotate after ${revealedLAPS.rotate_after_reveal_minutes} minutes.`
+                  : ''}
+              </div>
+
+              {revealedLAPS.active_account && revealedLAPS.active_password && (
+                <div style={{ padding: '16px 18px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--md-sys-color-outline-variant)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: '0.74rem', opacity: 0.65, fontWeight: 600 }}>ACTIVE ADMINISTRATOR</span>
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(`.\\${revealedLAPS.active_account}`)
+                        toast.success('Copied local username to clipboard.')
+                      }}
+                    >
+                      <Copy size={12} /> Copy User
+                    </button>
+                  </div>
+                  <div className="mono" style={{ fontSize: '0.96rem', fontWeight: 700 }}>
+                    .\{revealedLAPS.active_account}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingTop: 6, borderTop: '1px solid var(--md-sys-color-outline-variant)' }}>
+                    <div className="mono" style={{ fontSize: '1.02rem', fontWeight: 700, wordBreak: 'break-all' }}>
+                      {revealedLAPS.active_password}
+                    </div>
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => {
+                        if (revealedLAPS.active_password) {
+                          navigator.clipboard?.writeText(revealedLAPS.active_password)
+                          toast.success('Copied local admin password to clipboard.')
+                        }
+                      }}
+                    >
+                      <Copy size={12} /> Copy Password
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {revealedLAPS.pending_account && revealedLAPS.pending_password && (
+                <div style={{ padding: '14px 16px', borderRadius: 12, background: 'rgba(208,188,255,0.05)', border: '1px solid var(--md-sys-color-outline-variant)' }}>
+                  <div style={{ fontSize: '0.73rem', opacity: 0.7, marginBottom: 4 }}>
+                    PENDING ROTATION (APPLIES ON NEXT DEVICE CHECK-IN)
+                  </div>
+                  <div className="mono" style={{ fontSize: '0.88rem' }}>
+                    .\{revealedLAPS.pending_account} — <strong>{revealedLAPS.pending_password}</strong>
+                  </div>
+                </div>
+              )}
+
+              {revealedLAPS.previous_account && revealedLAPS.previous_password && (
+                <div style={{ padding: '14px 16px', borderRadius: 12, background: 'rgba(255,255,255,0.02)', border: '1px solid var(--md-sys-color-outline-variant)', opacity: 0.85 }}>
+                  <div style={{ fontSize: '0.73rem', opacity: 0.65, marginBottom: 4 }}>
+                    PREVIOUS CREDENTIAL (STRIPPED FROM ADMINISTRATORS)
+                  </div>
+                  <div className="mono" style={{ fontSize: '0.85rem' }}>
+                    .\{revealedLAPS.previous_account} — {revealedLAPS.previous_password}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </Modal>

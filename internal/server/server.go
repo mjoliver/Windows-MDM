@@ -103,6 +103,7 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 			return nil, fmt.Errorf("initialising secret vault: %w", err)
 		}
 		apiHandler.SetVault(secretVault)
+		mdmHandler.SetVault(secretVault)
 	}
 
 	s := &Server{
@@ -344,6 +345,9 @@ func (s *Server) routes() {
 			r.With(admin).Post("/devices/{id}/bitlocker/keys/{keyId}/reveal", s.api.HandleRevealBitLockerKey)
 			r.With(admin).Delete("/devices/{id}/bitlocker/keys/{keyId}", s.api.HandleDeleteBitLockerKey)
 			r.With(admin).Post("/devices/{id}/bitlocker/rotate", s.api.HandleRotateBitLockerKeys)
+			r.Get("/devices/{id}/laps", s.api.HandleGetDeviceLAPS)
+			r.With(admin).Post("/devices/{id}/laps/reveal", s.api.HandleRevealDeviceLAPS)
+			r.With(admin).Post("/devices/{id}/laps/rotate", s.api.HandleRotateDeviceLAPS)
 			r.Get("/devices/{id}/updates", s.api.HandleGetDeviceUpdates)
 
 			// Policy catalog (order matters: specific before param)
@@ -388,12 +392,14 @@ func (s *Server) routes() {
 			r.With(admin).Delete("/updates/rings/{id}", s.api.HandleDeleteUpdateRing)
 			r.With(admin).Post("/updates/rings/{id}/pause", s.api.HandlePauseResumeUpdateRing)
 
-			// Compliance, Security Posture & BitLocker
+			// Compliance, Security Posture, BitLocker & Cloud LAPS
 			r.Get("/compliance", s.api.HandleFleetCompliance)
 			r.Get("/compliance/{deviceId}", s.api.HandleDeviceCompliance)
 			r.Get("/posture/summary", s.api.HandleFleetPostureSummary)
 			r.Get("/bitlocker/policy", s.api.HandleGetBitLockerPolicy)
 			r.With(admin).Put("/bitlocker/policy", s.api.HandleUpdateBitLockerPolicy)
+			r.Get("/laps/policy", s.api.HandleGetLAPSPolicy)
+			r.With(admin).Put("/laps/policy", s.api.HandleUpdateLAPSPolicy)
 
 			// Administration: Users & Audit Log
 			r.With(admin).Get("/users", s.api.HandleListUsers)
