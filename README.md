@@ -10,6 +10,9 @@ Latchz is an open-source, single-binary Windows MDM (Mobile Device Management) s
 
 - **WSTEP Zero-Touch Enrollment** — Windows devices auto-discover the server via `enterpriseenrollment.<domain>` and complete enrollment through Microsoft's standard flow, with no manual setup.
 - **SyncML/OMA-DM Policy Management** — Push, retrieve, and reconcile device configuration policies using the OMA-DM protocol over HTTPS.
+- **Win32 MSI Application Deployment** — Drag-and-drop local `.msi` uploads or remote HTTPS URLs with pure-Go CFB metadata/SHA-256 inspection, `HTTP 206` Delivery Optimization streaming, and silent `EnterpriseDesktopAppManagement` CSP installs/uninstalls.
+- **Hardware & Security Posture Telemetry** — Continuous inventory of RAM, disk, BIOS, Secure Boot, BitLocker, Windows Defender AV/tamper protection, and Firewall state.
+- **Instant Device Wake-Up (WNS)** — Optional Windows Push Notification Services (`wns/raw`) integration alongside automatic `DMClient` background polling.
 - **Built-in PKI** — Self-hosted RSA 4096-bit Certificate Authority with encrypted key-at-rest (argon2id-derived master secret) for device certificate issuance via XCEP.
 - **Policy Catalog via DDF Compiler** — Import Microsoft's Device Description Framework (DDF) XML schemas to populate a searchable catalog of available device policies.
 - **OIDC + Builtin Authentication** — Support for Google Workspace, Entra ID, Okta, and other OIDC providers, plus local builtin username/password accounts.
@@ -132,6 +135,7 @@ All configuration values can be set in `latchz.yaml` or overridden via environme
 | `auth.oidc.allowed_domains` | `LATCHZ_AUTH_OIDC_ALLOWED_DOMAINS` | — | Email domains restricted for login |
 | `mdm.poll_interval_minutes` | `LATCHZ_MDM_POLL_INTERVAL_MINUTES` | `15` | Background OMA-DM check-in interval in minutes (`0` disables) |
 | `mdm.poll_on_login` | `LATCHZ_MDM_POLL_ON_LOGIN` | `true` | Trigger an OMA-DM check-in whenever a user logs into Windows |
+| `mdm.packages_dir` | `LATCHZ_MDM_PACKAGES_DIR` | `./packages` | Local storage directory for drag-and-drop uploaded `.msi` packages |
 | `mdm.wns.package_family_name` | `LATCHZ_MDM_WNS_PACKAGE_FAMILY_NAME` | `""` | Optional Microsoft Partner Center WNS Package Family Name (`DMClient` Push PFN) |
 | `mdm.wns.package_sid` | `LATCHZ_MDM_WNS_PACKAGE_SID` | `""` | Optional WNS OAuth2 `client_id` (`ms-app://s-1-15-2-...`) |
 | `mdm.wns.client_secret` | `LATCHZ_MDM_WNS_CLIENT_SECRET` | `""` | Optional WNS OAuth2 `client_secret` for instant `wns/raw` wake-ups |
@@ -260,6 +264,7 @@ The embedded React dashboard provides the following pages:
 | **Device Detail** | Per-device hardware & security posture, WNS wake-up, policy compliance, remote actions |
 | **Groups** | Device groups for bulk policy assignment |
 | **Compliance** | Fleet security posture (BitLocker, Secure Boot, Defender, Firewall) and violations |
+| **Applications** | Win32 `.msi` catalog (drag-and-drop local hosting + HTTPS URLs) & group/device deployment |
 | **Profiles** | Configuration profiles (policies) created for devices |
 | **Profile Detail** | Profile settings, catalog browsing, device targeting |
 | **Users & Roles** | RBAC user management (`super_admin`, `admin`, `user`) |
@@ -358,13 +363,14 @@ make clean        # Remove build artifacts
 │   ├── reverse-proxy.md     # Nginx / Caddy / Traefik reverse-proxy & mTLS setup
 │   └── self-hosting.md      # Google Cloud Run & self-hosting walkthrough
 ├── internal/
-│   ├── api/                 # REST API handlers (catalog, compliance, devices, groups, profiles, posture, users, audit)
+│   ├── api/                 # REST API handlers (apps, catalog, compliance, devices, groups, profiles, posture, users, audit)
 │   ├── auth/                # OIDC + builtin auth, JWT token management
 │   ├── config/              # YAML config loading with Viper
 │   ├── db/                  # Database layer + versioned migrations (SQLite + PostgreSQL)
 │   ├── devauth/             # Device authentication verification
 │   ├── enrollment/          # WSTEP enrollment + XCEP certificate issuance + auto-discovery
 │   ├── mdm/                 # OMA-DM/SyncML protocol handler + device commands
+│   ├── msi/                 # Pure-Go MS-CFB (.msi) binary inspector & SSRF-hardened client
 │   ├── pki/                 # RSA 4096-bit CA + certificate issuance
 │   ├── policy/              # ADMX policy resolution + DDF catalog integration
 │   ├── server/              # HTTP server, middleware, TLS, embedded web assets
