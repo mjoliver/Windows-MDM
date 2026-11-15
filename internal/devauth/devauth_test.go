@@ -20,7 +20,7 @@ func TestResolve(t *testing.T) {
 	database := testutil.DB(t)
 	ca := testutil.CA(t, database)
 	deviceID := testutil.SeedDevice(t, database, "HW-DA")
-	cert := testutil.IssueClientCert(t, ca, deviceID, "PaneMDMClient")
+	cert := testutil.IssueClientCert(t, ca, deviceID, "LatchzMDMClient")
 	pool := ca.TLSPool()
 
 	t.Run("direct mTLS resolves to the device", func(t *testing.T) {

@@ -40,7 +40,7 @@ func TestHandleWSTEP_IssuesCertAndCreatesDevice(t *testing.T) {
 	ca := testutil.CA(t, database)
 	h := NewHandler("mdm.example.com", "example.com")
 
-	_, csrDER := testutil.GenerateKeyCSR(t, "PaneMDMClient")
+	_, csrDER := testutil.GenerateKeyCSR(t, "LatchzMDMClient")
 	body := wstepEnvelope("enroll-token", base64.StdEncoding.EncodeToString(csrDER), "HW-WSTEP")
 
 	validate := func(tok string) (string, error) { return "user@example.com", nil }

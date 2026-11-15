@@ -37,7 +37,8 @@ This document explains how to deploy Latchz MDM behind a reverse proxy that term
 # latchz.yaml
 server:
   listen: ":8080"                    # Plain HTTP, facing the reverse proxy only
-  domain: mdm.example.com            # Public FQDN (used in enrollment URLs)
+  domain: mdm.example.com            # Public FQDN (enrollment & dashboard — NO proxy mTLS)
+  mdm_domain: mdm-mtls.example.com   # Dedicated mTLS FQDN provisioned into devices for /omadm
   master_secret: "your-strong-random-secret-here"
   trusted_proxy: true                # Trust X-Forwarded-For for rate limiting
 
@@ -68,6 +69,7 @@ auth:
 |---|---|
 | `server.listen` | `LATCHZ_SERVER_LISTEN` (or `PORT`) |
 | `server.domain` | `LATCHZ_SERVER_DOMAIN` |
+| `server.mdm_domain` | `LATCHZ_SERVER_MDM_DOMAIN` |
 | `server.trusted_proxy` | `LATCHZ_SERVER_TRUSTED_PROXY` |
 | `server.master_secret` | `LATCHZ_SERVER_MASTER_SECRET` |
 | `tls.mode` | `LATCHZ_TLS_MODE` |
@@ -149,7 +151,8 @@ These endpoints require a valid user session (authenticated via OIDC or built-in
 | `GET` | `/api/devices` | List devices | No |
 | `GET` | `/api/devices/{id}` | Get device details | No |
 | `DELETE` | `/api/devices/{id}` | Unenroll device | **Yes** |
-| `POST` | `/api/devices/{id}/lock` | Lock device | **Yes** |
+| `POST` | `/api/devices/{id}/reboot` | Reboot device (`RebootNow` CSP) | **Yes** |
+| `POST` | `/api/devices/{id}/lock` | Lock device (non-desktop SKUs only; `406` on Win10/11 Pro/Ent) | **Yes** |
 | `POST` | `/api/devices/{id}/wipe` | Wipe device | **Yes** |
 | `POST` | `/api/devices/{id}/sync` | Sync device | **Yes** |
 | `GET` | `/api/devices/{id}/commands` | Device command history | No |
@@ -201,113 +204,66 @@ These endpoints require a valid user session (authenticated via OIDC or built-in
 
 ## Reverse Proxy Configuration Examples
 
+> ⚠️ **Critical Windows `WinHTTP` Caveat (`0x80072f0c`)**: Do **not** enable `ssl_verify_client optional` (Nginx) or `client_auth { mode request }` (Caddy) on your primary enrollment hostname (`mdm.example.com` / `enterpriseenrollment.example.com`). Even when client certificates are marked *optional*, TLS servers send a `CertificateRequest` handshake frame, which causes Windows `DeviceEnroller.exe` (`WinHTTP`) to immediately abort Discovery/XCEP/WSTEP with error `0x80072f0c` (`ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED`) before the device has been issued a certificate.
+>
+> **Recommended Production Pattern**: Set `server.mdm_domain: mdm-mtls.example.com` in `latchz.yaml` and define **two** virtual hosts on `:443`:
+> 1. `mdm.example.com` (and `enterpriseenrollment.example.com`): **No** `ssl_verify_client` — handles Discovery, XCEP, Auth, WSTEP enrollment, and the Admin Dashboard.
+> 2. `mdm-mtls.example.com`: `ssl_verify_client on` — handles `POST /omadm` SyncML check-ins, forwarding `$ssl_client_escaped_cert` in `X-Forwarded-Client-Cert`. (Note: WSTEP ROBO certificate renewal requires direct TLS proof-of-possession rather than a proxy header; use TCP/SNI passthrough on `mdm-mtls.example.com` if automated cert renewal behind a proxy is required.)
+
 ### Nginx
 
 ```nginx
-# ── SSL/TLS certificates ──────────────────────────────────────────────
-# Server certificate (for TLS termination)
-ssl_certificate         /etc/ssl/certs/mdm.example.com/fullchain.pem;
-ssl_certificate_key     /etc/ssl/private/mdm.example.com/privkey.pem;
-
-# Latchz Root CA (for mTLS client verification on /omadm)
-# Extract from Latchz: curl -sk https://mdm.example.com/pki/ca.pem
-ssl_client_certificate  /etc/ssl/certs/latchz-ca.pem;
-ssl_verify_client       optional;  # optional = request but don't require globally
-
-# ── TLS hardening ─────────────────────────────────────────────────────
-ssl_protocols           TLSv1.2 TLSv1.3;
-ssl_ciphers             HIGH:!aNULL:!MD5:!3DES;
-ssl_prefer_server_ciphers on;
-
 # ── Upstream ──────────────────────────────────────────────────────────
 upstream latchz {
     server 127.0.0.1:8080;
     keepalive 32;
 }
 
+# ── 1. Enrollment & Dashboard Host (NO client-cert prompt!) ───────────
 server {
     listen 443 ssl http2;
-    server_name mdm.example.com;
+    server_name mdm.example.com enterpriseenrollment.example.com;
 
-    # ── Security headers ──────────────────────────────────────────────
+    ssl_certificate     /etc/ssl/certs/mdm.example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/private/mdm.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options DENY always;
 
-    # ── Forward real client IP ────────────────────────────────────────
-    proxy_set_header X-Real-IP        $remote_addr;
-    proxy_set_header X-Forwarded-For  $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header Host             $host;
+    proxy_set_header X-Real-IP               $remote_addr;
+    proxy_set_header X-Forwarded-For         $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto       $scheme;
+    proxy_set_header Host                    $host;
+    # Strip any client-supplied cert header on the non-mTLS vhost
+    proxy_set_header X-Forwarded-Client-Cert "";
 
-    # ── Forward client certificate (for /omadm) ──────────────────────
-    # $ssl_client_escaped_cert contains the PEM certificate, URL-encoded
-    # This is CRITICAL for /omadm to authenticate enrolled devices
+    location / {
+        proxy_pass http://latchz;
+    }
+}
+
+# ── 2. Dedicated mTLS Host for OMA-DM Check-Ins (server.mdm_domain) ───
+server {
+    listen 443 ssl http2;
+    server_name mdm-mtls.example.com;
+
+    ssl_certificate         /etc/ssl/certs/mdm-mtls.example.com/fullchain.pem;
+    ssl_certificate_key     /etc/ssl/private/mdm-mtls.example.com/privkey.pem;
+
+    # Latchz Root CA: curl -sk https://mdm.example.com/pki/ca.pem -o /etc/ssl/certs/latchz-ca.pem
+    ssl_client_certificate  /etc/ssl/certs/latchz-ca.pem;
+    ssl_verify_client       on;
+    ssl_protocols           TLSv1.2 TLSv1.3;
+
+    proxy_set_header X-Real-IP               $remote_addr;
+    proxy_set_header X-Forwarded-For         $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto       $scheme;
+    proxy_set_header Host                    $host;
     proxy_set_header X-Forwarded-Client-Cert $ssl_client_escaped_cert;
 
-    # ── Health check (no auth, no mTLS) ──────────────────────────────
-    location = /api/system/health {
-        proxy_pass http://latchz;
-    }
-
-    # ── Enrollment discovery (no auth, no mTLS) ─────────────────────
-    location ~ ^/(EnterpriseEnrollment|EnrollmentServer)/ {
-        proxy_pass http://latchz;
-    }
-
-    # ── XCEP certificate policy (no auth, no mTLS) ──────────────────
-    location = /xcep {
-        proxy_pass http://latchz;
-    }
-
-    # ── CA download (no auth, no mTLS) ──────────────────────────────
-    location = /pki/ca.pem {
-        proxy_pass http://latchz;
-    }
-
-    # ── Public API config (no auth) ─────────────────────────────────
-    location = /api/config {
-        proxy_pass http://latchz;
-    }
-
-    # ── Auth flow endpoints (no proxy-level auth) ───────────────────
-    location ~ ^/auth/ {
-        proxy_pass http://latchz;
-    }
-
-    # ── WSTEP certificate enrollment (no proxy-level auth) ──────────
-    location = /wstep {
-        proxy_pass http://latchz;
-    }
-
-    # ── OMA-DM device check-in (REQUIRES mTLS) ──────────────────────
-    # Reject requests without a valid client certificate
     location = /omadm {
-        if ($ssl_client_verify != SUCCESS) {
-            return 403;
-        }
-        proxy_pass http://latchz;
-    }
-
-    # ── Dashboard API (optional: add auth here) ─────────────────────
-    # Example: Uncomment the following for basic auth on /api/*
-    # location /api/ {
-    #     auth_basic "Latchz Admin";
-    #     auth_basic_user_file /etc/nginx/.htpasswd;
-    #     proxy_pass http://latchz;
-    # }
-
-    location /api/ {
-        proxy_pass http://latchz;
-    }
-
-    # ── Emergency access ────────────────────────────────────────────
-    location = /emergency {
-        proxy_pass http://latchz;
-    }
-
-    # ── Dashboard SPA (optional: add auth here) ─────────────────────
-    location / {
         proxy_pass http://latchz;
     }
 }
@@ -315,7 +271,7 @@ server {
 # ── HTTP → HTTPS redirect ─────────────────────────────────────────────
 server {
     listen 80;
-    server_name mdm.example.com;
+    server_name mdm.example.com enterpriseenrollment.example.com mdm-mtls.example.com;
     return 301 https://$host$request_uri;
 }
 ```
@@ -611,6 +567,7 @@ While no changes are strictly required, the following improvements could enhance
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
+| Enrollment fails with `0x80072f0c` | Proxy sent TLS `CertificateRequest` (`ssl_verify_client optional`) on enrollment host | Split mTLS onto `server.mdm_domain` (`mdm-mtls.example.com`) and disable `ssl_verify_client` on `mdm.example.com` |
 | Devices can't enroll | Discovery endpoint blocked by proxy auth | Ensure `/EnterpriseEnrollment/*` has no proxy-level auth |
 | Enrollment fails at WSTEP | OAuth callback blocked | Ensure `/auth/*` and `/wstep` have no proxy-level auth |
 | Devices can't check in | mTLS not configured on `/omadm` | Configure proxy to require client cert on `/omadm` |

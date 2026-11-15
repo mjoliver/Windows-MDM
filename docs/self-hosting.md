@@ -29,7 +29,11 @@ enterpriseenrollment.mjo.gg  ──► Cloudflare (DNS proxy)
                               (login restricted to mjo.gg)
 ```
 
-> **Note**: Cloud Run handles TLS automatically. No manual cert management needed.
+> **Note**: Cloud Run terminates standard HTTPS automatically, which works for the Admin Dashboard and initial enrollment discovery.
+>
+> ⚠️ **mTLS Requirement for `/omadm` Check-ins**: Enrolled Windows devices authenticate to `POST /omadm` using mutual TLS (mTLS) client certificates signed by Latchz's internal CA. Default Google Cloud Run domain mappings strip client certificates at Google's edge. For full ongoing OMA-DM device management, either:
+> 1. Front Cloud Run with **Google Cloud Application Load Balancer (mTLS)** or **Cloudflare mTLS / Nginx / Caddy** configured to forward the verified client certificate in `X-Forwarded-Client-Cert` (`tls.trust_proxy_client_cert: true`, `server.mdm_domain: mdm-mtls.mjo.gg`) — see [Running Behind a Reverse Proxy](reverse-proxy.md), **or**
+> 2. Run Latchz directly on a VM/VPS exposing `:443` (`server.listen`) and `:8443` (`server.mtls_listen`).
 
 ---
 
@@ -114,11 +118,11 @@ auth:
 
 ### 4.1 Production-Ready Dockerfile
 
-We use a multi-stage Dockerfile to build both the frontend and backend, resulting in a minimal production container. (This has been created for you at [Dockerfile](file:///c:/Users/Matth/Documents/projects/mdm/Dockerfile)).
+We use a multi-stage Dockerfile to build both the frontend and backend, resulting in a minimal production container (see [`Dockerfile`](../Dockerfile)).
 
 ### 4.2 Automated Deployment Script
 
-A helper script has been created at [deploy.ps1](file:///c:/Users/Matth/Documents/projects/mdm/deploy.ps1) to compile and push your code to Google Cloud Build and deploy directly to Cloud Run:
+A helper script is included at [`deploy.ps1`](../deploy.ps1) to compile and push your code to Google Cloud Build and deploy directly to Cloud Run:
 
 ```powershell
 # Deploy to Cloud Run (automatically builds source in Google Cloud Build)
@@ -208,15 +212,18 @@ Once deployed:
 To run locally:
 
 ```powershell
-# Build
+# Build frontend + Go binary
 .\build.ps1 web
 .\build.ps1 go
 
+# Create a local super_admin account (when auth.provider: builtin)
+.\latchz.exe admin -email admin@lab.local -role super_admin -password "your-password"
+
 # Run (uses latchz.yaml in project root)
-go run ./cmd/latchz serve
+.\latchz.exe serve
 ```
 
-The local config uses `auth.provider: dummy` to bypass login for testing.
+Set `auth.provider: builtin` in `latchz.yaml` to authenticate locally without an external OIDC provider.
 
 ---
 
@@ -227,6 +234,9 @@ All config values can be set via env vars using the `LATCHZ_` prefix:
 | Env Var                          | Config Key                    |
 |----------------------------------|-------------------------------|
 | `LATCHZ_SERVER_DOMAIN`           | `server.domain`               |
+| `LATCHZ_SERVER_LISTEN`           | `server.listen`               |
+| `LATCHZ_SERVER_MTLS_LISTEN`      | `server.mtls_listen`          |
+| `LATCHZ_SERVER_MDM_DOMAIN`       | `server.mdm_domain`           |
 | `LATCHZ_SERVER_MASTER_SECRET`    | `server.master_secret`        |
 | `LATCHZ_DATABASE_DSN`            | `database.dsn`                |
 | `LATCHZ_AUTH_OIDC_CLIENT_ID`     | `auth.oidc.client_id`         |
@@ -238,7 +248,9 @@ All config values can be set via env vars using the `LATCHZ_` prefix:
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
-| Enrollment fails with `0x80192F76` | TLS cert not trusted | Ensure Cloud Run TLS is active and domain mapping is verified |
+| Enrollment fails with `0x80192F76` / `0x80072F8F` | TLS cert not trusted by Windows | Ensure valid public TLS cert, or import `pane_dev.crt` into the device's Local Machine `Trusted Root Certification Authorities` store |
+| Enrollment fails with `0x80072F0C` | TLS endpoint requested a client cert during Discovery/XCEP/WSTEP | Keep `server.listen` (`:443`) free of client-cert requests and route mTLS check-ins to `server.mtls_listen` (`:8443`) or a separate `server.mdm_domain` |
+| Enrollment fails with `0x80180024` / `0x80180026` | Device still holds a stale MDM enrollment entry | Unenroll from **Settings → Accounts → Access work or school** (or clear stale `HKLM:\SOFTWARE\Microsoft\Enrollments\<GUID>`) before re-enrolling |
 | Login redirects to wrong URL | OAuth redirect URI mismatch | Add exact URL to Google OAuth credentials |
 | Device doesn't appear in dashboard | Stale browser cache | Navigate to `/devices` — don't use old device ID URLs |
 | DB resets on redeploy | No persistent volume | Use Cloud SQL or Storage volume mount |

@@ -93,7 +93,7 @@ const (
   </characteristic>
   <characteristic type="APPLICATION">
     <parm name="APPID" value="w7"/>
-    <parm name="PROVIDER-ID" value="PaneMDM"/>
+    <parm name="PROVIDER-ID" value="LatchzMDM"/>
     <parm name="NAME" value="Latchz MDM"/>
     <parm name="ADDR" value="%s"/>
     <parm name="CONNRETRYFREQ" value="6"/>
@@ -105,8 +105,8 @@ const (
     <characteristic type="APPAUTH">
       <parm name="AAUTHLEVEL" value="CLIENT"/>
       <parm name="AAUTHTYPE" value="DIGEST"/>
-      <parm name="AAUTHNAME" value="PaneMDM"/>
-      <parm name="AAUTHSECRET" value="PaneMDM"/>
+      <parm name="AAUTHNAME" value="LatchzMDM"/>
+      <parm name="AAUTHSECRET" value="LatchzMDM"/>
       <parm name="AAUTHDATA" value="nonce"/>
     </characteristic>
     <characteristic type="APPAUTH">
@@ -119,7 +119,7 @@ const (
   </characteristic>
   <characteristic type="DMClient">
     <characteristic type="Provider">
-      <characteristic type="PaneMDM">
+      <characteristic type="LatchzMDM">
         <parm name="EntDeviceName" value="%s"/>
         <parm name="RequireMessageSigning" value="false" datatype="boolean"/>
         <characteristic type="Poll">

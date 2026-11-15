@@ -73,7 +73,7 @@ func (h *Handler) HandleXCEP(ca *pki.CA) http.HandlerFunc {
 									OIDReference: 0,
 									CAs:          XCEPPolicyCAs{CA: []int{0}},
 									Attributes: XCEPPolicyAttribs{
-										CommonName:   "PaneMDMClient",
+										CommonName:   "LatchzMDMClient",
 										PolicySchema: 3,
 										CertificateValidity: XCEPValidity{
 											ValidityPeriodSeconds: 365 * 24 * 3600, // 1 year
@@ -122,7 +122,7 @@ func (h *Handler) HandleXCEP(ca *pki.CA) http.HandlerFunc {
 func (h *Handler) HandleCADownload(ca *pki.CA) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Header().Set("Content-Disposition", `attachment; filename="pane-ca.pem"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="latchz-ca.pem"`)
 		w.Write(ca.CertPEM())
 	}
 }

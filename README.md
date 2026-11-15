@@ -22,39 +22,44 @@ Latchz is an open-source, single-binary Windows MDM (Mobile Device Management) s
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Latchz Single Binary               │
-├─────────────────────────────────────────────────────┤
-│  Go Backend (go-chi/chi v5)                         │
-│  ├── WSTEP Enrollment Handler (/wstep)              │
-│  ├── OMA-DM / SyncML Handler (/mdm)                 │
-│  ├── XCEP Certificate Enrollment (/msce)            │
-│  ├── REST API (/api/v1/*)                           │
-│  ├── Auth Dashboard (/auth/*)                       │
-│  ├── Embedded React SPA (/*)                        │
-│  └── Emergency Access (/emergency)                  │
-│                                                     │
-│  Auth Layer                                         │
-│  ├── OIDC (go-jose/jose4 + coreos/go-oidc)          │
-│  ├── Builtin (local username/password)              │
-│  ├── JWT Session + Enrollment Tokens                │
-│  └── RBAC Middleware                                │
-│                                                     │
-│  PKI Subsystem                                      │
-│  ├── RSA 4096-bit CA (self-signed)                  │
-│  ├── Device cert signing (XCEP)                     │
-│  └── Encrypted key-at-rest (argon2id)               │
-│                                                     │
-│  Policy Engine                                      │
-│  ├── DDF XML Parser (cmd/ddf-compiler)              │
-│  ├── Policy Catalog (SQLite / PostgreSQL)           │
-│  └── ADMX Policy Resolution                         │
-│                                                     │
-│  Database Layer                                     │
-│  ├── golang-migrate (versioned migrations)          │
-│  ├── SQLite (development)                           │
-│  └── PostgreSQL / libpq (production)                │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    Latchz Single Binary                     │
+├─────────────────────────────────────────────────────────────┤
+│  Go Backend (go-chi/chi v5)                                 │
+│  ├── Primary TLS (:443, NoClientCert — WinHTTP safe)        │
+│  │   ├── MDM Discovery (/EnterpriseEnrollment/*,            │
+│  │   │                  /EnrollmentServer/*)                │
+│  │   ├── XCEP Certificate Policy (/xcep, /pki/ca.pem)       │
+│  │   ├── WSTEP Device Provisioning (/wstep)                 │
+│  │   ├── Auth & Enrollment Broker (/auth/*)                 │
+│  │   ├── Admin REST API (/api/*)                            │
+│  │   ├── Embedded React SPA (/*)                            │
+│  │   └── Emergency Access (/emergency)                      │
+│  └── mTLS Endpoint (:8443 or SNI server.mdm_domain)         │
+│      ├── OMA-DM / SyncML Handler (/omadm)                   │
+│      └── WSTEP Certificate Renewal (/wstep ROBO)            │
+│                                                             │
+│  Auth Layer                                                 │
+│  ├── OIDC (go-jose/jose4 + coreos/go-oidc)                  │
+│  ├── Builtin (local username/password + AuthHost WAB flow)  │
+│  ├── JWT Session + Single-Use Enrollment Tokens             │
+│  └── RBAC Middleware                                        │
+│                                                             │
+│  PKI Subsystem                                              │
+│  ├── RSA 4096-bit CA (self-signed)                          │
+│  ├── Device cert signing (CN=<device_id>, client auth EKU)  │
+│  └── Encrypted key-at-rest (argon2id)                       │
+│                                                             │
+│  Policy Engine                                              │
+│  ├── DDF XML Parser (cmd/ddf-compiler)                      │
+│  ├── Policy Catalog (SQLite / PostgreSQL)                   │
+│  └── SyncML Replace / Get / Delete / Exec Reconciliation    │
+│                                                             │
+│  Database Layer                                             │
+│  ├── golang-migrate (versioned migrations)                  │
+│  ├── SQLite (development / single-node)                     │
+│  └── PostgreSQL / libpq (production)                        │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Requirements
@@ -64,8 +69,8 @@ To run Latchz, you need:
 1. **Go 1.26.2+** (to build from source)
 2. **Node.js 20+** (to build the frontend, optional if using prebuilt binary)
 3. A **domain name** (`mdm.example.com`) with DNS management access
-4. An **Identity Provider (IdP)** via OIDC (e.g., Google Workspace, Entra ID) — or use builtin auth for testing
-5. **Port 443** exposed (and **port 80** if using Auto-TLS / Let's Encrypt)
+4. An **Identity Provider (IdP)** via OIDC (e.g., Google Workspace, Entra ID) — or use builtin auth for testing/self-hosted setups
+5. **Port 443** exposed for enrollment & dashboard, plus **port 8443** (or a separate `server.mdm_domain` hostname on 443) for mTLS OMA-DM device check-ins (and **port 80** if using Auto-TLS / Let's Encrypt)
 
 ## Quick Start
 
@@ -108,7 +113,9 @@ All configuration values can be set in `latchz.yaml` or overridden via environme
 | Config Key | Env Var | Default | Description |
 |---|---|---|---|
 | `server.domain` | `LATCHZ_SERVER_DOMAIN` | — | Public FQDN of the MDM server |
-| `server.listen` | `LATCHZ_SERVER_LISTEN` | `:443` / `:8443` | Network address to bind |
+| `server.listen` | `LATCHZ_SERVER_LISTEN` | `:443` / `:8443` | Primary HTTPS address (`NoClientCert` for Windows `WinHTTP` enrollment & UI) |
+| `server.mtls_listen` | `LATCHZ_SERVER_MTLS_LISTEN` | `""` (`:8443` recommended) | Dedicated mTLS listener (`VerifyClientCertIfGiven`) for `/omadm` device check-ins |
+| `server.mdm_domain` | `LATCHZ_SERVER_MDM_DOMAIN` | `""` | Optional SNI hostname for mTLS on `:443` instead of a second port (e.g., `mdm-mtls.example.com`) |
 | `server.enrollment_domain` | `LATCHZ_SERVER_ENROLLMENT_DOMAIN` | (same as domain) | Email domain for user enrollment |
 | `server.master_secret` | `LATCHZ_SERVER_MASTER_SECRET` | — | Encrypts the CA private key at rest |
 | `server.emergency_token` | `LATCHZ_SERVER_EMERGENCY_TOKEN` | — | Emergency access token for dashboard lockout recovery |
@@ -124,6 +131,8 @@ All configuration values can be set in `latchz.yaml` or overridden via environme
 | `auth.oidc.client_secret` | `LATCHZ_AUTH_OIDC_CLIENT_SECRET` | — | OIDC client secret |
 | `auth.oidc.allowed_domains` | `LATCHZ_AUTH_OIDC_ALLOWED_DOMAINS` | — | Email domains restricted for login |
 
+> **Why separate `listen` and `mtls_listen` / `mdm_domain`?** Windows `DeviceEnroller.exe` uses `WinHTTP`, which aborts unauthenticated Discovery/XCEP/WSTEP requests with `0x80072f0c` (`ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED`) if the server sends a TLS `CertificateRequest` handshake message before the device has enrolled. Latchz keeps `server.listen` (`:443`) free of client-cert prompts and provisions devices to check in via `server.mtls_listen` (e.g., `:8443`) or `server.mdm_domain`.
+
 See `latchz.example.yaml` for the complete reference with comments.
 
 ## Deployment
@@ -132,9 +141,10 @@ See `latchz.example.yaml` for the complete reference with comments.
 
 ```yaml
 server:
-  domain: localhost
-  listen: ":8443"
-  enrollment_domain: localhost
+  domain: enterpriseenrollment.lab.local
+  listen: ":443"
+  mtls_listen: ":8443"
+  enrollment_domain: lab.local
 
 tls:
   mode: self-signed
@@ -153,6 +163,7 @@ auth:
 server:
   domain: mdm.example.com
   listen: ":443"
+  mtls_listen: ":8443"
   enrollment_domain: example.com
   master_secret: "your-high-entropy-random-string"
 
@@ -187,6 +198,7 @@ docker build -t latchz:latest .
 docker run -d \
   --name latchz \
   -p 443:443 \
+  -p 8443:8443 \
   -v $(pwd)/latchz.yaml:/app/latchz.yaml:ro \
   -v latchz-data:/var/lib/latchz \
   latchz:latest
@@ -334,7 +346,10 @@ make clean        # Remove build artifacts
 │   ├── latchz/              # Main server binary (serve, admin, version commands)
 │   └── ddf-compiler/        # DDF XML parser → policy catalog compiler
 ├── docs/
-│   └── self-hosting.md      # Google Cloud Run deployment guide
+│   ├── architecture.md      # System architecture, protocol flows, and state machines
+│   ├── ddf-compiler.md      # Microsoft DDF policy catalog ingestion guide
+│   ├── reverse-proxy.md     # Nginx / Caddy / Traefik reverse-proxy & mTLS setup
+│   └── self-hosting.md      # Google Cloud Run & self-hosting walkthrough
 ├── internal/
 │   ├── api/                 # REST API handlers (catalog, compliance, devices, groups, profiles)
 │   ├── auth/                # OIDC + builtin auth, JWT token management

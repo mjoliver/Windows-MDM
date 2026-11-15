@@ -29,8 +29,8 @@ Latchz MDM is a **single Go binary** (`latchz` or `ddf-compiler`) that serves th
 
 | Role | Protocol | Port | Description |
 |------|----------|------|-------------|
-| **MDM Server** | OMA-DM / MS-MDE2 / WSTEP / XCEP | 443 (mTLS) | Manages enrolled Windows devices |
-| **Admin Web API** | REST + OIDC + HTML | 443 (TLS) | Dashboard for managing devices, profiles, groups |
+| **Enrollment & Admin Server** | MS-MDE2 / XCEP / WSTEP / REST / OIDC | `443` (TLS, `NoClientCert`) | Device enrollment (`WinHTTP`-safe) + React Admin Dashboard |
+| **OMA-DM Management Endpoint** | SyncML / OMA-DM + WSTEP ROBO Renewal | `8443` (`mtls_listen`) or `443` (`mdm_domain` SNI, mTLS) | Mutual-TLS authenticated device check-ins, policy push, and remote actions |
 | **DDF Compiler** | CLI tool | N/A | Ingests Microsoft DDF XML into the policy catalog |
 
 The system uses a **relational database** (PostgreSQL or SQLite) as the central state store, with **in-memory session storage** for active device sessions.
@@ -257,42 +257,32 @@ sequenceDiagram
     participant DB as Database
 
     Note over D, DB: Phase 1: Discovery
-    D->>S: GET /enrollment/server/portalmanagementserver
-    S-->>D: XML: IssuerURL, AuthURL, ClientID
+    D->>S: POST /EnterpriseEnrollment/Enrollment.svc (or /EnrollmentServer/Discovery.svc)
+    S-->>D: SOAP DiscoverResponse (AuthPolicy=Federated, /auth/login, /xcep, /wstep)
 
-    Note over D, IdP: Phase 2: User Authentication
-    D->>WAB: Open auth URL with login_hint
-    WAB->>S: GET /auth/login?flow=enroll&appru=<return_url>&login_hint=<user>
-    S->>IdP: OAuth2 Authorization Request
-    IdP->>User: Login prompt
-    User->>IdP: Credentials
-    IdP->>S: Redirect with auth code
-    S->>IdP: Exchange code + client_secret
-    IdP-->>S: ID Token + Access Token
+    Note over D, IdP: Phase 2: User Authentication (AuthHost WAB)
+    D->>WAB: Open /auth/login?appru=<ms-app://...>&login_hint=<user>
+    WAB->>S: Authenticate via OIDC or Builtin Login
     S->>DB: Upsert user, assign role
-    S->>S: Issue enrollment JWT token
+    S->>S: Issue single-use enrollment JWT token
+    S-->>WAB: HTML bridge sets external.Property("token") + FinalNext()
 
-    Note over D, PKI: Phase 3: Certificate Enrollment (XCEP)
-    D->>S: POST /enrollment/server/wl?Operation=EnrollCert
-    S->>S: Validate enrollment JWT
-    S->>PKI: Issue device certificate (sign with Root CA)
-    PKI-->>S: Signed device certificate + chain
-    S->>DB: Store certificate record
-    S-->>D: X509Certificate2 + chain
+    Note over D, PKI: Phase 3: Certificate Policy (MS-XCEP)
+    D->>S: POST /xcep
+    S-->>D: SOAP GetPoliciesResponse (2048-bit RSA policy + Root CA thumbprint)
 
-    Note over D, DB: Phase 4: MDM Registration (WSTEP)
-    D->>S: POST /enrollment/server/wl?Operation=Provision
-    S->>S: Validate enrollment JWT (single-use)
-    S->>DB: Mark token consumed
-    S->>PKI: Issue second cert for MDM auth
-    S-->>D: Provisioning XML + certs
+    Note over D, DB: Phase 4: Certificate Issuance & MDM Provisioning (MS-WSTEP)
+    D->>S: POST /wstep (PKCS#10 CSR + WS-Security enrollment JWT)
+    S->>S: Validate & consume single-use enrollment JWT
+    S->>PKI: Sign device client certificate (CN=<device_id>)
+    S->>DB: Upsert device + store certificate record
+    S-->>D: RSTRC w/ WAP-Provisioning XML (Root CA, MY cert, DMClient/APPLICATION -> :8443 / mdm_domain)
 
-    Note over D, DB: Phase 5: First MDM Check-in
-    D->>S: POST /omadm (SyncML with Alert 1200)
-    S->>S: Authenticate via mTLS cert
-    S->>DB: Create device record
-    S->>S: Create session, start interrogation
-    S-->>D: SyncML response with Get commands
+    Note over D, DB: Phase 5: First MDM Check-in (mTLS)
+    D->>S: POST /omadm on mTLS listener (SyncML Alert 1201/1200)
+    S->>S: Verify mTLS client cert & resolve device ID
+    S->>S: Create session, queue DevInfo/DevDetail Get interrogation
+    S-->>D: SyncML response with Status ACKs + Get commands
 
     Note over D, DB: Phase 6: Device Info Collection
     D->>S: POST /omadm (SyncML with Results)
@@ -852,14 +842,14 @@ graph LR
 
 ```mermaid
 graph TB
-    subgraph "Public Routes"
+    subgraph "Public & Enrollment Routes"
         P1["GET /"]
-        P2["GET /auth/login"]
+        P2["GET/POST /auth/login"]
         P3["GET /auth/callback"]
-        P4["POST /auth/login"]
-        P5["POST /auth/logout"]
-        P6["GET /enrollment/server/*"]
-        P7["POST /omadm"]
+        P4["POST /auth/logout"]
+        P5["GET/POST /EnterpriseEnrollment/Enrollment.svc"]
+        P6["POST /xcep & POST /wstep"]
+        P7["POST /omadm (mTLS)"]
     end
 
     subgraph "Admin API Routes<br/>(requires session auth)"
@@ -867,7 +857,9 @@ graph TB
         A2["GET /api/devices/:id"]
         A3["DELETE /api/devices/:id"]
         A4["POST /api/devices/:id/wipe"]
-        A5["POST /api/devices/:id/compliance/refresh"]
+        A5["POST /api/devices/:id/reboot"]
+        A5B["POST /api/devices/:id/sync"]
+        A5C["POST /api/devices/:id/lock"]
         A6["GET /api/profiles"]
         A7["POST /api/profiles"]
         A8["GET /api/profiles/:id"]
@@ -880,8 +872,7 @@ graph TB
         A15["DELETE /api/groups/:id"]
         A16["GET /api/catalog"]
         A17["GET /api/compliance"]
-        A18["GET /api/health"]
-        A19["GET /api/metrics"]
+        A18["GET /api/system/health"]
     end
 
     subgraph "Internal/Web"
@@ -901,6 +892,8 @@ graph TB
     A3 --> Admin
     A4 --> Admin
     A5 --> Admin
+    A5B --> Admin
+    A5C --> Admin
     A6 --> Admin
     A7 --> Admin
     A8 --> Admin
@@ -914,7 +907,6 @@ graph TB
     A16 --> Admin
     A17 --> Admin
     A18 --> Admin
-    A19 --> Admin
 
     W1 --> Web
 ```

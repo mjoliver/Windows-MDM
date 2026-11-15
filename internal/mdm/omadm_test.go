@@ -12,7 +12,7 @@ func TestHandleOMADM_FirstCheckIn(t *testing.T) {
 	database := testutil.DB(t)
 	ca := testutil.CA(t, database)
 	deviceID := testutil.SeedDevice(t, database, "HW-OMADM")
-	cert := testutil.IssueClientCert(t, ca, deviceID, "PaneMDMClient")
+	cert := testutil.IssueClientCert(t, ca, deviceID, "LatchzMDMClient")
 	h := NewHandler(database.DB, ca.TLSPool(), "mdm.example.com", "")
 
 	syncml := `<?xml version="1.0" encoding="UTF-8"?>
@@ -59,7 +59,7 @@ func TestHandleOMADM_WipeFinalizesOnDelivery(t *testing.T) {
 	database := testutil.DB(t)
 	ca := testutil.CA(t, database)
 	deviceID := testutil.SeedDevice(t, database, "HW-WIPE2")
-	cert := testutil.IssueClientCert(t, ca, deviceID, "PaneMDMClient")
+	cert := testutil.IssueClientCert(t, ca, deviceID, "LatchzMDMClient")
 	if _, err := EnqueueWipe(database.DB, deviceID); err != nil {
 		t.Fatal(err)
 	}

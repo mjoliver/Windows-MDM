@@ -24,7 +24,7 @@ func TestAuthenticateDevice_RequiresVerifiedClientCert(t *testing.T) {
 	database := testutil.DB(t)
 	ca := testutil.CA(t, database)
 	deviceID := testutil.SeedDevice(t, database, "HWID-1")
-	cert := testutil.IssueClientCert(t, ca, deviceID, "PaneMDMClient")
+	cert := testutil.IssueClientCert(t, ca, deviceID, "LatchzMDMClient")
 	h := NewHandler(database.DB, ca.TLSPool(), "mdm.example.com", "")
 
 	t.Run("valid client cert authenticates", func(t *testing.T) {
@@ -79,7 +79,7 @@ func TestAuthenticateDevice_TrustedProxyHeader(t *testing.T) {
 	database := testutil.DB(t)
 	ca := testutil.CA(t, database)
 	deviceID := testutil.SeedDevice(t, database, "HWID-PX")
-	cert := testutil.IssueClientCert(t, ca, deviceID, "PaneMDMClient")
+	cert := testutil.IssueClientCert(t, ca, deviceID, "LatchzMDMClient")
 	h := NewHandler(database.DB, ca.TLSPool(), "mdm.example.com", "X-Forwarded-Client-Cert")
 
 	// Simulate nginx $ssl_client_escaped_cert (URL-encoded PEM).

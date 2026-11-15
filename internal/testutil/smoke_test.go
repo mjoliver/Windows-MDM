@@ -23,7 +23,7 @@ func TestSmoke_DB_CA_Seed(t *testing.T) {
 
 	// issued client cert must chain to the CA pool
 	deviceID := SeedDevice(t, database, "HWID-SMOKE")
-	cert := IssueClientCert(t, ca, deviceID, "PaneMDMClient")
+	cert := IssueClientCert(t, ca, deviceID, "LatchzMDMClient")
 	if _, err := cert.Verify(x509.VerifyOptions{
 		Roots:     ca.TLSPool(),
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

@@ -85,16 +85,18 @@ Microsoft publishes DDF XML files for all Windows CSPs (Configuration Service Pr
 
 ### Where to Find Them
 
-1. **Microsoft Intune Content Tools** — The [Microsoft Intune Windows 10 SDK](https://developer.microsoft.com/en-us/windows/iot/sdks) includes DDF reference files.
+1. **Official Microsoft CSP DDF Reference Archive (Recommended)** — Microsoft publishes downloadable zip bundles of all Windows 10/11 CSP DDF v2 XML schemas directly on [Configuration service provider DDF files (Microsoft Learn)](https://learn.microsoft.com/en-us/windows/client-management/mdm/configuration-service-provider-ddf) (for example, `DDFv2Feb2026.zip`, which contains 313 CSP XML files / ~4,344 policy settings and compiles in under a second).
 
-2. **Microsoft Documentation** — Each CSP page on [Microsoft Learn](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-configuration-service-provider) references the DDF schema. The DDF XML files are sometimes bundled with the [MDT (Microsoft Deployment Toolkit)](https://learn.microsoft.com/en-us/windows/deployment/mt/) or the [Windows ADK](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install).
+2. **Microsoft Intune Content Tools** — The [Microsoft Intune Windows 10 SDK](https://developer.microsoft.com/en-us/windows/iot/sdks) includes DDF reference files.
 
-3. **Windows SDK** — If you have the Windows 10/11 SDK installed, DDF files are typically at:
+3. **Microsoft Documentation & Windows ADK** — Each CSP page on [Microsoft Learn](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-configuration-service-provider) references its DDF schema, and DDF XML files are also bundled with the [Windows ADK](https://learn.microsoft.com/en-us/windows-hardware/get-started/adk-install).
+
+4. **Windows SDK** — If you have the Windows 10/11 SDK installed, DDF files are typically at:
    ```
    C:\Program Files (x86)\Windows Kits\10\PolicyConfig\
    ```
 
-4. **Community collections** — Various community-maintained collections of DDF files exist on GitHub. Search for "windows DDF files" or "Microsoft DDF CSP".
+5. **Community collections** — Various community-maintained collections of DDF files exist on GitHub. Search for "windows DDF files" or "Microsoft DDF CSP".
 
 ### Organizing DDF Files
 

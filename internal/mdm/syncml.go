@@ -154,7 +154,7 @@ type Exec struct {
 	Items   []Item   `xml:"Item"`
 }
 
-// ── Well-known OMA-URIs used by Pane ─────────────────────────────────────────
+// ── Well-known OMA-URIs used by Latchz ───────────────────────────────────────
 
 const (
 	// DevInfo — populated on first check-in
@@ -174,7 +174,7 @@ const (
 	OMADevDetailLocalTime = "./DevDetail/Ext/Microsoft/LocalTime"
 
 	// DMClient — management server configuration
-	OMADMClientPollFrequency = "./Vendor/MSFT/DMClient/Provider/PaneMDM/Poll/IntervalForRemainingScheduledRetries"
+	OMADMClientPollFrequency = "./Vendor/MSFT/DMClient/Provider/LatchzMDM/Poll/IntervalForRemainingScheduledRetries"
 
 	// Policy CSPs
 	OMAPolicyPrefix = "./Device/Vendor/MSFT/Policy/Config"
