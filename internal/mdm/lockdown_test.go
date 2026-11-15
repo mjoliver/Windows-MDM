@@ -40,12 +40,12 @@ func TestDeviceLockdownInvertedPasswordAndUSBStorageModes(t *testing.T) {
 		t.Fatalf("CRITICAL: Atomic DeviceLock must set DevicePasswordEnabled='0' (Enabled) when RequirePassword=true, got %s", atomicPayload)
 	}
 
-	// Verify read_only USB storage sets DenyWrite=1, DenyRead=0
+	// Verify read_only USB storage sets DenyWrite=1, ADMX DenyRead=<disabled/>
 	var denyWrite, denyRead string
 	_ = database.DB.QueryRow(`SELECT payload FROM command_queue WHERE device_id = ? AND oma_uri = ?`, devID, OMAStorageDenyWrite).Scan(&denyWrite)
 	_ = database.DB.QueryRow(`SELECT payload FROM command_queue WHERE device_id = ? AND oma_uri = ?`, devID, OMAStorageDenyRead).Scan(&denyRead)
-	if denyWrite != "1" || denyRead != "0" {
-		t.Fatalf("expected read_only USB storage DenyWrite=1 DenyRead=0, got %q/%q", denyWrite, denyRead)
+	if denyWrite != "1" || denyRead != "<disabled/>" {
+		t.Fatalf("expected read_only USB storage DenyWrite=1 DenyRead=<disabled/>, got %q/%q", denyWrite, denyRead)
 	}
 
 	// Verify AssignedAccess KioskModeApp JSON

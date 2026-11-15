@@ -9,10 +9,12 @@ import (
 )
 
 const (
-	// Removable USB storage Policy CSP nodes (<Format>int</Format>, 0=Allowed, 1=Denied)
+	// Removable USB storage Policy CSP nodes:
+	//   - Storage/RemovableDiskDenyWriteAccess is <Format>int</Format> (0=Allowed, 1=Denied)
+	//   - ADMX_RemovableStorage/RemovableDisks_Deny{Read,Execute}_Access_2 are ADMX-backed <Format>chr</Format> ("<disabled/>" | "<enabled/>")
 	OMAStorageDenyWrite   = "./Device/Vendor/MSFT/Policy/Config/Storage/RemovableDiskDenyWriteAccess"
-	OMAStorageDenyRead    = "./Device/Vendor/MSFT/Policy/Config/Storage/RemovableDiskDenyReadAccess"
-	OMAStorageDenyExecute = "./Device/Vendor/MSFT/Policy/Config/Storage/RemovableDiskDenyExecuteAccess"
+	OMAStorageDenyRead    = "./Device/Vendor/MSFT/Policy/Config/ADMX_RemovableStorage/RemovableDisks_DenyRead_Access_2"
+	OMAStorageDenyExecute = "./Device/Vendor/MSFT/Policy/Config/ADMX_RemovableStorage/RemovableDisks_DenyExecute_Access_2"
 	OMASystemStorageCard  = "./Device/Vendor/MSFT/Policy/Config/System/AllowStorageCard" // 0=Block, 1=Allow
 
 	// DeviceLock Policy CSP nodes (NOTE: DevicePasswordEnabled is INVERTED: 0=Enabled, 1=Disabled,
@@ -83,12 +85,12 @@ func BuildKioskModeAppJSON(account, aumid string) (string, error) {
 // EnqueueDeviceLockdown queues OMA-DM Replace/Delete commands for Storage, DeviceLock,
 // Camera/Bluetooth, and AssignedAccess CSPs.
 func EnqueueDeviceLockdown(dbConn *sql.DB, deviceID string, spec DeviceLockdownSpec, prevKioskEnforced bool) (queued int, kioskNow bool, err error) {
-	denyWrite, denyRead, denyExec, allowCard := "0", "0", "0", "1"
+	denyWrite, denyRead, denyExec, allowCard := "0", "<disabled/>", "<disabled/>", "1"
 	switch strings.ToLower(strings.TrimSpace(spec.USBStorageMode)) {
 	case "read_only":
-		denyWrite, denyRead, denyExec, allowCard = "1", "0", "1", "1"
+		denyWrite, denyRead, denyExec, allowCard = "1", "<disabled/>", "<enabled/>", "1"
 	case "block_all":
-		denyWrite, denyRead, denyExec, allowCard = "1", "1", "1", "0"
+		denyWrite, denyRead, denyExec, allowCard = "1", "<enabled/>", "<enabled/>", "0"
 	}
 
 	items := []struct {
