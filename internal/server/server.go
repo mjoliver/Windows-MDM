@@ -284,8 +284,10 @@ func (s *Server) routes() {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
 
-			// admin gates state-changing and destructive operations.
+			// admin gates state-changing and destructive operations; superAdmin gates
+			// account & role mutations so an admin cannot escalate to super_admin.
 			admin := s.requireRole("admin", "super_admin")
+			superAdmin := s.requireRole("super_admin")
 
 			r.Get("/me", s.api.HandleMe)
 
@@ -322,6 +324,13 @@ func (s *Server) routes() {
 			// Compliance
 			r.Get("/compliance", s.api.HandleFleetCompliance)
 			r.Get("/compliance/{deviceId}", s.api.HandleDeviceCompliance)
+
+			// Administration: Users & Audit Log
+			r.With(admin).Get("/users", s.api.HandleListUsers)
+			r.With(superAdmin).Post("/users", s.api.HandleCreateUser)
+			r.With(superAdmin).Put("/users/{id}", s.api.HandleUpdateUser)
+			r.With(superAdmin).Delete("/users/{id}", s.api.HandleDeleteUser)
+			r.With(admin).Get("/audit", s.api.HandleListAudit)
 
 			// System
 			r.Get("/system/health", s.handleHealth)

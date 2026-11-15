@@ -145,6 +145,35 @@ export interface DeviceCompliance {
   }[]
 }
 
+export interface UserSummary {
+  id: string
+  email: string
+  display_name: string
+  role: 'super_admin' | 'admin' | 'user'
+  auth_provider: 'builtin' | 'oidc'
+  has_password: boolean
+  created_at: string
+  last_login: string | null
+}
+
+export interface AuditEntry {
+  id: number
+  user_email: string
+  action: string
+  target_type: string
+  target_id: string
+  details: string
+  ip_address: string
+  created_at: string
+}
+
+export interface AuditPage {
+  entries: AuditEntry[]
+  total: number
+  limit: number
+  offset: number
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -207,5 +236,28 @@ export const api = {
   compliance: {
     fleet:  () => get<FleetCompliance>('/compliance'),
     device: (id: string) => get<DeviceCompliance>(`/compliance/${enc(id)}`),
+  },
+
+  // Administration: Users & Roles
+  users: {
+    list:   () => get<UserSummary[]>('/users'),
+    create: (data: { email: string; display_name?: string; role: string; auth_provider?: string; password?: string }) =>
+      post<UserSummary>('/users', data),
+    update: (id: string, data: { display_name?: string; role?: string; auth_provider?: string; password?: string }) =>
+      put<UserSummary>(`/users/${enc(id)}`, data),
+    delete: (id: string) => del<{ status: string; id: string }>(`/users/${enc(id)}`),
+  },
+
+  // Administration: Audit Log
+  audit: {
+    list: (params?: { search?: string; action?: string; target_type?: string; limit?: number; offset?: number }) => {
+      const q = new URLSearchParams()
+      if (params?.search)      q.set('search', params.search)
+      if (params?.action)      q.set('action', params.action)
+      if (params?.target_type) q.set('target_type', params.target_type)
+      if (params?.limit)       q.set('limit', String(params.limit))
+      if (params?.offset)      q.set('offset', String(params.offset))
+      return get<AuditPage>(`/audit?${q}`)
+    },
   },
 }

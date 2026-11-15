@@ -6,6 +6,8 @@ import { ProfilesPage }     from './pages/Profiles'
 import { ProfileDetailPage }from './pages/ProfileDetail'
 import { GroupsPage }       from './pages/Groups'
 import { CompliancePage }   from './pages/Compliance'
+import { UsersPage }        from './pages/Users'
+import { AuditLogPage }     from './pages/AuditLog'
 import { LoginPage }        from './pages/Login'
 
 export default function App() {
@@ -20,6 +22,8 @@ export default function App() {
         <Route path="/profiles/:id" element={<ProfileDetailPage />} />
         <Route path="/groups"      element={<GroupsPage />} />
         <Route path="/compliance"  element={<CompliancePage />} />
+        <Route path="/users"       element={<UsersPage />} />
+        <Route path="/audit"       element={<AuditLogPage />} />
         {/* Catch-all → overview */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

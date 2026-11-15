@@ -67,4 +67,22 @@ func TestRBACChain_Integration(t *testing.T) {
 	if rec2.Code != 200 {
 		t.Fatalf("admin role: want 200, got %d", rec2.Code)
 	}
+
+	// admin role cannot mutate users (super_admin required to prevent escalation)
+	r3 := chi.NewRouter()
+	r3.Group(func(r chi.Router) {
+		r.Use(s2.requireAuth)
+		r.With(s2.requireRole("admin", "super_admin")).Get("/users", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+		r.With(s2.requireRole("super_admin")).Post("/users", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	})
+	recGetUsers := httptest.NewRecorder()
+	r3.ServeHTTP(recGetUsers, httptest.NewRequest("GET", "/users", nil))
+	if recGetUsers.Code != 200 {
+		t.Fatalf("admin GET /users: want 200, got %d", recGetUsers.Code)
+	}
+	recPostUsers := httptest.NewRecorder()
+	r3.ServeHTTP(recPostUsers, httptest.NewRequest("POST", "/users", nil))
+	if recPostUsers.Code != http.StatusForbidden {
+		t.Fatalf("admin POST /users: want 403, got %d", recPostUsers.Code)
+	}
 }

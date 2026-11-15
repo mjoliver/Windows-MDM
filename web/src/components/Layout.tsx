@@ -1,21 +1,24 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Monitor, Shield, Users,
-  CheckSquare, LogOut
+  CheckSquare, LogOut, UserCog, ScrollText
 } from 'lucide-react'
 import { api, type Me } from '../api'
 import { useEffect, useState } from 'react'
 
 interface Props { children: React.ReactNode; title: string }
 
-// Only routes that exist are listed (Policy Catalog / Settings pages are not
-// implemented yet, so their nav links were removed to avoid dead navigation).
 const navItems = [
   { to: '/',          icon: LayoutDashboard, label: 'Overview' },
   { to: '/devices',   icon: Monitor,         label: 'Devices' },
   { to: '/profiles',  icon: Shield,          label: 'Profiles' },
   { to: '/groups',    icon: Users,           label: 'Groups' },
   { to: '/compliance',icon: CheckSquare,     label: 'Compliance' },
+]
+
+const adminNavItems = [
+  { to: '/users', icon: UserCog,    label: 'Users & Roles' },
+  { to: '/audit', icon: ScrollText, label: 'Audit Log' },
 ]
 
 export function Layout({ children, title }: Props) {
@@ -61,6 +64,22 @@ export function Layout({ children, title }: Props) {
               {item.label}
             </NavLink>
           ))}
+
+          {(me.role === 'admin' || me.role === 'super_admin') && (
+            <>
+              <span className="nav-section-label" style={{ fontSize: '0.7rem', fontWeight: 700, opacity: 0.4, margin: '20px 12px 8px', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Administration</span>
+              {adminNavItems.map(item => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+                >
+                  <item.icon size={18} />
+                  {item.label}
+                </NavLink>
+              ))}
+            </>
+          )}
         </nav>
 
         <div className="sidebar-footer">

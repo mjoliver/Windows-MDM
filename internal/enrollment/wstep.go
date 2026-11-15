@@ -285,6 +285,10 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 				writeSoapFault(w, "internal error saving device")
 				return
 			}
+			_, _ = db.ExecContext(r.Context(), dbpkg.Rebind(`
+				INSERT INTO audit_log (user_email, action, target_type, target_id, details, ip_address)
+				VALUES (?, 'device.enroll', 'device', ?, ?, ?)
+			`), userEmail, actualDeviceID, fmt.Sprintf(`{"device_name":%q,"hardware_id":%q}`, info.DeviceName, info.HardwareID), r.RemoteAddr)
 		}
 
 		// ── Step 5: Sign the CSR with our CA ──────────────────────────────
