@@ -36,7 +36,7 @@ func TestDeviceLockdownInvertedPasswordAndUSBStorageModes(t *testing.T) {
 	if err := database.DB.QueryRow(`SELECT payload FROM command_queue WHERE device_id = ? AND command_type = 'Atomic' AND oma_uri = ?`, devID, OMADeviceLockAtomicURI).Scan(&atomicPayload); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(atomicPayload, `"oma_uri":"`+OMADeviceLockPasswordEnabled+`","payload":"0"`) {
+	if !strings.Contains(atomicPayload, `"uri":"`+OMADeviceLockPasswordEnabled+`","data":"0"`) {
 		t.Fatalf("CRITICAL: Atomic DeviceLock must set DevicePasswordEnabled='0' (Enabled) when RequirePassword=true, got %s", atomicPayload)
 	}
 
