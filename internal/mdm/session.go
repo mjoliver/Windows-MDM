@@ -160,6 +160,9 @@ func updateDeviceFromResults(db *sql.DB, deviceID string, sess *Session, results
 	// Persist EnterpriseDesktopAppManagement MSI install status if reported
 	updateAppInstalls(db, deviceID, updates)
 
+	// Persist Windows Update CSP telemetry if reported
+	updateWindowsUpdateTelemetry(db, deviceID, updates)
+
 	// The rest go to compliance_records
 	updateCompliance(db, deviceID, updates)
 }

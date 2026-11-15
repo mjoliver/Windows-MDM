@@ -344,6 +344,7 @@ func (s *Server) routes() {
 			r.With(admin).Post("/devices/{id}/bitlocker/keys/{keyId}/reveal", s.api.HandleRevealBitLockerKey)
 			r.With(admin).Delete("/devices/{id}/bitlocker/keys/{keyId}", s.api.HandleDeleteBitLockerKey)
 			r.With(admin).Post("/devices/{id}/bitlocker/rotate", s.api.HandleRotateBitLockerKeys)
+			r.Get("/devices/{id}/updates", s.api.HandleGetDeviceUpdates)
 
 			// Policy catalog (order matters: specific before param)
 			r.Get("/catalog/csps", s.api.HandleListCSPs)
@@ -375,6 +376,14 @@ func (s *Server) routes() {
 			r.With(admin).Put("/apps/{id}/groups", s.api.HandleAssignAppGroups)
 			r.With(admin).Post("/apps/{id}/install", s.api.HandleInstallAppOnDevices)
 			r.With(admin).Post("/apps/{id}/uninstall", s.api.HandleUninstallAppOnDevices)
+
+			// Windows Update Rings (Policy/Config/Update & Update CSPs)
+			r.Get("/updates/rings", s.api.HandleListUpdateRings)
+			r.With(admin).Post("/updates/rings", s.api.HandleCreateUpdateRing)
+			r.Get("/updates/rings/{id}", s.api.HandleGetUpdateRing)
+			r.With(admin).Put("/updates/rings/{id}", s.api.HandleUpdateUpdateRing)
+			r.With(admin).Delete("/updates/rings/{id}", s.api.HandleDeleteUpdateRing)
+			r.With(admin).Post("/updates/rings/{id}/pause", s.api.HandlePauseResumeUpdateRing)
 
 			// Compliance, Security Posture & BitLocker
 			r.Get("/compliance", s.api.HandleFleetCompliance)

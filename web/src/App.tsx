@@ -6,6 +6,7 @@ import { ProfilesPage }     from './pages/Profiles'
 import { ProfileDetailPage }from './pages/ProfileDetail'
 import { GroupsPage }       from './pages/Groups'
 import { AppsPage }         from './pages/Apps'
+import { UpdatesPage }      from './pages/Updates'
 import { CompliancePage }   from './pages/Compliance'
 import { UsersPage }        from './pages/Users'
 import { AuditLogPage }     from './pages/AuditLog'
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/profiles/:id" element={<ProfileDetailPage />} />
         <Route path="/groups"      element={<GroupsPage />} />
         <Route path="/apps"        element={<AppsPage />} />
+        <Route path="/updates"     element={<UpdatesPage />} />
         <Route path="/compliance"  element={<CompliancePage />} />
         <Route path="/users"       element={<UsersPage />} />
         <Route path="/audit"       element={<AuditLogPage />} />

@@ -305,6 +305,46 @@ export interface DeviceBitLocker {
   recovery_keys: RecoveryKeyMeta[]
 }
 
+export interface UpdateRing {
+  id: string
+  name: string
+  description: string
+  allow_auto_update: number
+  quality_deferral_days: number
+  feature_deferral_days: number
+  active_hours_start: number
+  active_hours_end: number
+  quality_deadline_days: number
+  feature_deadline_days: number
+  grace_period_days: number
+  quality_pause_start: string
+  feature_pause_start: string
+  quality_paused: boolean
+  feature_paused: boolean
+  target_all_devices: boolean
+  priority: number
+  group_ids: string[]
+  device_count: number
+  created_at: string
+  updated_at: string
+  governed_devices?: number
+  commands_queued?: number
+}
+
+export interface DeviceUpdateTelemetry {
+  device_id: string
+  ring_id: string
+  ring_name: string
+  quality_deferral_days: number | null
+  feature_deferral_days: number | null
+  active_hours_start: number | null
+  active_hours_end: number | null
+  quality_paused: boolean
+  feature_paused: boolean
+  last_scan_time: string
+  updated_at: string | null
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -502,5 +542,45 @@ export const api = {
       del<{ status: string }>(`/devices/${enc(deviceId)}/bitlocker/keys/${enc(keyId)}`),
     rotateKeys: (deviceId: string) =>
       post<{ status: string; request_id: string; commands_queued: number }>(`/devices/${enc(deviceId)}/bitlocker/rotate`),
+  },
+
+  // Windows Update Rings (Policy/Config/Update & Update CSPs)
+  updates: {
+    listRings: () => get<UpdateRing[]>('/updates/rings'),
+    getRing:   (id: string) => get<UpdateRing>(`/updates/rings/${enc(id)}`),
+    createRing: (data: {
+      name: string
+      description?: string
+      allow_auto_update?: number
+      quality_deferral_days: number
+      feature_deferral_days: number
+      active_hours_start: number
+      active_hours_end: number
+      quality_deadline_days: number
+      feature_deadline_days: number
+      grace_period_days: number
+      target_all_devices: boolean
+      priority?: number
+      group_ids: string[]
+    }) => post<UpdateRing>('/updates/rings', data),
+    updateRing: (id: string, data: {
+      name: string
+      description?: string
+      allow_auto_update?: number
+      quality_deferral_days: number
+      feature_deferral_days: number
+      active_hours_start: number
+      active_hours_end: number
+      quality_deadline_days: number
+      feature_deadline_days: number
+      grace_period_days: number
+      target_all_devices: boolean
+      priority?: number
+      group_ids: string[]
+    }) => put<UpdateRing>(`/updates/rings/${enc(id)}`, data),
+    deleteRing: (id: string) => del<{ status: string; commands_queued: number }>(`/updates/rings/${enc(id)}`),
+    pauseRing: (id: string, target: 'quality' | 'feature' | 'both', paused: boolean) =>
+      post<UpdateRing>(`/updates/rings/${enc(id)}/pause`, { target, paused }),
+    device: (deviceId: string) => get<DeviceUpdateTelemetry>(`/devices/${enc(deviceId)}/updates`),
   },
 }

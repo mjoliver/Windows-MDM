@@ -4,7 +4,7 @@ import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Z
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceBitLocker } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceBitLocker, type DeviceUpdateTelemetry } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -31,6 +31,7 @@ export function DeviceDetailPage() {
   const [compliance, setCompliance]   = useState<DeviceCompliance | null>(null)
   const [posture, setPosture]         = useState<DevicePosture | null>(null)
   const [bitlocker, setBitlocker]     = useState<DeviceBitLocker | null>(null)
+  const [updateTel, setUpdateTel]     = useState<DeviceUpdateTelemetry | null>(null)
   const [apps, setApps]               = useState<DeviceAppInstall[]>([])
   const [commands, setCommands]       = useState<DeviceCommand[]>([])
   const [loading, setLoading]         = useState(true)
@@ -78,6 +79,10 @@ export function DeviceDetailPage() {
     api.bitlocker.device(id!)
       .then(setBitlocker)
       .catch(() => setBitlocker(null))
+
+    api.updates.device(id!)
+      .then(setUpdateTel)
+      .catch(() => setUpdateTel(null))
   }, [id])
 
   useEffect(() => {
@@ -96,6 +101,7 @@ export function DeviceDetailPage() {
       api.devices.posture(id).then(setPosture).catch(() => {})
       api.devices.apps(id).then(a => setApps(a ?? [])).catch(() => {})
       api.bitlocker.device(id).then(setBitlocker).catch(() => {})
+      api.updates.device(id).then(setUpdateTel).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
   }, [id])
@@ -598,6 +604,25 @@ export function DeviceDetailPage() {
                   <span className="mono" style={{ fontSize: '0.82rem', fontWeight: 600 }}>
                     {posture?.tpm_version || '—'}
                   </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--md-sys-color-outline-variant)' }}>
+                  <span style={{ fontSize: '0.84rem', opacity: 0.8 }}>Update Ring</span>
+                  <Badge
+                    status={
+                      updateTel?.ring_name
+                        ? updateTel.quality_paused || updateTel.feature_paused
+                          ? 'non_compliant'
+                          : 'compliant'
+                        : 'unknown'
+                    }
+                    label={
+                      updateTel?.ring_name
+                        ? updateTel.quality_paused || updateTel.feature_paused
+                          ? `${updateTel.ring_name} (Paused)`
+                          : updateTel.ring_name
+                        : 'Unmanaged'
+                    }
+                  />
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 4 }}>
                   <span style={{ fontSize: '0.84rem', opacity: 0.8 }}>WNS Instant Wake</span>

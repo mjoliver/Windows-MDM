@@ -551,6 +551,9 @@ func (h *Handler) processStatuses(deviceID string, sess *Session, statuses []Sta
 		_ = h.db.QueryRow(dbpkg.Rebind(`SELECT command_type, oma_uri FROM command_queue WHERE id = ?`), queueID).Scan(&cmdType, &cmdURI)
 
 		resultCodeForQueue := s.Data
+		if cmdType == "Delete" && s.Data == StatusNotFound {
+			resultCodeForQueue = StatusOK
+		}
 		if prodCode, leaf, isMSI := ParseMSIProductURI(cmdURI); isMSI {
 			if cmdType == "Delete" && leaf == "" && (s.Data == StatusOK || s.Data == StatusNoContent || s.Data == StatusNotFound) {
 				resultCodeForQueue = StatusOK

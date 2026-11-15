@@ -148,11 +148,12 @@ func ApplyDevice(db *sql.DB, deviceID string) {
 	// removal). Without this, removed policies linger on the device forever.
 	retracted := retractUngoverned(db, deviceID, desired)
 	blQueued := ReconcileBitLockerDevice(db, deviceID)
+	wuQueued := ReconcileUpdateRingDevice(db, deviceID)
 
-	if queued > 0 || retracted > 0 || blQueued > 0 {
+	if queued > 0 || retracted > 0 || blQueued > 0 || wuQueued > 0 {
 		slog.Info("policy: applied settings to device",
 			"device_id", deviceID,
-			"commands_queued", queued+blQueued,
+			"commands_queued", queued+blQueued+wuQueued,
 			"retracted", retracted,
 			"total_settings", len(settings),
 		)
