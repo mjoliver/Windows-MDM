@@ -10,7 +10,10 @@ Latchz is an open-source, single-binary Windows MDM (Mobile Device Management) s
 
 - **WSTEP Zero-Touch Enrollment** — Windows devices auto-discover the server via `enterpriseenrollment.<domain>` and complete enrollment through Microsoft's standard flow, with no manual setup.
 - **SyncML/OMA-DM Policy Management** — Push, retrieve, and reconcile device configuration policies using the OMA-DM protocol over HTTPS.
-- **Win32 MSI Application Deployment** — Drag-and-drop local `.msi` uploads or remote HTTPS URLs with pure-Go CFB metadata/SHA-256 inspection, `HTTP 206` Delivery Optimization streaming, and silent `EnterpriseDesktopAppManagement` CSP installs/uninstalls.
+- **Win32 MSI & WinGet Application Deployment** — Drag-and-drop local `.msi` uploads, 1-click imports from Microsoft's `winget-pkgs` catalog (native MSI/WiX manifests), or remote HTTPS URLs with pure-Go CFB metadata/SHA-256 inspection, `HTTP 206` Delivery Optimization streaming, and silent `EnterpriseDesktopAppManagement` CSP installs/uninstalls.
+- **BitLocker CSP & Recovery Key Escrow Vault** — Zero-touch `BitLocker` CSP enforcement (XTS-AES 256-bit ciphers, silent standard-user encryption) paired with an Argon2id + AES-256-GCM device-bound 48-digit recovery password vault, mTLS device escrow, and audited reveals.
+- **Windows Update Rings** — Granular `Policy/Config/Update` & `Update` CSP deployment rings controlling quality/feature update deferrals, active hours, installation deadlines, grace periods, and 35-day emergency pause/resume.
+- **Agentless Cloud LAPS (Ephemeral Local Admin)** — 100% agentless local administrator lifecycle management using native Windows `Accounts` + `LocalUsersAndGroups` CSPs (`S-1-5-32-544`), zero-plaintext AES-256-GCM credential vaulting, scheduled & post-reveal auto-rotation, and audited reveals.
 - **Hardware & Security Posture Telemetry** — Continuous inventory of RAM, disk, BIOS, Secure Boot, BitLocker, Windows Defender AV/tamper protection, and Firewall state.
 - **Instant Device Wake-Up (WNS)** — Optional Windows Push Notification Services (`wns/raw`) integration alongside automatic `DMClient` background polling.
 - **Built-in PKI** — Self-hosted RSA 4096-bit Certificate Authority with encrypted key-at-rest (argon2id-derived master secret) for device certificate issuance via XCEP.
@@ -261,10 +264,11 @@ The embedded React dashboard provides the following pages:
 |------|-------------|
 | **Overview** | System health, device counts, compliance summary |
 | **Devices** | List of all enrolled devices with status |
-| **Device Detail** | Per-device hardware & security posture, WNS wake-up, policy compliance, remote actions |
-| **Groups** | Device groups for bulk policy assignment |
-| **Compliance** | Fleet security posture (BitLocker, Secure Boot, Defender, Firewall) and violations |
-| **Applications** | Win32 `.msi` catalog (drag-and-drop local hosting + HTTPS URLs) & group/device deployment |
+| **Device Detail** | Per-device hardware & security posture, BitLocker vault, Cloud LAPS admin credentials, Update Ring status, WNS wake-up, remote actions |
+| **Groups** | Device groups for bulk policy, app, BitLocker, Update Ring, and LAPS assignment |
+| **Compliance** | Fleet security posture, BitLocker CSP policy configuration, and Cloud LAPS policy settings |
+| **Applications** | Win32 `.msi` catalog (drag-and-drop local hosting, 1-click WinGet MSI catalog import, HTTPS URLs) & group/device deployment |
+| **Update Rings** | Windows Update for Business rings (deferrals, active hours, deadlines, 35-day pause/resume) |
 | **Profiles** | Configuration profiles (policies) created for devices |
 | **Profile Detail** | Profile settings, catalog browsing, device targeting |
 | **Users & Roles** | RBAC user management (`super_admin`, `admin`, `user`) |
@@ -363,17 +367,19 @@ make clean        # Remove build artifacts
 │   ├── reverse-proxy.md     # Nginx / Caddy / Traefik reverse-proxy & mTLS setup
 │   └── self-hosting.md      # Google Cloud Run & self-hosting walkthrough
 ├── internal/
-│   ├── api/                 # REST API handlers (apps, catalog, compliance, devices, groups, profiles, posture, users, audit)
+│   ├── api/                 # REST API handlers (apps, winget, bitlocker, laps, updates, catalog, compliance, devices, groups, profiles, posture, users, audit)
 │   ├── auth/                # OIDC + builtin auth, JWT token management
 │   ├── config/              # YAML config loading with Viper
 │   ├── db/                  # Database layer + versioned migrations (SQLite + PostgreSQL)
 │   ├── devauth/             # Device authentication verification
 │   ├── enrollment/          # WSTEP enrollment + XCEP certificate issuance + auto-discovery
-│   ├── mdm/                 # OMA-DM/SyncML protocol handler + device commands
+│   ├── mdm/                 # OMA-DM/SyncML protocol handler + BitLocker, Update, Accounts/LAPS & MSI commands
 │   ├── msi/                 # Pure-Go MS-CFB (.msi) binary inspector & SSRF-hardened client
 │   ├── pki/                 # RSA 4096-bit CA + certificate issuance
-│   ├── policy/              # ADMX policy resolution + DDF catalog integration
+│   ├── policy/              # ADMX policy resolution + BitLocker & Update Ring reconciliation
 │   ├── server/              # HTTP server, middleware, TLS, embedded web assets
+│   ├── vault/               # Argon2id + AES-256-GCM device-bound secret vault (BitLocker & Cloud LAPS)
+│   ├── winget/              # Agentless Microsoft winget-pkgs YAML manifest resolver & MSI catalog search
 │   └── wns/                 # Windows Push Notification Services (WNS) OAuth2 + wns/raw wake-up client
 ├── web/                     # React + TypeScript frontend (Vite)
 │   ├── src/
