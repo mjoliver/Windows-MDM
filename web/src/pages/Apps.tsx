@@ -1,5 +1,18 @@
-import { useEffect, useState, useCallback } from 'react'
-import { Package, Plus, Trash2, Monitor, Users, Download, Search, RefreshCw } from 'lucide-react'
+import { useEffect, useState, useCallback, useRef, type DragEvent } from 'react'
+import {
+  Package,
+  Plus,
+  Trash2,
+  Monitor,
+  Users,
+  Download,
+  Search,
+  RefreshCw,
+  Upload,
+  Globe,
+  FileArchive,
+  X,
+} from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { ActionButton } from '../components/ActionButton'
 import { Badge } from '../components/Badge'
@@ -13,6 +26,7 @@ import {
   type Device,
   type Group,
 } from '../api'
+import { previewLocalMSIFile } from '../msiPreview'
 import { timeAgo } from '../format'
 
 function formatBytes(bytes: number): string {
@@ -29,12 +43,20 @@ function appBadgeStatus(code: number | null, label: string): string {
 }
 
 function CreateAppModal({
+  initialFile,
   onClose,
   onCreated,
 }: {
+  initialFile?: File | null
   onClose: () => void
   onCreated: (app: MSIApp) => void
 }) {
+  const [mode, setMode]               = useState<'upload' | 'url'>('upload')
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [dragActive, setDragActive]   = useState(false)
+  const [uploadPct, setUploadPct]     = useState(0)
+  const [uploadLoaded, setUploadLoaded] = useState(0)
+
   const [contentUrl, setContentUrl]   = useState('')
   const [name, setName]               = useState('')
   const [publisher, setPublisher]     = useState('')
@@ -47,7 +69,63 @@ function CreateAppModal({
   const [inspecting, setInspecting]   = useState(false)
   const [saving, setSaving]           = useState(false)
   const [error, setError]             = useState('')
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const toast = useToast()
+
+  const applyLocalFile = useCallback(async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.msi')) {
+      setError('Please select a Windows Installer (.msi) package file.')
+      return
+    }
+    setError('')
+    setMode('upload')
+    setSelectedFile(file)
+    setFileSize(file.size)
+    setSha256('')
+    setInspecting(true)
+    try {
+      const meta = await previewLocalMSIFile(file)
+      setName(meta.name || file.name.replace(/\.msi$/i, ''))
+      setPublisher(meta.publisher || '')
+      setVersion(meta.version || '1.0.0')
+      setProductCode(meta.productCode || '')
+      setUpgradeCode(meta.upgradeCode || '')
+    } catch (e: unknown) {
+      setProductCode('')
+      setUpgradeCode('')
+      setError(e instanceof Error ? e.message : 'Could not read MSI metadata header.')
+    } finally {
+      setInspecting(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (initialFile) {
+      void applyLocalFile(initialFile)
+    }
+  }, [initialFile, applyLocalFile])
+
+  const handleDropZone = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragActive(false)
+    if (saving) return
+    const f = e.dataTransfer.files?.[0]
+    if (f) void applyLocalFile(f)
+  }
+
+  const clearSelectedFile = () => {
+    setSelectedFile(null)
+    setName('')
+    setPublisher('')
+    setVersion('')
+    setProductCode('')
+    setUpgradeCode('')
+    setSha256('')
+    setFileSize(0)
+    setError('')
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
 
   const inspectUrl = async () => {
     const trimmed = contentUrl.trim()
@@ -75,6 +153,39 @@ function CreateAppModal({
   }
 
   const submit = async () => {
+    if (mode === 'upload') {
+      if (!selectedFile) {
+        setError('Drag and drop or browse for a local .msi file first')
+        return
+      }
+      setError('')
+      setSaving(true)
+      setUploadPct(0)
+      setUploadLoaded(0)
+      try {
+        const created = await api.apps.upload(
+          selectedFile,
+          {
+            name: name.trim(),
+            publisher: publisher.trim(),
+            version: version.trim(),
+            command_line: cmdLine.trim() || '/quiet /norestart',
+          },
+          (loaded, total) => {
+            setUploadLoaded(loaded)
+            setUploadPct(total > 0 ? Math.min(100, Math.round((loaded * 100) / total)) : 0)
+          }
+        )
+        toast.success(`Uploaded & registered "${created.name}" (${created.version})`)
+        onCreated(created)
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : 'Failed to upload MSI package')
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
+
     if (!contentUrl.trim()) {
       setError('HTTPS MSI URL is required')
       return
@@ -105,60 +216,221 @@ function CreateAppModal({
   return (
     <Modal
       open={true}
-      onClose={onClose}
-      title="Register Win32 MSI Application"
+      onClose={saving ? () => {} : onClose}
+      title="Add Win32 MSI Application"
       maxWidth={640}
       footer={
         <>
           <button className="btn btn-secondary" onClick={onClose} disabled={saving || inspecting}>Cancel</button>
-          <button className="btn btn-primary" onClick={submit} disabled={saving || inspecting}>
-            {saving ? 'Registering…' : 'Register Application'}
+          <button
+            className="btn btn-primary"
+            onClick={submit}
+            disabled={saving || inspecting || (mode === 'upload' && !selectedFile)}
+          >
+            {saving
+              ? mode === 'upload'
+                ? `Uploading (${uploadPct}%)…`
+                : 'Registering…'
+              : mode === 'upload'
+                ? 'Upload & Register'
+                : 'Register Application'}
           </button>
         </>
       }
     >
-      <div className="form-group">
-        <label className="form-label">HTTPS Installer URL (.msi) *</label>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            className="input"
-            style={{ flex: 1 }}
-            value={contentUrl}
-            onChange={e => setContentUrl(e.target.value)}
-            placeholder="https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi"
-            autoFocus
-          />
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={inspectUrl}
-            disabled={inspecting || saving}
-            style={{ whiteSpace: 'nowrap' }}
-          >
-            <Search size={15} className={inspecting ? 'spin' : ''} />
-            {inspecting ? 'Inspecting…' : 'Auto-Inspect'}
-          </button>
-        </div>
-        <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: 6 }}>
-          Auto-Inspect streams the MSI over HTTPS to extract its ProductCode GUID, version, publisher, and SHA-256 FileHash automatically.
-        </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+        <button
+          type="button"
+          className={`btn btn-sm ${mode === 'upload' ? 'btn-primary' : 'btn-secondary'}`}
+          disabled={saving}
+          onClick={() => { setMode('upload'); setError('') }}
+        >
+          <Upload size={14} /> Upload Local .msi
+        </button>
+        <button
+          type="button"
+          className={`btn btn-sm ${mode === 'url' ? 'btn-primary' : 'btn-secondary'}`}
+          disabled={saving}
+          onClick={() => { setMode('url'); setError('') }}
+        >
+          <Globe size={14} /> External HTTPS URL
+        </button>
       </div>
+
+      {mode === 'upload' ? (
+        <div className="form-group">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".msi,application/x-msi"
+            style={{ display: 'none' }}
+            onChange={e => {
+              const f = e.target.files?.[0]
+              if (f) void applyLocalFile(f)
+            }}
+          />
+
+          {!selectedFile ? (
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => !saving && fileInputRef.current?.click()}
+              onKeyDown={e => {
+                if ((e.key === 'Enter' || e.key === ' ') && !saving) {
+                  e.preventDefault()
+                  fileInputRef.current?.click()
+                }
+              }}
+              onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!saving) setDragActive(true) }}
+              onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragActive(false) }}
+              onDrop={handleDropZone}
+              style={{
+                border: `2px dashed ${dragActive ? 'var(--md-sys-color-primary)' : 'var(--md-sys-color-outline)'}`,
+                background: dragActive ? 'rgba(208, 188, 255, 0.1)' : 'var(--md-sys-color-surface-container-low)',
+                borderRadius: 16,
+                padding: '28px 20px',
+                textAlign: 'center',
+                cursor: saving ? 'default' : 'pointer',
+                transition: 'var(--transition-fast)',
+              }}
+            >
+              <Upload
+                size={28}
+                style={{
+                  color: dragActive ? 'var(--md-sys-color-primary)' : 'var(--md-sys-color-on-surface-variant)',
+                  opacity: dragActive ? 1 : 0.75,
+                  marginBottom: 8,
+                }}
+              />
+              <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>
+                Drag & drop a <code>.msi</code> installer here, or click to browse
+              </div>
+              <div style={{ fontSize: '0.78rem', opacity: 0.6, marginTop: 4 }}>
+                Latchz automatically extracts ProductCode, version & SHA-256 and hosts the package over HTTPS for Windows Delivery Optimization.
+              </div>
+            </div>
+          ) : (
+            <div
+              onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (!saving) setDragActive(true) }}
+              onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragActive(false) }}
+              onDrop={handleDropZone}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+                padding: '14px 16px',
+                borderRadius: 14,
+                border: `1px solid ${dragActive ? 'var(--md-sys-color-primary)' : 'var(--md-sys-color-outline)'}`,
+                background: 'rgba(208, 188, 255, 0.06)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <FileArchive size={22} style={{ color: 'var(--md-sys-color-primary)', flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.92rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {selectedFile.name}
+                  </div>
+                  <div style={{ fontSize: '0.76rem', opacity: 0.65 }}>
+                    {formatBytes(selectedFile.size)}
+                    {productCode ? ` · ${productCode}` : ''}
+                    {inspecting ? ' · Reading MSI header…' : ' · SHA-256 verified on upload'}
+                  </div>
+                </div>
+                {!saving && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={clearSelectedFile}
+                    title="Choose a different .msi file"
+                  >
+                    <X size={14} /> Replace
+                  </button>
+                )}
+              </div>
+
+              {saving && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', opacity: 0.8, marginBottom: 4 }}>
+                    <span>{uploadPct >= 100 ? 'Verifying CFB metadata & SHA-256 on server…' : 'Uploading package to Latchz…'}</span>
+                    <span>{formatBytes(uploadLoaded)} / {formatBytes(selectedFile.size)} ({uploadPct}%)</span>
+                  </div>
+                  <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                    <div
+                      style={{
+                        width: `${uploadPct}%`,
+                        height: '100%',
+                        background: 'var(--md-sys-color-primary)',
+                        transition: 'width 120ms linear',
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="form-group">
+          <label className="form-label">HTTPS Installer URL (.msi) *</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              className="input"
+              style={{ flex: 1 }}
+              value={contentUrl}
+              onChange={e => setContentUrl(e.target.value)}
+              placeholder="https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi"
+              autoFocus
+            />
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={inspectUrl}
+              disabled={inspecting || saving}
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              <Search size={15} className={inspecting ? 'spin' : ''} />
+              {inspecting ? 'Inspecting…' : 'Auto-Inspect'}
+            </button>
+          </div>
+          <div style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: 6 }}>
+            Auto-Inspect streams the MSI over HTTPS to extract its ProductCode GUID, version, publisher, and SHA-256 FileHash automatically.
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <div className="form-group">
           <label className="form-label">Application Name</label>
-          <input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="Auto-filled or custom" />
+          <input
+            className="input"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Auto-filled from MSI"
+            disabled={saving}
+          />
         </div>
         <div className="form-group">
           <label className="form-label">Publisher</label>
-          <input className="input" value={publisher} onChange={e => setPublisher(e.target.value)} placeholder="e.g. Google LLC" />
+          <input
+            className="input"
+            value={publisher}
+            onChange={e => setPublisher(e.target.value)}
+            placeholder="e.g. Google LLC"
+            disabled={saving}
+          />
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 12 }}>
         <div className="form-group">
           <label className="form-label">Version</label>
-          <input className="input" value={version} onChange={e => setVersion(e.target.value)} placeholder="1.0.0" />
+          <input
+            className="input"
+            value={version}
+            onChange={e => setVersion(e.target.value)}
+            placeholder="1.0.0"
+            disabled={saving}
+          />
         </div>
         <div className="form-group">
           <label className="form-label">MSI ProductCode GUID</label>
@@ -166,20 +438,26 @@ function CreateAppModal({
             className="input mono"
             value={productCode}
             onChange={e => setProductCode(e.target.value)}
-            placeholder="{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"
+            readOnly={mode === 'upload'}
+            disabled={saving}
+            style={mode === 'upload' ? { opacity: 0.75 } : undefined}
+            placeholder={mode === 'upload' ? 'Auto-extracted from .msi' : '{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}'}
           />
         </div>
       </div>
 
-      <div className="form-group">
-        <label className="form-label">SHA-256 FileHash</label>
-        <input
-          className="input mono"
-          value={sha256}
-          onChange={e => setSha256(e.target.value)}
-          placeholder="64-character SHA-256 hex digest (auto-computed if blank)"
-        />
-      </div>
+      {mode === 'url' && (
+        <div className="form-group">
+          <label className="form-label">SHA-256 FileHash</label>
+          <input
+            className="input mono"
+            value={sha256}
+            onChange={e => setSha256(e.target.value)}
+            placeholder="64-character SHA-256 hex digest (auto-computed if blank)"
+            disabled={saving}
+          />
+        </div>
+      )}
 
       <div className="form-group">
         <label className="form-label">Silent Command-Line Arguments</label>
@@ -188,6 +466,7 @@ function CreateAppModal({
           value={cmdLine}
           onChange={e => setCmdLine(e.target.value)}
           placeholder="/quiet /norestart"
+          disabled={saving}
         />
       </div>
 
@@ -440,12 +719,14 @@ function DeployAppModal({
 }
 
 export function AppsPage() {
-  const [apps, setApps]               = useState<MSIApp[]>([])
-  const [devices, setDevices]         = useState<Device[]>([])
-  const [groups, setGroups]           = useState<Group[]>([])
-  const [loading, setLoading]         = useState(true)
-  const [creating, setCreating]       = useState(false)
-  const [deploying, setDeploying]     = useState<MSIApp | null>(null)
+  const [apps, setApps]                   = useState<MSIApp[]>([])
+  const [devices, setDevices]             = useState<Device[]>([])
+  const [groups, setGroups]               = useState<Group[]>([])
+  const [loading, setLoading]             = useState(true)
+  const [creating, setCreating]           = useState(false)
+  const [droppedFile, setDroppedFile]     = useState<File | null>(null)
+  const [pageDragActive, setPageDragActive] = useState(false)
+  const [deploying, setDeploying]         = useState<MSIApp | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<MSIApp | null>(null)
   const toast = useToast()
 
@@ -480,15 +761,66 @@ export function AppsPage() {
     }
   }
 
+  const handlePageDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setPageDragActive(false)
+    if (creating || deploying || confirmDelete) return
+    const f = e.dataTransfer.files?.[0]
+    if (!f) return
+    if (!f.name.toLowerCase().endsWith('.msi')) {
+      toast.error('Only Windows Installer (.msi) files can be uploaded here.')
+      return
+    }
+    setDroppedFile(f)
+    setCreating(true)
+  }
+
   return (
     <Layout title="Applications">
-      <div className="fade-in">
+      <div
+        className="fade-in"
+        onDragOver={e => {
+          if (creating || deploying || confirmDelete) return
+          if (e.dataTransfer.types.includes('Files')) {
+            e.preventDefault()
+            setPageDragActive(true)
+          }
+        }}
+        onDragLeave={e => {
+          if (e.currentTarget === e.target) setPageDragActive(false)
+        }}
+        onDrop={handlePageDrop}
+      >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 28 }}>
           <div style={{ opacity: 0.7, fontSize: '0.95rem' }}>
-            Deploy silent Win32 <code>.msi</code> packages over HTTPS via Windows <code>EnterpriseDesktopAppManagement</code> CSP with SHA-256 hash verification.
+            Drag & drop local <code>.msi</code> installers or register HTTPS URLs to deploy silently via Windows <code>EnterpriseDesktopAppManagement</code> CSP.
           </div>
-          <ActionButton icon={<Plus size={18} />} label="Add MSI Application" onClick={() => setCreating(true)} />
+          <ActionButton
+            icon={<Plus size={18} />}
+            label="Add MSI Application"
+            onClick={() => { setDroppedFile(null); setCreating(true) }}
+          />
         </div>
+
+        {pageDragActive && (
+          <div
+            style={{
+              marginBottom: 20,
+              padding: '22px 24px',
+              borderRadius: 16,
+              border: '2px dashed var(--md-sys-color-primary)',
+              background: 'rgba(208, 188, 255, 0.1)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              fontWeight: 600,
+              color: 'var(--md-sys-color-primary)',
+            }}
+          >
+            <Upload size={20} /> Drop your <code>.msi</code> package anywhere to inspect & upload
+          </div>
+        )}
 
         {loading ? (
           <div className="card" style={{ padding: 48, textAlign: 'center', opacity: 0.5 }}>Loading application catalog…</div>
@@ -497,8 +829,14 @@ export function AppsPage() {
             <EmptyState
               icon={<Package size={44} style={{ opacity: 0.25 }} />}
               title="No MSI Applications Registered"
-              description="Register an HTTPS .msi installer (such as Google Chrome Enterprise) to push silent installs to Windows 10/11 devices and groups."
-              action={<ActionButton icon={<Plus size={16} />} label="Add MSI Application" onClick={() => setCreating(true)} />}
+              description="Drag & drop a local .msi file onto this page or register an HTTPS installer URL to push silent installs to Windows 10/11 devices and groups."
+              action={
+                <ActionButton
+                  icon={<Upload size={16} />}
+                  label="Upload or Add MSI"
+                  onClick={() => { setDroppedFile(null); setCreating(true) }}
+                />
+              }
             />
           </div>
         ) : (
@@ -515,53 +853,71 @@ export function AppsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {apps.map(app => (
-                    <tr key={app.id}>
-                      <td>
-                        <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{app.name}</div>
-                        <div style={{ fontSize: '0.78rem', opacity: 0.6 }}>
-                          {app.publisher || 'Unknown Publisher'} · <span className="mono">{app.command_line}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <div style={{ fontWeight: 600 }}>{app.version}</div>
-                        <div style={{ fontSize: '0.75rem', opacity: 0.55 }}>{formatBytes(app.file_size_bytes)}</div>
-                      </td>
-                      <td>
-                        <div className="mono" style={{ fontSize: '0.78rem' }}>{app.product_code}</div>
-                        <div className="mono" style={{ fontSize: '0.68rem', opacity: 0.45 }}>
-                          SHA-256: {app.sha256.slice(0, 12)}…
-                        </div>
-                      </td>
-                      <td>
-                        <Badge
-                          status={app.installed_count > 0 && app.installed_count >= app.target_device_count ? 'compliant' : 'pending'}
-                          label={`${app.installed_count} / ${app.target_device_count} devices`}
-                          dot
-                        />
-                        {app.group_count > 0 && (
-                          <div style={{ fontSize: '0.72rem', opacity: 0.55, marginTop: 4 }}>
-                            {app.group_count} group(s) assigned
+                  {apps.map(app => {
+                    const isLocal = app.source_type === 'upload'
+                    return (
+                      <tr key={app.id}>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{app.name}</span>
+                            <span
+                              style={{
+                                fontSize: '0.68rem',
+                                fontWeight: 600,
+                                padding: '2px 8px',
+                                borderRadius: 999,
+                                background: isLocal ? 'rgba(208, 188, 255, 0.14)' : 'rgba(255, 255, 255, 0.06)',
+                                color: isLocal ? 'var(--md-sys-color-primary)' : 'var(--md-sys-color-on-surface-variant)',
+                              }}
+                              title={isLocal ? `Hosted locally by Latchz (${app.original_filename || 'package.msi'})` : app.content_url}
+                            >
+                              {isLocal ? `Hosted · ${app.original_filename || 'local.msi'}` : 'HTTPS URL'}
+                            </span>
                           </div>
-                        )}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <div style={{ display: 'inline-flex', gap: 8 }}>
-                          <button className="btn btn-sm btn-primary" onClick={() => setDeploying(app)}>
-                            <Download size={14} /> Deploy
-                          </button>
-                          <button
-                            className="btn btn-sm btn-secondary"
-                            aria-label={`Delete ${app.name}`}
-                            style={{ color: 'var(--md-sys-color-error)' }}
-                            onClick={() => setConfirmDelete(app)}
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                          <div style={{ fontSize: '0.78rem', opacity: 0.6 }}>
+                            {app.publisher || 'Unknown Publisher'} · <span className="mono">{app.command_line}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{app.version}</div>
+                          <div style={{ fontSize: '0.75rem', opacity: 0.55 }}>{formatBytes(app.file_size_bytes)}</div>
+                        </td>
+                        <td>
+                          <div className="mono" style={{ fontSize: '0.78rem' }}>{app.product_code}</div>
+                          <div className="mono" style={{ fontSize: '0.68rem', opacity: 0.45 }}>
+                            SHA-256: {app.sha256.slice(0, 12)}…
+                          </div>
+                        </td>
+                        <td>
+                          <Badge
+                            status={app.installed_count > 0 && app.installed_count >= app.target_device_count ? 'compliant' : 'pending'}
+                            label={`${app.installed_count} / ${app.target_device_count} devices`}
+                            dot
+                          />
+                          {app.group_count > 0 && (
+                            <div style={{ fontSize: '0.72rem', opacity: 0.55, marginTop: 4 }}>
+                              {app.group_count} group(s) assigned
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <div style={{ display: 'inline-flex', gap: 8 }}>
+                            <button className="btn btn-sm btn-primary" onClick={() => setDeploying(app)}>
+                              <Download size={14} /> Deploy
+                            </button>
+                            <button
+                              className="btn btn-sm btn-secondary"
+                              aria-label={`Delete ${app.name}`}
+                              style={{ color: 'var(--md-sys-color-error)' }}
+                              onClick={() => setConfirmDelete(app)}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -571,9 +927,11 @@ export function AppsPage() {
 
       {creating && (
         <CreateAppModal
-          onClose={() => setCreating(false)}
+          initialFile={droppedFile}
+          onClose={() => { setCreating(false); setDroppedFile(null) }}
           onCreated={created => {
             setCreating(false)
+            setDroppedFile(null)
             setApps(prev => [created, ...prev])
             setDeploying(created)
           }}
@@ -605,7 +963,9 @@ export function AppsPage() {
           }
         >
           <p style={{ margin: 0, lineHeight: 1.5 }}>
-            Remove <strong>{confirmDelete.name}</strong> ({confirmDelete.version}) from the Latchz catalog? Existing installations on devices will remain unless uninstalled first.
+            Remove <strong>{confirmDelete.name}</strong> ({confirmDelete.version}) from the Latchz catalog?
+            {confirmDelete.source_type === 'upload' ? ' Its hosted .msi package file will also be deleted from server storage.' : ''}
+            {' '}Existing installations on devices will remain unless uninstalled first.
           </p>
         </Modal>
       )}

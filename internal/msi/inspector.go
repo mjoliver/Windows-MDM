@@ -23,10 +23,12 @@ import (
 )
 
 const (
-	maxMSIInspectBytes = 1 << 30 // 1 GiB safety cap for remote MSI inspection
-	msiNameAlphabet    = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._!"
-	endOfChain         = -2 // 0xFFFFFFFE
-	freeSect           = -1 // 0xFFFFFFFF
+	// MaxPackageBytes is the safety cap (2 GiB) for inspecting or uploading a .msi package.
+	MaxPackageBytes    int64 = 2 << 30
+	maxMSIInspectBytes       = MaxPackageBytes
+	msiNameAlphabet          = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._!"
+	endOfChain               = -2 // 0xFFFFFFFE
+	freeSect                 = -1 // 0xFFFFFFFF
 )
 
 var (

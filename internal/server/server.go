@@ -94,6 +94,7 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	mdmHandler := mdm.NewHandler(database.DB, ca.TLSPool(), cfg.Server.Domain, proxyCertHeader)
 	apiHandler := api.NewHandler(database.DB)
 	apiHandler.ConfigureContentRelay("https://"+cfg.Server.Domain, jwtSecret)
+	apiHandler.SetPackagesDir(cfg.MDM.PackagesDir)
 
 	s := &Server{
 		cfg:        cfg,
@@ -351,6 +352,7 @@ func (s *Server) routes() {
 
 			// Applications (Win32 MSI via EnterpriseDesktopAppManagement CSP)
 			r.With(admin).Post("/apps/inspect", s.api.HandleInspectMSI)
+			r.With(admin).Post("/apps/upload", s.api.HandleUploadApp)
 			r.Get("/apps", s.api.HandleListApps)
 			r.With(admin).Post("/apps", s.api.HandleCreateApp)
 			r.Get("/apps/{id}", s.api.HandleGetApp)

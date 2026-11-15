@@ -19,6 +19,9 @@ last_soap_response.xml
 *.db-shm
 *.db-wal
 
+# Locally uploaded MSI packages
+packages/
+
 # TLS certificates (when using manual mode)
 *.pem
 *.key

@@ -144,6 +144,10 @@ mdm:
   # (DMClient Poll CSP: PollOnLogin).
   poll_on_login: true
 
+  # Local directory where uploaded Win32 .msi installers are stored and served
+  # over Latchz's signed HTTPS package relay.
+  packages_dir: /var/lib/latchz/packages
+
   # Optional: Windows Push Notification Services (WNS) for instant (< 2 second)
   # device wake-ups on Force Sync, policy updates, remote reboot, lock, and wipe.
   # Leave empty to rely on periodic DMClient Poll check-ins.

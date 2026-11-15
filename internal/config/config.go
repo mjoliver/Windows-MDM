@@ -28,6 +28,9 @@ type MDMConfig struct {
 	// PollOnLogin sets DMClient Poll/PollOnLogin so Windows initiates an OMA-DM
 	// management session whenever a user signs in. Default: true.
 	PollOnLogin bool `mapstructure:"poll_on_login"`
+	// PackagesDir is the local directory where uploaded Win32 .msi packages are
+	// stored and served to enrolled devices. Default: ./packages.
+	PackagesDir string `mapstructure:"packages_dir"`
 	// WNS configures optional Windows Push Notification Services instant wake-ups.
 	WNS WNSConfig `mapstructure:"wns"`
 }
@@ -178,6 +181,7 @@ func Load(cfgFile string) (*Config, error) {
 	v.SetDefault("auth.oidc.allowed_domains", []string{})
 	v.SetDefault("mdm.poll_interval_minutes", 15)
 	v.SetDefault("mdm.poll_on_login", true)
+	v.SetDefault("mdm.packages_dir", "./packages")
 	v.SetDefault("mdm.wns.package_family_name", "")
 	v.SetDefault("mdm.wns.package_sid", "")
 	v.SetDefault("mdm.wns.client_secret", "")
@@ -206,6 +210,7 @@ func Load(cfgFile string) (*Config, error) {
 	_ = v.BindEnv("auth.oidc.allowed_domains", "LATCHZ_AUTH_OIDC_ALLOWED_DOMAINS")
 	_ = v.BindEnv("mdm.poll_interval_minutes", "LATCHZ_MDM_POLL_INTERVAL_MINUTES")
 	_ = v.BindEnv("mdm.poll_on_login", "LATCHZ_MDM_POLL_ON_LOGIN")
+	_ = v.BindEnv("mdm.packages_dir", "LATCHZ_MDM_PACKAGES_DIR")
 	_ = v.BindEnv("mdm.wns.package_family_name", "LATCHZ_MDM_WNS_PACKAGE_FAMILY_NAME")
 	_ = v.BindEnv("mdm.wns.package_sid", "LATCHZ_MDM_WNS_PACKAGE_SID")
 	_ = v.BindEnv("mdm.wns.client_secret", "LATCHZ_MDM_WNS_CLIENT_SECRET")

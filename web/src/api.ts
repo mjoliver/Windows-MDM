@@ -226,6 +226,8 @@ export interface MSIApp {
   product_code: string
   upgrade_code: string
   content_url: string
+  source_type?: 'upload' | 'url'
+  original_filename?: string
   sha256: string
   file_size_bytes: number
   command_line: string
@@ -358,6 +360,58 @@ export const api = {
     list:    () => get<MSIApp[]>('/apps'),
     get:     (id: string) => get<MSIAppDetail>(`/apps/${enc(id)}`),
     inspect: (contentUrl: string) => post<MSIInspectResult>('/apps/inspect', { content_url: contentUrl }),
+    upload:  (
+      file: File,
+      fields?: {
+        name?: string
+        publisher?: string
+        version?: string
+        command_line?: string
+      },
+      onProgress?: (loaded: number, total: number) => void
+    ): Promise<MSIApp> =>
+      new Promise((resolve, reject) => {
+        const fd = new FormData()
+        if (fields?.name)         fd.append('name', fields.name)
+        if (fields?.publisher)    fd.append('publisher', fields.publisher)
+        if (fields?.version)      fd.append('version', fields.version)
+        if (fields?.command_line) fd.append('command_line', fields.command_line)
+        fd.append('file', file)
+
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `${BASE}/apps/upload`, true)
+        xhr.withCredentials = true
+        if (onProgress) {
+          xhr.upload.onprogress = evt => {
+            if (evt.lengthComputable) onProgress(evt.loaded, evt.total)
+          }
+        }
+        xhr.onload = () => {
+          if (xhr.status === 401) {
+            window.location.href = '/login'
+            reject(new Error('unauthenticated'))
+            return
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText) as MSIApp)
+            } catch {
+              reject(new Error('Invalid JSON response from server'))
+            }
+            return
+          }
+          let msg = xhr.statusText || `HTTP ${xhr.status}`
+          try {
+            const parsed = JSON.parse(xhr.responseText) as { error?: string }
+            if (parsed.error) msg = parsed.error
+          } catch {
+            // ignore non-JSON body
+          }
+          reject(new Error(msg))
+        }
+        xhr.onerror = () => reject(new Error('Network error while uploading MSI package'))
+        xhr.send(fd)
+      }),
     create:  (data: {
       content_url: string
       name?: string

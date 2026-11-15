@@ -3,12 +3,18 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -271,5 +277,188 @@ func TestMSIContentRelayStripsAcceptEncodingAndSupportsRange(t *testing.T) {
 	r.ServeHTTP(wExp, httptest.NewRequest(http.MethodGet, expiredURL.Path, nil))
 	if wExp.Code != http.StatusForbidden {
 		t.Fatalf("expired sig: want 403, got %d", wExp.Code)
+	}
+}
+
+func buildSyntheticMSI(props [][2]string) []byte {
+	const sectorSize = 512
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._!"
+	encodeName := func(name string) []byte {
+		out := make([]byte, (len(name)+1)*2)
+		for i := 0; i < len(name); i++ {
+			if name == "Root Entry" {
+				binary.LittleEndian.PutUint16(out[i*2:], uint16(name[i]))
+			} else if idx := strings.IndexByte(alphabet, name[i]); idx >= 0 {
+				binary.LittleEndian.PutUint16(out[i*2:], uint16(0x4800+idx))
+			} else {
+				binary.LittleEndian.PutUint16(out[i*2:], uint16(name[i]))
+			}
+		}
+		return out
+	}
+
+	var sp, sd, propBuf bytes.Buffer
+	sp.Write([]byte{0xE4, 0x04, 0x00, 0x00})
+	var keys, vals []uint16
+	nextIdx := uint16(1)
+	add := func(s string) uint16 {
+		var e [4]byte
+		binary.LittleEndian.PutUint16(e[0:2], uint16(len(s)))
+		binary.LittleEndian.PutUint16(e[2:4], 1)
+		sp.Write(e[:])
+		sd.WriteString(s)
+		id := nextIdx
+		nextIdx++
+		return id
+	}
+	for _, kv := range props {
+		keys = append(keys, add(kv[0]))
+		vals = append(vals, add(kv[1]))
+	}
+	for _, k := range keys {
+		_ = binary.Write(&propBuf, binary.LittleEndian, k)
+	}
+	for _, v := range vals {
+		_ = binary.Write(&propBuf, binary.LittleEndian, v)
+	}
+
+	pad := func(b []byte) []byte {
+		out := make([]byte, sectorSize)
+		copy(out, b)
+		return out
+	}
+	fat := make([]byte, sectorSize)
+	for i := 0; i < sectorSize; i += 4 {
+		binary.LittleEndian.PutUint32(fat[i:], 0xFFFFFFFF)
+	}
+	binary.LittleEndian.PutUint32(fat[0*4:], 0xFFFFFFFD)
+	for s := 1; s <= 4; s++ {
+		binary.LittleEndian.PutUint32(fat[s*4:], 0xFFFFFFFE)
+	}
+
+	dir := make([]byte, sectorSize)
+	writeDir := func(slot int, name string, objType byte, startSec, size uint32) {
+		off := slot * 128
+		enc := encodeName(name)
+		copy(dir[off:], enc)
+		binary.LittleEndian.PutUint16(dir[off+64:], uint16(len(enc)))
+		dir[off+66] = objType
+		dir[off+67] = 1
+		binary.LittleEndian.PutUint32(dir[off+68:], 0xFFFFFFFF)
+		binary.LittleEndian.PutUint32(dir[off+72:], 0xFFFFFFFF)
+		binary.LittleEndian.PutUint32(dir[off+76:], 1)
+		binary.LittleEndian.PutUint32(dir[off+116:], startSec)
+		binary.LittleEndian.PutUint32(dir[off+120:], size)
+	}
+	writeDir(0, "Root Entry", 5, 0xFFFFFFFE, 0)
+	writeDir(1, "!_StringPool", 2, 2, uint32(sp.Len()))
+	writeDir(2, "!_StringData", 2, 3, uint32(sd.Len()))
+	writeDir(3, "!Property", 2, 4, uint32(propBuf.Len()))
+
+	hdr := make([]byte, sectorSize)
+	copy(hdr[:8], []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1})
+	binary.LittleEndian.PutUint16(hdr[24:], 0x003E)
+	binary.LittleEndian.PutUint16(hdr[26:], 0x0003)
+	binary.LittleEndian.PutUint16(hdr[28:], 0xFFFE)
+	binary.LittleEndian.PutUint16(hdr[30:], 9)
+	binary.LittleEndian.PutUint16(hdr[32:], 6)
+	binary.LittleEndian.PutUint32(hdr[44:], 1)
+	binary.LittleEndian.PutUint32(hdr[48:], 1)
+	binary.LittleEndian.PutUint32(hdr[60:], 0xFFFFFFFE)
+	binary.LittleEndian.PutUint32(hdr[68:], 0xFFFFFFFE)
+	binary.LittleEndian.PutUint32(hdr[76:], 0)
+	for i := 1; i < 109; i++ {
+		binary.LittleEndian.PutUint32(hdr[76+i*4:], 0xFFFFFFFF)
+	}
+
+	var out bytes.Buffer
+	out.Write(hdr)
+	out.Write(fat)
+	out.Write(dir)
+	out.Write(pad(sp.Bytes()))
+	out.Write(pad(sd.Bytes()))
+	out.Write(pad(propBuf.Bytes()))
+	return out.Bytes()
+}
+
+func TestUploadLocalMSIAndServeRange(t *testing.T) {
+	database := testutil.DB(t)
+	pkgDir := t.TempDir()
+	h := NewHandler(database.DB)
+	h.ConfigureContentRelay("https://mdm.lab.local", []byte("0123456789abcdef0123456789abcdef"))
+	h.SetPackagesDir(pkgDir)
+	devID := testutil.SeedDevice(t, database, "HW-UPLOAD-1")
+
+	rawMSI := buildSyntheticMSI([][2]string{
+		{"ProductCode", "{23170F69-40C1-2702-2409-000001000000}"},
+		{"ProductName", "7-Zip 24.09 (x64 edition)"},
+		{"ProductVersion", "24.09.00.0"},
+		{"Manufacturer", "Igor Pavlov"},
+	})
+	sum := sha256.Sum256(rawMSI)
+	wantHash := strings.ToUpper(hex.EncodeToString(sum[:]))
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "7z2409-x64.msi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(rawMSI); err != nil {
+		t.Fatal(err)
+	}
+	_ = mw.WriteField("command_line", "/qn /norestart")
+	_ = mw.Close()
+
+	upReq := httptest.NewRequest(http.MethodPost, "/api/apps/upload", &body)
+	upReq.Header.Set("Content-Type", mw.FormDataContentType())
+	wUp := httptest.NewRecorder()
+	h.HandleUploadApp(wUp, upReq)
+	if wUp.Code != http.StatusCreated {
+		t.Fatalf("HandleUploadApp: want 201, got %d body=%s", wUp.Code, wUp.Body.String())
+	}
+
+	var uploaded MSIApp
+	if err := json.Unmarshal(wUp.Body.Bytes(), &uploaded); err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.SourceType != "upload" || uploaded.OriginalFilename != "7z2409-x64.msi" || uploaded.SHA256 != wantHash {
+		t.Fatalf("unexpected uploaded MSIApp: %+v", uploaded)
+	}
+
+	storedPath := filepath.Join(pkgDir, uploaded.ID+".msi")
+	if _, err := os.Stat(storedPath); err != nil {
+		t.Fatalf("expected stored MSI file at %s: %v", storedPath, err)
+	}
+
+	// Queue install on device and verify ContentURLList contains ONLY the signed Latchz relay URL
+	wInst := httptest.NewRecorder()
+	h.HandleInstallAppOnDevices(wInst, withRoute("POST", "/api/apps/"+uploaded.ID+"/install", `{"device_ids":["`+devID+`"]}`, uploaded.ID))
+	if wInst.Code != http.StatusOK {
+		t.Fatalf("install uploaded app: got %d %s", wInst.Code, wInst.Body.String())
+	}
+
+	// Verify HTTP 206 Range download from local packages_dir
+	r := chi.NewRouter()
+	r.Get("/mdm/apps/{id}/{exp}/{sig}/package.msi", h.HandleServeAppContent)
+	r.Head("/mdm/apps/{id}/{exp}/{sig}/package.msi", h.HandleServeAppContent)
+
+	signed, _ := url.Parse(h.SignedAppContentURL(uploaded.ID, time.Now().UTC().Add(time.Hour)))
+	rngReq := httptest.NewRequest(http.MethodGet, signed.Path, nil)
+	rngReq.Header.Set("Range", "bytes=0-7")
+	wRng := httptest.NewRecorder()
+	r.ServeHTTP(wRng, rngReq)
+	if wRng.Code != http.StatusPartialContent || !bytes.Equal(wRng.Body.Bytes(), rawMSI[:8]) {
+		t.Fatalf("local Range GET: code=%d got=%x want=%x", wRng.Code, wRng.Body.Bytes(), rawMSI[:8])
+	}
+
+	// Delete app and verify disk file is removed
+	wDel := httptest.NewRecorder()
+	h.HandleDeleteApp(wDel, withRoute("DELETE", "/api/apps/"+uploaded.ID, "", uploaded.ID))
+	if wDel.Code != http.StatusOK {
+		t.Fatalf("delete uploaded app: got %d", wDel.Code)
+	}
+	if _, err := os.Stat(storedPath); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be deleted after HandleDeleteApp, stat err=%v", storedPath, err)
 	}
 }

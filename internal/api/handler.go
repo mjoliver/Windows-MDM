@@ -22,6 +22,7 @@ type Handler struct {
 	contentBaseURL string
 	contentSecret  []byte
 	contentClient  *http.Client
+	packagesDir    string
 }
 
 // NewHandler creates an API handler.
@@ -56,6 +57,12 @@ func (h *Handler) SetContentHTTPClient(c *http.Client) {
 	if c != nil {
 		h.contentClient = c
 	}
+}
+
+// SetPackagesDir configures the local storage directory where drag-and-drop
+// uploaded Win32 .msi packages are stored and served from.
+func (h *Handler) SetPackagesDir(dir string) {
+	h.packagesDir = strings.TrimSpace(dir)
 }
 
 func (h *Handler) wakeDevice(deviceID string) {

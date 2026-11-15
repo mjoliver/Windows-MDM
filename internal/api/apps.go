@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +37,9 @@ type MSIApp struct {
 	ProductCode          string    `json:"product_code"`
 	UpgradeCode          string    `json:"upgrade_code"`
 	ContentURL           string    `json:"content_url"`
+	SourceType           string    `json:"source_type"`
+	OriginalFilename     string    `json:"original_filename"`
+	StorageFilename      string    `json:"-"`
 	SHA256               string    `json:"sha256"`
 	FileSizeBytes        int64     `json:"file_size_bytes"`
 	CommandLine          string    `json:"command_line"`
@@ -46,6 +51,13 @@ type MSIApp struct {
 	GroupCount           int       `json:"group_count"`
 	InstalledCount       int       `json:"installed_count"`
 	TargetDeviceCount    int       `json:"target_device_count"`
+}
+
+func appSourceType(storageFilename string) string {
+	if strings.TrimSpace(storageFilename) != "" {
+		return "upload"
+	}
+	return "url"
 }
 
 // DeviceAppInstall tracks the deployment state of an MSI package on a device.
@@ -96,7 +108,8 @@ func (h *Handler) HandleInspectMSI(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) HandleListApps(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.QueryContext(r.Context(), dbpkg.Rebind(`
 		SELECT a.id, a.name, a.publisher, a.version, a.product_code, a.upgrade_code,
-		       a.content_url, a.sha256, a.file_size_bytes, a.command_line,
+		       a.content_url, COALESCE(a.storage_filename, ''), COALESCE(a.original_filename, ''),
+		       a.sha256, a.file_size_bytes, a.command_line,
 		       a.timeout_minutes, a.retry_count, a.retry_interval_minutes,
 		       a.created_at, a.updated_at,
 		       (SELECT COUNT(*) FROM group_apps ga WHERE ga.app_id = a.id) AS group_count,
@@ -121,7 +134,8 @@ func (h *Handler) HandleListApps(w http.ResponseWriter, r *http.Request) {
 		var a MSIApp
 		if err := rows.Scan(
 			&a.ID, &a.Name, &a.Publisher, &a.Version, &a.ProductCode, &a.UpgradeCode,
-			&a.ContentURL, &a.SHA256, &a.FileSizeBytes, &a.CommandLine,
+			&a.ContentURL, &a.StorageFilename, &a.OriginalFilename,
+			&a.SHA256, &a.FileSizeBytes, &a.CommandLine,
 			&a.TimeoutMinutes, &a.RetryCount, &a.RetryIntervalMinutes,
 			&a.CreatedAt, &a.UpdatedAt,
 			&a.GroupCount, &a.InstalledCount, &a.TargetDeviceCount,
@@ -129,6 +143,7 @@ func (h *Handler) HandleListApps(w http.ResponseWriter, r *http.Request) {
 			slog.Error("api: scanning MSI app row", "err", err)
 			continue
 		}
+		a.SourceType = appSourceType(a.StorageFilename)
 		apps = append(apps, a)
 	}
 	if apps == nil {
@@ -272,8 +287,258 @@ func (h *Handler) HandleCreateApp(w http.ResponseWriter, r *http.Request) {
 		ProductCode:          prodCode,
 		UpgradeCode:          strings.TrimSpace(body.UpgradeCode),
 		ContentURL:           body.ContentURL,
+		SourceType:           "url",
 		SHA256:               shaHex,
 		FileSizeBytes:        body.FileSizeBytes,
+		CommandLine:          cmdLine,
+		TimeoutMinutes:       timeout,
+		RetryCount:           retryCount,
+		RetryIntervalMinutes: retryInterval,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	})
+}
+
+func sanitizeOriginalFilename(raw string) string {
+	s := strings.TrimSpace(raw)
+	if idx := strings.LastIndexAny(s, `/\`); idx >= 0 {
+		s = s[idx+1:]
+	}
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	if len(s) > 255 {
+		s = s[:255]
+	}
+	return s
+}
+
+func (h *Handler) packageFilePath(storageFilename string) (string, error) {
+	if h.packagesDir == "" {
+		return "", errors.New("local package storage is not configured")
+	}
+	clean := strings.TrimSpace(storageFilename)
+	if clean == "" || filepath.Base(clean) != clean || strings.ContainsAny(clean, `/\`) || !strings.HasSuffix(strings.ToLower(clean), ".msi") {
+		return "", errors.New("invalid storage filename")
+	}
+	return filepath.Join(h.packagesDir, clean), nil
+}
+
+// HandleUploadApp accepts a multipart/form-data upload containing a local .msi
+// binary ("file"), streams it directly to packages_dir while computing its
+// SHA-256 digest, extracts MSI Property table metadata via pure-Go CFB parsing,
+// and registers the hosted package in the application catalog.
+// POST /api/apps/upload
+func (h *Handler) HandleUploadApp(w http.ResponseWriter, r *http.Request) {
+	if h.packagesDir == "" {
+		respondErr(w, http.StatusServiceUnavailable, "local MSI package storage is not configured")
+		return
+	}
+	if err := os.MkdirAll(h.packagesDir, 0o750); err != nil {
+		slog.Error("api: creating packages_dir", "dir", h.packagesDir, "err", err)
+		respondErr(w, http.StatusInternalServerError, "failed to prepare package storage")
+		return
+	}
+
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(15 * time.Minute))
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Minute))
+	r.Body = http.MaxBytesReader(w, r.Body, msi.MaxPackageBytes+(2<<20))
+
+	mr, err := r.MultipartReader()
+	if err != nil {
+		respondErr(w, http.StatusBadRequest, "expected multipart/form-data upload: "+err.Error())
+		return
+	}
+
+	fields := make(map[string]string)
+	var (
+		gotFile          bool
+		originalFilename string
+		tmpPath          string
+		written          int64
+		shaHex           string
+		meta             *msi.Metadata
+	)
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	for {
+		part, perr := mr.NextPart()
+		if errors.Is(perr, io.EOF) {
+			break
+		}
+		if perr != nil {
+			respondErr(w, http.StatusBadRequest, "reading upload stream failed: "+perr.Error())
+			return
+		}
+
+		formName := part.FormName()
+		if formName == "file" && !gotFile {
+			gotFile = true
+			originalFilename = sanitizeOriginalFilename(part.FileName())
+			if originalFilename == "" || !strings.HasSuffix(strings.ToLower(originalFilename), ".msi") {
+				_ = part.Close()
+				respondErr(w, http.StatusBadRequest, "uploaded file must have a .msi extension")
+				return
+			}
+
+			tmpFile, terr := os.CreateTemp(h.packagesDir, ".upload-*.msi")
+			if terr != nil {
+				_ = part.Close()
+				slog.Error("api: creating temp MSI upload file", "err", terr)
+				respondErr(w, http.StatusInternalServerError, "failed to stage uploaded file")
+				return
+			}
+			tmpPath = tmpFile.Name()
+
+			hasher := sha256.New()
+			n, cerr := io.Copy(io.MultiWriter(tmpFile, hasher), io.LimitReader(part, msi.MaxPackageBytes+1))
+			_ = part.Close()
+			if cerr != nil {
+				_ = tmpFile.Close()
+				respondErr(w, http.StatusBadRequest, "failed reading uploaded MSI: "+cerr.Error())
+				return
+			}
+			if n == 0 {
+				_ = tmpFile.Close()
+				respondErr(w, http.StatusBadRequest, "uploaded MSI file is empty")
+				return
+			}
+			if n > msi.MaxPackageBytes {
+				_ = tmpFile.Close()
+				respondErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("MSI exceeds %d MiB upload limit", msi.MaxPackageBytes>>20))
+				return
+			}
+
+			parsedMeta, ierr := msi.InspectReaderAt(tmpFile, n)
+			_ = tmpFile.Close()
+			if ierr != nil {
+				respondErr(w, http.StatusBadRequest, "invalid MSI package: "+ierr.Error())
+				return
+			}
+
+			written = n
+			shaHex = strings.ToUpper(hex.EncodeToString(hasher.Sum(nil)))
+			meta = parsedMeta
+			continue
+		}
+
+		valBytes, _ := io.ReadAll(io.LimitReader(part, 4096))
+		_ = part.Close()
+		if formName != "" {
+			fields[formName] = strings.TrimSpace(string(valBytes))
+		}
+	}
+
+	if !gotFile || meta == nil {
+		respondErr(w, http.StatusBadRequest, "multipart field 'file' (.msi) is required")
+		return
+	}
+
+	prodCode := meta.ProductCode
+	name := fields["name"]
+	if name == "" {
+		name = meta.ProductName
+	}
+	if name == "" {
+		name = strings.TrimSuffix(originalFilename, filepath.Ext(originalFilename))
+	}
+	publisher := fields["publisher"]
+	if publisher == "" {
+		publisher = meta.Manufacturer
+	}
+	version := fields["version"]
+	if version == "" {
+		version = meta.ProductVersion
+	}
+	if version == "" {
+		version = "1.0.0"
+	}
+	cmdLine := fields["command_line"]
+	if cmdLine == "" {
+		cmdLine = "/quiet /norestart"
+	}
+	timeout := 15
+	if v, err := strconv.Atoi(fields["timeout_minutes"]); err == nil && v > 0 {
+		timeout = v
+	}
+	retryCount := 3
+	if v, err := strconv.Atoi(fields["retry_count"]); err == nil && v >= 0 {
+		retryCount = v
+	}
+	retryInterval := 5
+	if v, err := strconv.Atoi(fields["retry_interval_minutes"]); err == nil && v > 0 {
+		retryInterval = v
+	}
+
+	var existing int
+	if err := h.db.QueryRowContext(r.Context(),
+		dbpkg.Rebind(`SELECT COUNT(*) FROM msi_apps WHERE product_code = ?`), prodCode,
+	).Scan(&existing); err == nil && existing > 0 {
+		respondErr(w, http.StatusConflict, "an application with this MSI ProductCode is already registered")
+		return
+	}
+
+	id := uuid.New().String()
+	storageFilename := id + ".msi"
+	finalPath, err := h.packageFilePath(storageFilename)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		slog.Error("api: finalizing uploaded MSI file", "err", err)
+		respondErr(w, http.StatusInternalServerError, "failed to store uploaded MSI package")
+		return
+	}
+	tmpPath = "" // prevent defer from removing finalized file
+
+	now := time.Now().UTC()
+	_, err = h.db.ExecContext(r.Context(), dbpkg.Rebind(`
+		INSERT INTO msi_apps (
+			id, name, publisher, version, product_code, upgrade_code,
+			content_url, storage_filename, original_filename,
+			sha256, file_size_bytes, command_line,
+			timeout_minutes, retry_count, retry_interval_minutes,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`),
+		id, name, publisher, version, prodCode, meta.UpgradeCode,
+		"", storageFilename, originalFilename,
+		shaHex, written, cmdLine,
+		timeout, retryCount, retryInterval, now, now,
+	)
+	if err != nil {
+		_ = os.Remove(finalPath)
+		slog.Error("api: inserting uploaded MSI app", "err", err)
+		respondErr(w, http.StatusInternalServerError, "failed to register uploaded application")
+		return
+	}
+
+	actor := emailFromCtx(r)
+	h.audit(r, actor, "app.upload", "app", id,
+		fmt.Sprintf(`{"name":%q,"filename":%q,"product_code":%q,"version":%q,"bytes":%d}`, name, originalFilename, prodCode, version, written))
+	slog.Info("MSI app uploaded", "app_id", id, "name", name, "filename", originalFilename, "product_code", prodCode, "bytes", written, "actor", actor)
+
+	respondCreated(w, MSIApp{
+		ID:                   id,
+		Name:                 name,
+		Publisher:            publisher,
+		Version:              version,
+		ProductCode:          prodCode,
+		UpgradeCode:          meta.UpgradeCode,
+		ContentURL:           "",
+		SourceType:           "upload",
+		OriginalFilename:     originalFilename,
+		SHA256:               shaHex,
+		FileSizeBytes:        written,
 		CommandLine:          cmdLine,
 		TimeoutMinutes:       timeout,
 		RetryCount:           retryCount,
@@ -348,11 +613,17 @@ func (h *Handler) HandleGetApp(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleDeleteApp removes an MSI application from the catalog.
+// HandleDeleteApp removes an MSI application from the catalog (and deletes any
+// locally hosted .msi binary from packages_dir).
 // DELETE /api/apps/{id}
 func (h *Handler) HandleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	actor := emailFromCtx(r)
+
+	var storageFilename string
+	_ = h.db.QueryRowContext(r.Context(),
+		dbpkg.Rebind(`SELECT COALESCE(storage_filename, '') FROM msi_apps WHERE id = ?`), id,
+	).Scan(&storageFilename)
 
 	res, err := h.db.ExecContext(r.Context(), dbpkg.Rebind(`DELETE FROM msi_apps WHERE id = ?`), id)
 	if err != nil {
@@ -362,6 +633,14 @@ func (h *Handler) HandleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		respondErr(w, http.StatusNotFound, "application not found")
 		return
+	}
+
+	if storageFilename != "" {
+		if diskPath, perr := h.packageFilePath(storageFilename); perr == nil {
+			if rerr := os.Remove(diskPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				slog.Warn("api: removing deleted MSI package file", "path", diskPath, "err", rerr)
+			}
+		}
 	}
 
 	h.audit(r, actor, "app.delete", "app", id, "")
@@ -618,7 +897,8 @@ func (h *Handler) loadMSIApp(ctx context.Context, id string) (*MSIApp, error) {
 	var a MSIApp
 	err := h.db.QueryRowContext(ctx, dbpkg.Rebind(`
 		SELECT a.id, a.name, a.publisher, a.version, a.product_code, a.upgrade_code,
-		       a.content_url, a.sha256, a.file_size_bytes, a.command_line,
+		       a.content_url, COALESCE(a.storage_filename, ''), COALESCE(a.original_filename, ''),
+		       a.sha256, a.file_size_bytes, a.command_line,
 		       a.timeout_minutes, a.retry_count, a.retry_interval_minutes,
 		       a.created_at, a.updated_at,
 		       (SELECT COUNT(*) FROM group_apps ga WHERE ga.app_id = a.id),
@@ -632,7 +912,8 @@ func (h *Handler) loadMSIApp(ctx context.Context, id string) (*MSIApp, error) {
 		WHERE a.id = ?
 	`), id).Scan(
 		&a.ID, &a.Name, &a.Publisher, &a.Version, &a.ProductCode, &a.UpgradeCode,
-		&a.ContentURL, &a.SHA256, &a.FileSizeBytes, &a.CommandLine,
+		&a.ContentURL, &a.StorageFilename, &a.OriginalFilename,
+		&a.SHA256, &a.FileSizeBytes, &a.CommandLine,
 		&a.TimeoutMinutes, &a.RetryCount, &a.RetryIntervalMinutes,
 		&a.CreatedAt, &a.UpdatedAt,
 		&a.GroupCount, &a.InstalledCount, &a.TargetDeviceCount,
@@ -640,10 +921,16 @@ func (h *Handler) loadMSIApp(ctx context.Context, id string) (*MSIApp, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.SourceType = appSourceType(a.StorageFilename)
 	return &a, nil
 }
 
 func (h *Handler) deployMSIAppToDevice(ctx context.Context, app *MSIApp, deviceID string) (int, error) {
+	relayURL := h.SignedAppContentURL(app.ID, time.Now().UTC().Add(7*24*time.Hour))
+	if app.StorageFilename != "" && relayURL == "" {
+		return 0, errors.New("cannot deploy locally hosted MSI without configured content relay base URL / secret")
+	}
+
 	_, err := h.db.ExecContext(ctx, dbpkg.Rebind(`
 		INSERT INTO device_app_installs (
 			device_id, app_id, product_code, desired_action,
@@ -662,15 +949,19 @@ func (h *Handler) deployMSIAppToDevice(ctx context.Context, app *MSIApp, deviceI
 		return 0, err
 	}
 
+	primaryURL := app.ContentURL
 	var contentURLs []string
-	if relayURL := h.SignedAppContentURL(app.ID, time.Now().UTC().Add(7*24*time.Hour)); relayURL != "" {
+	if app.StorageFilename != "" {
+		primaryURL = relayURL
+		contentURLs = []string{relayURL}
+	} else if relayURL != "" {
 		contentURLs = []string{relayURL, app.ContentURL}
 	}
 
 	queued, err := mdm.EnqueueMSIInstall(h.db, deviceID, mdm.MSIInstallSpec{
 		ProductCode:          app.ProductCode,
 		Version:              app.Version,
-		ContentURL:           app.ContentURL,
+		ContentURL:           primaryURL,
 		ContentURLs:          contentURLs,
 		SHA256:               app.SHA256,
 		CommandLine:          app.CommandLine,
@@ -752,11 +1043,11 @@ func (h *Handler) HandleServeAppContent(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var contentURL string
+	var contentURL, storageFilename string
 	var fileSizeBytes int64
 	err = h.db.QueryRowContext(r.Context(),
-		dbpkg.Rebind(`SELECT content_url, file_size_bytes FROM msi_apps WHERE id = ?`), appID,
-	).Scan(&contentURL, &fileSizeBytes)
+		dbpkg.Rebind(`SELECT content_url, file_size_bytes, COALESCE(storage_filename, '') FROM msi_apps WHERE id = ?`), appID,
+	).Scan(&contentURL, &fileSizeBytes, &storageFilename)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
 		return
@@ -764,6 +1055,39 @@ func (h *Handler) HandleServeAppContent(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		slog.Error("api: querying MSI content_url for relay", "app_id", appID, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Serve locally uploaded .msi packages directly from packages_dir with full
+	// RFC 9110 Range / 206 Partial Content / HEAD / If-Range support.
+	if storageFilename != "" {
+		diskPath, perr := h.packageFilePath(storageFilename)
+		if perr != nil {
+			http.Error(w, "local package storage unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		f, oerr := os.Open(diskPath)
+		if errors.Is(oerr, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		if oerr != nil {
+			slog.Error("api: opening local MSI package", "path", diskPath, "err", oerr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
+
+		st, serr := f.Stat()
+		if serr != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-msi")
+		w.Header().Set("Cache-Control", "no-transform, private, max-age=3600")
+		w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, st.ModTime().UnixNano(), st.Size()))
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(15 * time.Minute))
+		http.ServeContent(w, r, storageFilename, st.ModTime(), f)
 		return
 	}
 
