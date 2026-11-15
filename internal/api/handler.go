@@ -14,6 +14,7 @@ import (
 	"github.com/latchzmdm/latchz/internal/msi"
 	"github.com/latchzmdm/latchz/internal/policy"
 	"github.com/latchzmdm/latchz/internal/vault"
+	"github.com/latchzmdm/latchz/internal/winget"
 	"github.com/latchzmdm/latchz/internal/wns"
 )
 
@@ -22,6 +23,7 @@ type Handler struct {
 	db              *sql.DB
 	wns             *wns.Client
 	vault           *vault.Vault
+	winget          *winget.Client
 	deviceCAPool    *x509.CertPool
 	proxyCertHeader string
 	contentBaseURL  string
@@ -34,6 +36,7 @@ type Handler struct {
 func NewHandler(db *sql.DB) *Handler {
 	return &Handler{
 		db:            db,
+		winget:        winget.NewClient(),
 		contentClient: msi.NewIdentityHTTPClient(0),
 	}
 }

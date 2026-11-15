@@ -367,6 +367,9 @@ func (s *Server) routes() {
 			r.With(admin).Put("/groups/{id}/profiles", s.api.HandleAssignProfileToGroup)
 
 			// Applications (Win32 MSI via EnterpriseDesktopAppManagement CSP)
+			r.Get("/apps/winget/search", s.api.HandleSearchWinGet)
+			r.Get("/apps/winget/resolve", s.api.HandleResolveWinGet)
+			r.With(admin).Post("/apps/winget/import", s.api.HandleImportWinGetApp)
 			r.With(admin).Post("/apps/inspect", s.api.HandleInspectMSI)
 			r.With(admin).Post("/apps/upload", s.api.HandleUploadApp)
 			r.Get("/apps", s.api.HandleListApps)

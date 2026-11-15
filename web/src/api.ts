@@ -263,6 +263,31 @@ export interface MSIAppDetail {
   installs: DeviceAppInstall[]
 }
 
+export interface WinGetSearchResult {
+  package_id: string
+  name: string
+  publisher: string
+  description: string
+  homepage?: string
+  tags?: string[]
+  curated_msi: boolean
+}
+
+export interface WinGetResolvedMSI {
+  package_id: string
+  name: string
+  publisher: string
+  description: string
+  version: string
+  architecture: string
+  installer_type: string
+  installer_url: string
+  sha256: string
+  product_code: string
+  upgrade_code: string
+  silent_args: string
+}
+
 export interface BitLockerPolicy {
   enabled: boolean
   require_device_encryption: boolean
@@ -515,6 +540,12 @@ export const api = {
       post<{ status: string; devices_targeted: number; commands_queued: number }>(`/apps/${enc(id)}/install`, { device_ids: deviceIds }),
     uninstall: (id: string, deviceIds: string[]) =>
       post<{ status: string; devices_targeted: number }>(`/apps/${enc(id)}/uninstall`, { device_ids: deviceIds }),
+    wingetSearch: (q = '') =>
+      get<WinGetSearchResult[]>(`/apps/winget/search${q.trim() ? `?q=${enc(q.trim())}` : ''}`),
+    wingetResolve: (packageId: string, arch = 'x64') =>
+      get<WinGetResolvedMSI>(`/apps/winget/resolve?package_id=${enc(packageId)}&arch=${enc(arch)}`),
+    wingetImport: (data: { package_id: string; architecture?: string; command_line?: string }) =>
+      post<MSIApp>('/apps/winget/import', data),
   },
 
   // BitLocker CSP & AES-256-GCM Recovery Key Vault

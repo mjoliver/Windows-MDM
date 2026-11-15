@@ -11,6 +11,7 @@ import {
   Upload,
   Globe,
   FileArchive,
+  Sparkles,
   X,
 } from 'lucide-react'
 import { Layout } from '../components/Layout'
@@ -23,6 +24,7 @@ import {
   api,
   type MSIApp,
   type MSIAppDetail,
+  type WinGetSearchResult,
   type Device,
   type Group,
 } from '../api'
@@ -44,18 +46,25 @@ function appBadgeStatus(code: number | null, label: string): string {
 
 function CreateAppModal({
   initialFile,
+  initialMode = 'upload',
   onClose,
   onCreated,
 }: {
   initialFile?: File | null
+  initialMode?: 'upload' | 'url' | 'winget'
   onClose: () => void
   onCreated: (app: MSIApp) => void
 }) {
-  const [mode, setMode]               = useState<'upload' | 'url'>('upload')
+  const [mode, setMode]               = useState<'upload' | 'url' | 'winget'>(initialFile ? 'upload' : initialMode)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [dragActive, setDragActive]   = useState(false)
   const [uploadPct, setUploadPct]     = useState(0)
   const [uploadLoaded, setUploadLoaded] = useState(0)
+
+  const [wingetQuery, setWingetQuery]     = useState('')
+  const [wingetResults, setWingetResults] = useState<WinGetSearchResult[]>([])
+  const [wingetLoading, setWingetLoading] = useState(false)
+  const [importingPkg, setImportingPkg]   = useState<string | null>(null)
 
   const [contentUrl, setContentUrl]   = useState('')
   const [name, setName]               = useState('')
@@ -104,6 +113,49 @@ function CreateAppModal({
       void applyLocalFile(initialFile)
     }
   }, [initialFile, applyLocalFile])
+
+  useEffect(() => {
+    if (mode !== 'winget') return
+    let cancelled = false
+    setWingetLoading(true)
+    const timer = setTimeout(() => {
+      api.apps
+        .wingetSearch(wingetQuery)
+        .then(res => {
+          if (!cancelled) setWingetResults(res ?? [])
+        })
+        .catch(e => {
+          if (!cancelled) setError(e instanceof Error ? e.message : 'WinGet catalog search failed')
+        })
+        .finally(() => {
+          if (!cancelled) setWingetLoading(false)
+        })
+    }, wingetQuery.trim() ? 220 : 0)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [mode, wingetQuery])
+
+  const importFromWinGet = async (pkg: WinGetSearchResult) => {
+    setError('')
+    setImportingPkg(pkg.package_id)
+    setSaving(true)
+    try {
+      const created = await api.apps.wingetImport({
+        package_id: pkg.package_id,
+        architecture: 'x64',
+        command_line: cmdLine.trim() || '/quiet /norestart',
+      })
+      toast.success(`Imported "${created.name}" (${created.version}) from WinGet`)
+      onCreated(created)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : `Failed to import ${pkg.package_id} from WinGet`)
+    } finally {
+      setImportingPkg(null)
+      setSaving(false)
+    }
+  }
 
   const handleDropZone = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -218,27 +270,31 @@ function CreateAppModal({
       open={true}
       onClose={saving ? () => {} : onClose}
       title="Add Win32 MSI Application"
-      maxWidth={640}
+      maxWidth={680}
       footer={
         <>
-          <button className="btn btn-secondary" onClick={onClose} disabled={saving || inspecting}>Cancel</button>
-          <button
-            className="btn btn-primary"
-            onClick={submit}
-            disabled={saving || inspecting || (mode === 'upload' && !selectedFile)}
-          >
-            {saving
-              ? mode === 'upload'
-                ? `Uploading (${uploadPct}%)…`
-                : 'Registering…'
-              : mode === 'upload'
-                ? 'Upload & Register'
-                : 'Register Application'}
+          <button className="btn btn-secondary" onClick={onClose} disabled={saving || inspecting}>
+            {mode === 'winget' ? 'Close' : 'Cancel'}
           </button>
+          {mode !== 'winget' && (
+            <button
+              className="btn btn-primary"
+              onClick={submit}
+              disabled={saving || inspecting || (mode === 'upload' && !selectedFile)}
+            >
+              {saving
+                ? mode === 'upload'
+                  ? `Uploading (${uploadPct}%)…`
+                  : 'Registering…'
+                : mode === 'upload'
+                  ? 'Upload & Register'
+                  : 'Register Application'}
+            </button>
+          )}
         </>
       }
     >
-      <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
         <button
           type="button"
           className={`btn btn-sm ${mode === 'upload' ? 'btn-primary' : 'btn-secondary'}`}
@@ -246,6 +302,14 @@ function CreateAppModal({
           onClick={() => { setMode('upload'); setError('') }}
         >
           <Upload size={14} /> Upload Local .msi
+        </button>
+        <button
+          type="button"
+          className={`btn btn-sm ${mode === 'winget' ? 'btn-primary' : 'btn-secondary'}`}
+          disabled={saving}
+          onClick={() => { setMode('winget'); setError('') }}
+        >
+          <Sparkles size={14} /> Browse WinGet Catalog
         </button>
         <button
           type="button"
@@ -257,7 +321,101 @@ function CreateAppModal({
         </button>
       </div>
 
-      {mode === 'upload' ? (
+      {mode === 'winget' ? (
+        <div>
+          <div className="form-group">
+            <label className="form-label">Search WinGet MSI Packages</label>
+            <div style={{ position: 'relative' }}>
+              <Search
+                size={15}
+                style={{
+                  position: 'absolute',
+                  left: 12,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  opacity: 0.55,
+                  pointerEvents: 'none',
+                }}
+              />
+              <input
+                className="input"
+                style={{ paddingLeft: 36 }}
+                value={wingetQuery}
+                onChange={e => setWingetQuery(e.target.value)}
+                disabled={saving}
+                placeholder="Search 7zip, Firefox, Chrome, PowerShell, Tailscale, or enter Publisher.Package…"
+                autoFocus
+              />
+            </div>
+            <div style={{ fontSize: '0.75rem', opacity: 0.62, marginTop: 6 }}>
+              100% agentless: Latchz resolves official <code>microsoft/winget-pkgs</code> YAML manifests with native MSI/WiX installers, verifies SHA-256 & ProductCode, and deploys via <code>EnterpriseDesktopAppManagement</code> CSP.
+            </div>
+          </div>
+
+          <div
+            style={{
+              maxHeight: 300,
+              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              marginBottom: 14,
+              paddingRight: 4,
+            }}
+          >
+            {wingetLoading && wingetResults.length === 0 ? (
+              <div style={{ padding: 24, textAlign: 'center', opacity: 0.55, fontSize: '0.86rem' }}>
+                Searching WinGet MSI catalog…
+              </div>
+            ) : wingetResults.length === 0 ? (
+              <div style={{ padding: 24, textAlign: 'center', opacity: 0.55, fontSize: '0.86rem' }}>
+                No matching WinGet packages found. Enter an exact <code>Publisher.Package</code> identifier (e.g. <code>7zip.7zip</code>) to inspect its manifest directly.
+              </div>
+            ) : (
+              wingetResults.map(pkg => {
+                const isImporting = importingPkg === pkg.package_id
+                return (
+                  <div
+                    key={pkg.package_id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: '11px 14px',
+                      borderRadius: 12,
+                      border: '1px solid var(--md-sys-color-outline-variant)',
+                      background: 'var(--md-sys-color-surface-container-low)',
+                    }}
+                  >
+                    <Package size={18} style={{ color: 'var(--md-sys-color-primary)', flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{pkg.name}</span>
+                        <code style={{ fontSize: '0.73rem', opacity: 0.8 }}>{pkg.package_id}</code>
+                        {pkg.curated_msi && <Badge status="compliant" label="Native MSI" />}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', opacity: 0.65, marginTop: 2 }}>
+                        {pkg.publisher ? `${pkg.publisher} · ` : ''}
+                        {pkg.description || 'Resolves latest x64 MSI/WiX manifest from microsoft/winget-pkgs'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      disabled={saving}
+                      onClick={() => void importFromWinGet(pkg)}
+                      style={{ whiteSpace: 'nowrap' }}
+                    >
+                      <Download size={13} className={isImporting ? 'spin' : ''} />
+                      {isImporting ? 'Importing…' : '1-Click Import'}
+                    </button>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </div>
+      ) : mode === 'upload' ? (
         <div className="form-group">
           <input
             ref={fileInputRef}
@@ -398,53 +556,57 @@ function CreateAppModal({
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div className="form-group">
-          <label className="form-label">Application Name</label>
-          <input
-            className="input"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            placeholder="Auto-filled from MSI"
-            disabled={saving}
-          />
-        </div>
-        <div className="form-group">
-          <label className="form-label">Publisher</label>
-          <input
-            className="input"
-            value={publisher}
-            onChange={e => setPublisher(e.target.value)}
-            placeholder="e.g. Google LLC"
-            disabled={saving}
-          />
-        </div>
-      </div>
+      {mode !== 'winget' && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="form-group">
+              <label className="form-label">Application Name</label>
+              <input
+                className="input"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="Auto-filled from MSI"
+                disabled={saving}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Publisher</label>
+              <input
+                className="input"
+                value={publisher}
+                onChange={e => setPublisher(e.target.value)}
+                placeholder="e.g. Google LLC"
+                disabled={saving}
+              />
+            </div>
+          </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 12 }}>
-        <div className="form-group">
-          <label className="form-label">Version</label>
-          <input
-            className="input"
-            value={version}
-            onChange={e => setVersion(e.target.value)}
-            placeholder="1.0.0"
-            disabled={saving}
-          />
-        </div>
-        <div className="form-group">
-          <label className="form-label">MSI ProductCode GUID</label>
-          <input
-            className="input mono"
-            value={productCode}
-            onChange={e => setProductCode(e.target.value)}
-            readOnly={mode === 'upload'}
-            disabled={saving}
-            style={mode === 'upload' ? { opacity: 0.75 } : undefined}
-            placeholder={mode === 'upload' ? 'Auto-extracted from .msi' : '{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}'}
-          />
-        </div>
-      </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 12 }}>
+            <div className="form-group">
+              <label className="form-label">Version</label>
+              <input
+                className="input"
+                value={version}
+                onChange={e => setVersion(e.target.value)}
+                placeholder="1.0.0"
+                disabled={saving}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">MSI ProductCode GUID</label>
+              <input
+                className="input mono"
+                value={productCode}
+                onChange={e => setProductCode(e.target.value)}
+                readOnly={mode === 'upload'}
+                disabled={saving}
+                style={mode === 'upload' ? { opacity: 0.75 } : undefined}
+                placeholder={mode === 'upload' ? 'Auto-extracted from .msi' : '{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}'}
+              />
+            </div>
+          </div>
+        </>
+      )}
 
       {mode === 'url' && (
         <div className="form-group">
@@ -724,6 +886,7 @@ export function AppsPage() {
   const [groups, setGroups]               = useState<Group[]>([])
   const [loading, setLoading]             = useState(true)
   const [creating, setCreating]           = useState(false)
+  const [createMode, setCreateMode]       = useState<'upload' | 'url' | 'winget'>('upload')
   const [droppedFile, setDroppedFile]     = useState<File | null>(null)
   const [pageDragActive, setPageDragActive] = useState(false)
   const [deploying, setDeploying]         = useState<MSIApp | null>(null)
@@ -791,15 +954,23 @@ export function AppsPage() {
         }}
         onDrop={handlePageDrop}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 28 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 28, gap: 12, flexWrap: 'wrap' }}>
           <div style={{ opacity: 0.7, fontSize: '0.95rem' }}>
-            Drag & drop local <code>.msi</code> installers or register HTTPS URLs to deploy silently via Windows <code>EnterpriseDesktopAppManagement</code> CSP.
+            Drag & drop local <code>.msi</code> installers, import from WinGet, or register HTTPS URLs to deploy silently via Windows <code>EnterpriseDesktopAppManagement</code> CSP.
           </div>
-          <ActionButton
-            icon={<Plus size={18} />}
-            label="Add MSI Application"
-            onClick={() => { setDroppedFile(null); setCreating(true) }}
-          />
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => { setDroppedFile(null); setCreateMode('winget'); setCreating(true) }}
+            >
+              <Sparkles size={16} /> Browse WinGet
+            </button>
+            <ActionButton
+              icon={<Plus size={18} />}
+              label="Add MSI Application"
+              onClick={() => { setDroppedFile(null); setCreateMode('upload'); setCreating(true) }}
+            />
+          </div>
         </div>
 
         {pageDragActive && (
@@ -928,6 +1099,7 @@ export function AppsPage() {
       {creating && (
         <CreateAppModal
           initialFile={droppedFile}
+          initialMode={createMode}
           onClose={() => { setCreating(false); setDroppedFile(null) }}
           onCreated={created => {
             setCreating(false)
