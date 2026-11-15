@@ -1205,3 +1205,43 @@ func (h *Handler) uninstallMSIAppFromDevice(ctx context.Context, app *MSIApp, de
 	h.wakeDevice(deviceID)
 	return nil
 }
+
+// ReconcileDeviceGroupApps ensures any MSI applications assigned via group_apps
+// to the device's current groups (including Dynamic Smart Groups) are queued if
+// not yet deployed on this device.
+func (h *Handler) ReconcileDeviceGroupApps(deviceID string) {
+	ctx := context.Background()
+	rows, err := h.db.QueryContext(ctx, dbpkg.Rebind(`
+		SELECT DISTINCT ga.app_id
+		FROM group_apps ga
+		JOIN device_group_members dgm ON dgm.group_id = ga.group_id
+		JOIN devices d ON d.id = dgm.device_id
+		WHERE dgm.device_id = ? AND d.is_active = 1
+	`), deviceID)
+	if err != nil {
+		return
+	}
+	var appIDs []string
+	for rows.Next() {
+		var appID string
+		if rows.Scan(&appID) == nil && appID != "" {
+			appIDs = append(appIDs, appID)
+		}
+	}
+	rows.Close()
+
+	for _, appID := range appIDs {
+		var desiredAction string
+		err := h.db.QueryRowContext(ctx, dbpkg.Rebind(`
+			SELECT COALESCE(desired_action, '') FROM device_app_installs WHERE device_id = ? AND app_id = ?
+		`), deviceID, appID).Scan(&desiredAction)
+		if err == nil && desiredAction == "install" {
+			continue
+		}
+		app, err := h.loadMSIApp(ctx, appID)
+		if err != nil {
+			continue
+		}
+		_, _ = h.deployMSIAppToDevice(ctx, app, deviceID)
+	}
+}

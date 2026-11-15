@@ -197,26 +197,32 @@ var enqueueRef = struct {
 	Lock           func(db *sql.DB, deviceID string) (int64, error)
 	Wipe           func(db *sql.DB, deviceID string) (int64, error)
 	Reboot         func(db *sql.DB, deviceID string) (int64, error)
+	Rename         func(db *sql.DB, deviceID, hostname string) (int64, error)
+	Retire         func(db *sql.DB, deviceID string) (int64, error)
 	PostureRefresh func(db *sql.DB, deviceID string) (int, error)
 }{
 	Lock:           mdm.EnqueueLock,
 	Wipe:           mdm.EnqueueWipe,
 	Reboot:         mdm.EnqueueReboot,
+	Rename:         mdm.EnqueueRenameDevice,
+	Retire:         mdm.EnqueueRetireDevice,
 	PostureRefresh: mdm.EnqueuePostureRefresh,
 }
 
 // policyOps holds injectable policy functions for testing.
 // By default they call the real policy package functions.
 var policyOps = struct {
-	ApplyDevice   func(db *sql.DB, deviceID string)
-	ApplyGroup    func(db *sql.DB, groupID string)
-	ApplyProfile  func(db *sql.DB, profileID string)
-	ResyncDevices func(db *sql.DB, deviceIDs []string)
+	ApplyDevice           func(db *sql.DB, deviceID string)
+	ApplyGroup            func(db *sql.DB, groupID string)
+	ApplyProfile          func(db *sql.DB, profileID string)
+	ResyncDevices         func(db *sql.DB, deviceIDs []string)
+	ReconcileDynamicGroup func(db *sql.DB, groupID string) (int, int)
 }{
-	ApplyDevice:   policy.ApplyDevice,
-	ApplyGroup:    policy.ApplyGroup,
-	ApplyProfile:  policy.ApplyProfile,
-	ResyncDevices: policy.ResyncDevices,
+	ApplyDevice:           policy.ApplyDevice,
+	ApplyGroup:            policy.ApplyGroup,
+	ApplyProfile:          policy.ApplyProfile,
+	ResyncDevices:         policy.ResyncDevices,
+	ReconcileDynamicGroup: policy.ReconcileDynamicGroup,
 }
 
 // keep imports used

@@ -216,6 +216,13 @@ func updateDevice(db *sql.DB, deviceID string, values map[string]string) {
 	if _, err := db.Exec(dbpkg.Rebind(query), args...); err != nil {
 		slog.Error("mdm: updating device record from check-in results", "device_id", deviceID, "err", err)
 	}
+	if reportedName, ok := values[OMADevDetailComputerName]; ok && strings.TrimSpace(reportedName) != "" {
+		_, _ = db.Exec(dbpkg.Rebind(`
+			UPDATE devices
+			SET pending_hostname = ''
+			WHERE id = ? AND LOWER(pending_hostname) = LOWER(?)
+		`), deviceID, strings.TrimSpace(reportedName))
+	}
 }
 
 func normalizePostureURI(uri string) string {

@@ -26,11 +26,11 @@ func TestHandleListGroups(t *testing.T) {
 			name: "list groups with members and profiles",
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{
-					"id", "name", "description", "created_at", "device_count", "profile_count",
+					"id", "name", "description", "is_dynamic", "match_mode", "dynamic_rules_json", "created_at", "device_count", "profile_count",
 				}).AddRow(
-					"group-1", "Engineering", "Engineering devices", time.Now(), 5, 2,
+					"group-1", "Engineering", "Engineering devices", 0, "all", "[]", time.Now(), 5, 2,
 				).AddRow(
-					"group-2", "HR", "HR devices", time.Now(), 3, 1,
+					"group-2", "HR", "HR devices", 1, "any", `[{"field":"os_version","operator":"contains","value":"10.0.2"}]`, time.Now(), 3, 1,
 				))
 			},
 			expectCode:  http.StatusOK,
@@ -40,7 +40,7 @@ func TestHandleListGroups(t *testing.T) {
 			name: "empty group list",
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{
-					"id", "name", "description", "created_at", "device_count", "profile_count",
+					"id", "name", "description", "is_dynamic", "match_mode", "dynamic_rules_json", "created_at", "device_count", "profile_count",
 				}))
 			},
 			expectCode:  http.StatusOK,
@@ -407,7 +407,7 @@ func TestHandleAssignDeviceToGroup(t *testing.T) {
 			email: "admin@example.com",
 			body:  `{"device_ids":["dev-1","dev-2"],"action":"add"}`,
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+				mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{"is_dynamic"}).AddRow(0))
 				mock.ExpectExec(".").WithArgs().WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectExec(".").WithArgs().WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectExec(".").WithArgs().WillReturnResult(sqlmock.NewResult(1, 1))
@@ -420,11 +420,21 @@ func TestHandleAssignDeviceToGroup(t *testing.T) {
 			email: "admin@example.com",
 			body:  `{"device_ids":["dev-1"],"action":"remove"}`,
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+				mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{"is_dynamic"}).AddRow(0))
 				mock.ExpectExec(".").WithArgs().WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectExec(".").WithArgs().WillReturnResult(sqlmock.NewResult(1, 1))
 			},
 			expectCode: http.StatusOK,
+		},
+		{
+			name:  "dynamic smart group rejects manual device assignment",
+			url:   "/api/groups/group-dyn/devices",
+			email: "admin@example.com",
+			body:  `{"device_ids":["dev-1"],"action":"add"}`,
+			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{"is_dynamic"}).AddRow(1))
+			},
+			expectCode: http.StatusConflict,
 		},
 		{
 			name:       "invalid action",

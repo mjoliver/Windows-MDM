@@ -18,6 +18,7 @@ type Device struct {
 	ID               string     `json:"id"`
 	HardwareID       string     `json:"hardware_id"`
 	DeviceName       string     `json:"device_name"`
+	PendingHostname  string     `json:"pending_hostname,omitempty"`
 	OSVersion        string     `json:"os_version"`
 	OSBuild          string     `json:"os_build"`
 	Manufacturer     string     `json:"manufacturer"`
@@ -27,21 +28,28 @@ type Device struct {
 	EnrolledBy       string     `json:"enrolled_by"`
 	LastCheckin      *time.Time `json:"last_checkin"`
 	ComplianceStatus string     `json:"compliance_status"`
+	EnrollmentState  string     `json:"enrollment_state"`
+	RetiredAt        *time.Time `json:"retired_at,omitempty"`
 	IsActive         bool       `json:"is_active"`
 }
 
-// HandleListDevices returns all enrolled devices.
+// HandleListDevices returns all enrolled devices (or includes retired devices when ?include_retired=1).
 // GET /api/devices
 func (h *Handler) HandleListDevices(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.db.QueryContext(r.Context(), dbpkg.Rebind(`
-		SELECT id, hardware_id, COALESCE(device_name,''), COALESCE(os_version,''),
-		       COALESCE(os_build,''), COALESCE(manufacturer,''), COALESCE(model,''),
+	includeRetired := r.URL.Query().Get("include_retired") == "1" || r.URL.Query().Get("include_retired") == "true"
+	query := `
+		SELECT id, hardware_id, COALESCE(device_name,''), COALESCE(pending_hostname,''),
+		       COALESCE(os_version,''), COALESCE(os_build,''), COALESCE(manufacturer,''), COALESCE(model,''),
 		       COALESCE(serial_number,''), enrolled_at, COALESCE(enrolled_by,''),
-		       last_checkin, compliance_status, is_active
+		       last_checkin, compliance_status, COALESCE(enrollment_state,'enrolled'), retired_at, is_active
 		FROM devices
-		WHERE is_active = 1
-		ORDER BY enrolled_at DESC
-	`))
+	`
+	if !includeRetired {
+		query += ` WHERE is_active = 1`
+	}
+	query += ` ORDER BY enrolled_at DESC`
+
+	rows, err := h.db.QueryContext(r.Context(), dbpkg.Rebind(query))
 	if err != nil {
 		slog.Error("api: listing devices", "err", err)
 		respondErr(w, http.StatusInternalServerError, "failed to list devices")
@@ -54,10 +62,10 @@ func (h *Handler) HandleListDevices(w http.ResponseWriter, r *http.Request) {
 		var d Device
 		var isActive int
 		if err := rows.Scan(
-			&d.ID, &d.HardwareID, &d.DeviceName, &d.OSVersion,
-			&d.OSBuild, &d.Manufacturer, &d.Model, &d.SerialNumber,
+			&d.ID, &d.HardwareID, &d.DeviceName, &d.PendingHostname,
+			&d.OSVersion, &d.OSBuild, &d.Manufacturer, &d.Model, &d.SerialNumber,
 			&d.EnrolledAt, &d.EnrolledBy, &d.LastCheckin,
-			&d.ComplianceStatus, &isActive,
+			&d.ComplianceStatus, &d.EnrollmentState, &d.RetiredAt, &isActive,
 		); err != nil {
 			slog.Error("api: scanning device row", "err", err)
 			continue
@@ -110,9 +118,9 @@ func (h *Handler) HandleUnenrollDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
-	// Mark device as inactive
+	// Mark device as inactive / retired
 	res, err := tx.ExecContext(r.Context(),
-		dbpkg.Rebind(`UPDATE devices SET is_active = 0 WHERE id = ?`), id)
+		dbpkg.Rebind(`UPDATE devices SET is_active = 0, enrollment_state = 'retired', retired_at = CURRENT_TIMESTAMP WHERE id = ?`), id)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, "failed to unenroll device")
 		return
@@ -230,6 +238,117 @@ func (h *Handler) HandleWipeDevice(w http.ResponseWriter, r *http.Request) {
 	h.audit(r, actor, "device.wipe", "device", id, fmt.Sprintf(`{"queue_id":%d}`, queueID))
 	slog.Warn("remote wipe queued", "device_id", id, "actor", actor)
 	respondOK(w, map[string]interface{}{"status": "queued", "queue_id": queueID, "warning": "device will be factory reset on next check-in"})
+}
+
+// HandleRenameDevice queues a remote hostname change via ./DevDetail/Ext/Microsoft/DNSComputerName
+// (supports %SERIAL% and %RAND:x% macros; takes full DNS/NetBIOS effect after reboot).
+// POST /api/devices/{id}/rename
+func (h *Handler) HandleRenameDevice(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	actor := emailFromCtx(r)
+
+	var body struct {
+		Hostname  string `json:"hostname"`
+		RebootNow bool   `json:"reboot_now"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+
+	normalized, err := mdm.ValidateHostnameTemplate(body.Hostname)
+	if err != nil {
+		respondErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	dev, err := h.getDevice(r, id)
+	if err == sql.ErrNoRows {
+		respondErr(w, http.StatusNotFound, "device not found")
+		return
+	} else if err != nil {
+		respondErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	queueID, err := enqueueRef.Rename(h.db, id, normalized)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, "failed to queue rename command")
+		return
+	}
+
+	pendingVal := normalized
+	if dev.DeviceName != "" && equalFoldTrim(dev.DeviceName, normalized) {
+		pendingVal = ""
+	}
+	_, _ = h.db.ExecContext(r.Context(),
+		dbpkg.Rebind(`UPDATE devices SET pending_hostname = ? WHERE id = ?`),
+		pendingVal, id,
+	)
+
+	var rebootQueueID int64
+	if body.RebootNow {
+		rebootQueueID, _ = enqueueRef.Reboot(h.db, id)
+	}
+
+	h.wakeDevice(id)
+	h.audit(r, actor, "device.rename", "device", id, fmt.Sprintf(`{"hostname":%q,"reboot_now":%t,"queue_id":%d}`, normalized, body.RebootNow, queueID))
+	slog.Info("remote hostname rename queued", "device_id", id, "hostname", normalized, "reboot_now", body.RebootNow, "actor", actor)
+	respondOK(w, map[string]interface{}{
+		"status":          "queued",
+		"hostname":        normalized,
+		"reboot_now":      body.RebootNow,
+		"queue_id":        queueID,
+		"reboot_queue_id": rebootQueueID,
+	})
+}
+
+// HandleRetireDevice queues a clean, non-destructive MDM unenrollment via
+// ./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Unenroll. User files and OS
+// state remain intact while Latchz MDM management is cleanly removed on next check-in.
+// POST /api/devices/{id}/retire
+func (h *Handler) HandleRetireDevice(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	actor := emailFromCtx(r)
+
+	var body struct {
+		Confirm bool `json:"confirm"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if !body.Confirm {
+		respondErr(w, http.StatusBadRequest, `retire requires {"confirm": true} in the request body`)
+		return
+	}
+
+	if _, err := h.getDevice(r, id); err == sql.ErrNoRows {
+		respondErr(w, http.StatusNotFound, "device not found")
+		return
+	} else if err != nil {
+		respondErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	queueID, err := enqueueRef.Retire(h.db, id)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, "failed to queue retire command")
+		return
+	}
+
+	_, _ = h.db.ExecContext(r.Context(),
+		dbpkg.Rebind(`UPDATE devices SET enrollment_state = 'retiring' WHERE id = ?`),
+		id,
+	)
+
+	h.wakeDevice(id)
+	h.audit(r, actor, "device.retire", "device", id, fmt.Sprintf(`{"queue_id":%d}`, queueID))
+	slog.Info("clean MDM retire queued", "device_id", id, "actor", actor)
+	respondOK(w, map[string]interface{}{
+		"status":           "queued",
+		"enrollment_state": "retiring",
+		"queue_id":         queueID,
+		"message":          "device will cleanly unenroll from Latchz MDM on next check-in without wiping personal files",
+	})
 }
 
 // HandleSyncDevice triggers an immediate policy sync for a device.
@@ -373,20 +492,34 @@ func (h *Handler) HandleGetDeviceCommands(w http.ResponseWriter, r *http.Request
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+func equalFoldTrim(a, b string) bool {
+	return len(a) == len(b) && (a == b || fmt.Sprintf("%s", toLowerASCII(a)) == toLowerASCII(b))
+}
+
+func toLowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 func (h *Handler) getDevice(r *http.Request, id string) (*Device, error) {
 	var d Device
 	var isActive int
 	err := h.db.QueryRowContext(r.Context(), dbpkg.Rebind(`
-		SELECT id, hardware_id, COALESCE(device_name,''), COALESCE(os_version,''),
-		       COALESCE(os_build,''), COALESCE(manufacturer,''), COALESCE(model,''),
+		SELECT id, hardware_id, COALESCE(device_name,''), COALESCE(pending_hostname,''),
+		       COALESCE(os_version,''), COALESCE(os_build,''), COALESCE(manufacturer,''), COALESCE(model,''),
 		       COALESCE(serial_number,''), enrolled_at, COALESCE(enrolled_by,''),
-		       last_checkin, compliance_status, is_active
+		       last_checkin, compliance_status, COALESCE(enrollment_state,'enrolled'), retired_at, is_active
 		FROM devices WHERE id = ?
 	`), id).Scan(
-		&d.ID, &d.HardwareID, &d.DeviceName, &d.OSVersion,
-		&d.OSBuild, &d.Manufacturer, &d.Model, &d.SerialNumber,
+		&d.ID, &d.HardwareID, &d.DeviceName, &d.PendingHostname,
+		&d.OSVersion, &d.OSBuild, &d.Manufacturer, &d.Model, &d.SerialNumber,
 		&d.EnrolledAt, &d.EnrolledBy, &d.LastCheckin,
-		&d.ComplianceStatus, &isActive,
+		&d.ComplianceStatus, &d.EnrollmentState, &d.RetiredAt, &isActive,
 	)
 	if err != nil {
 		return nil, err

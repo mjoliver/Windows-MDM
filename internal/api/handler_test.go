@@ -408,6 +408,7 @@ func stubPolicyOps(t *testing.T) {
 	policyOps.ApplyGroup = func(*sql.DB, string) {}
 	policyOps.ApplyProfile = func(*sql.DB, string) {}
 	policyOps.ResyncDevices = func(*sql.DB, []string) {}
+	policyOps.ReconcileDynamicGroup = func(*sql.DB, string) (int, int) { return 0, 0 }
 	t.Cleanup(func() { policyOps = orig })
 }
 

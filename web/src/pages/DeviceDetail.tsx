@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, ShieldAlert, GlobeLock, Zap, Package, Layers, Search, KeyRound, UserCheck, Eye, Plus, Copy } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, ShieldAlert, GlobeLock, Zap, Package, Layers, Search, KeyRound, UserCheck, Eye, Plus, Copy, Edit3, LogOut } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
@@ -44,7 +44,11 @@ export function DeviceDetailPage() {
   const [error, setError]             = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [confirmReboot, setConfirmReboot] = useState(false)
+  const [confirmRetire, setConfirmRetire] = useState(false)
   const [confirmWipe, setConfirmWipe]     = useState(false)
+  const [renameOpen, setRenameOpen]       = useState(false)
+  const [renameHost, setRenameHost]       = useState('')
+  const [renameReboot, setRenameReboot]   = useState(false)
   const [escrowOpen, setEscrowOpen]       = useState(false)
   const [escrowVol, setEscrowVol]         = useState('C:')
   const [escrowProt, setEscrowProt]       = useState('')
@@ -229,9 +233,15 @@ export function DeviceDetailPage() {
             <Monitor size={36} />
           </div>
           <div style={{ flex: 1 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 8, flexWrap: 'wrap' }}>
               <h1 style={{ fontSize: '2.4rem', fontWeight: 800, margin: 0 }}>{device.device_name || 'Unnamed Device'}</h1>
               <Badge status={device.compliance_status} />
+              {device.pending_hostname && (
+                <Badge status="pending" label={`Rename Queued → ${device.pending_hostname}`} />
+              )}
+              {device.enrollment_state === 'retiring' && (
+                <Badge status="non_compliant" label="Retiring (Unenroll Queued)" />
+              )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 24, opacity: 0.6, fontSize: '1rem', fontWeight: 500 }}>
               <span>{device.manufacturer} {device.model}</span>
@@ -264,6 +274,17 @@ export function DeviceDetailPage() {
             )}
             <span
               className="tooltip-wrap"
+              data-tooltip="Rename computer (DNSComputerName)">
+              <button className="btn btn-secondary"
+                aria-label="Rename computer"
+                onClick={() => { setRenameHost(device.pending_hostname || device.device_name || ''); setRenameReboot(false); setRenameOpen(true) }}
+                disabled={!!actionLoading}
+                style={{ width: 52, height: 52, padding: 0, borderRadius: 16 }}>
+                <Edit3 size={20} className={actionLoading === 'rename' ? 'spin' : ''} />
+              </button>
+            </span>
+            <span
+              className="tooltip-wrap"
               data-tooltip="Restart device on next check-in">
               <button className="btn btn-secondary"
                 aria-label="Restart device"
@@ -285,6 +306,17 @@ export function DeviceDetailPage() {
                 aria-hidden="true"
                 style={{ width: 52, height: 52, padding: 0, borderRadius: 16, opacity: 0.38, pointerEvents: 'none' }}>
                 <Lock size={20} />
+              </button>
+            </span>
+            <span
+              className="tooltip-wrap"
+              data-tooltip="Retire device (clean MDM unenroll — keeps personal files)">
+              <button className="btn btn-secondary"
+                aria-label="Retire device"
+                onClick={() => setConfirmRetire(true)}
+                disabled={!!actionLoading}
+                style={{ width: 52, height: 52, padding: 0, borderRadius: 16 }}>
+                <LogOut size={20} className={actionLoading === 'retire' ? 'spin' : ''} />
               </button>
             </span>
             <span
@@ -1110,6 +1142,86 @@ export function DeviceDetailPage() {
         >
           <p style={{ opacity: 0.8, lineHeight: 1.6 }}>
             You are about to queue a <strong>Remote Reboot</strong> command (<code className="mono">RebootNow</code>). On its next check-in, Windows will notify any signed-in user and restart after a <strong>5-minute grace period</strong>.
+          </p>
+        </Modal>
+
+        <Modal
+          open={renameOpen}
+          onClose={() => setRenameOpen(false)}
+          title="Rename Computer (DNSComputerName)"
+          maxWidth={480}
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setRenameOpen(false)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                disabled={!renameHost.trim() || !!actionLoading}
+                onClick={async () => {
+                  setRenameOpen(false)
+                  await action('rename', async () => {
+                    const res = await api.devices.rename(id!, renameHost.trim(), renameReboot)
+                    toast.success(`Hostname "${res.hostname}" queued${res.reboot_now ? ' + restart scheduled' : ' (takes full effect on next restart)'}.`)
+                    return res
+                  })
+                }}
+              >
+                Queue Rename
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ fontSize: '0.84rem', opacity: 0.8, lineHeight: 1.55 }}>
+              Queues an agentless <code className="mono">./DevDetail/Ext/Microsoft/DNSComputerName</code> Replace command. Supports Windows MDM macros <code className="mono">%SERIAL%</code> and <code className="mono">%RAND:x%</code>.
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">New Computer Name</label>
+              <input
+                className="form-input mono"
+                value={renameHost}
+                onChange={e => setRenameHost(e.target.value)}
+                placeholder="CORP-%SERIAL%"
+                maxLength={63}
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setRenameHost('CORP-%SERIAL%')}>
+                  CORP-%SERIAL%
+                </button>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setRenameHost('LZ-%RAND:6%')}>
+                  LZ-%RAND:6%
+                </button>
+              </div>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.85rem', cursor: 'pointer' }}>
+              <input type="checkbox" checked={renameReboot} onChange={e => setRenameReboot(e.target.checked)} />
+              Also queue immediate Reboot (<code className="mono">RebootNow</code>) so the new hostname takes effect right away
+            </label>
+          </div>
+        </Modal>
+
+        <Modal
+          open={confirmRetire}
+          onClose={() => setConfirmRetire(false)}
+          title="Retire Device (Clean MDM Unenroll)"
+          maxWidth={460}
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setConfirmRetire(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={async () => {
+                setConfirmRetire(false)
+                await action('retire', async () => {
+                  const res = await api.devices.retire(id!)
+                  toast.success('Clean MDM Retire queued — device will unenroll on next check-in without deleting personal files.')
+                  return res
+                })
+              }}>
+                Confirm Retire
+              </button>
+            </>
+          }
+        >
+          <p style={{ opacity: 0.85, lineHeight: 1.6 }}>
+            Queues <code className="mono">DMClient/Provider/LatchzMDM/Unenroll</code>. On its next check-in, Windows cleanly removes the Latchz MDM enrollment and client certificate while <strong>keeping all user accounts, personal files, and OS state intact</strong> (ideal for BYOD offboarding or bench decommissioning).
           </p>
         </Modal>
 

@@ -41,6 +41,7 @@ type Handler struct {
 	inventorySyncedAt   map[string]time.Time
 	wnsPFN              string
 	wnsPFNSynced        map[string]string
+	onDeviceUpdated     func(deviceID string)
 }
 
 // NewHandler creates an OMA-DM handler. proxyCertHeader is "" unless a trusted
@@ -95,6 +96,15 @@ func (h *Handler) SetWNSPFN(pfn string) {
 // passwords can be unsealed strictly in memory during mTLS SyncML delivery.
 func (h *Handler) SetVault(v *vault.Vault) {
 	h.vault = v
+}
+
+// SetDeviceUpdatedHook registers an optional callback invoked after a device
+// reports updated telemetry/posture/compliance on OMA-DM check-in (used to
+// re-evaluate Dynamic Smart Group memberships).
+func (h *Handler) SetDeviceUpdatedHook(fn func(deviceID string)) {
+	h.pollMu.Lock()
+	h.onDeviceUpdated = fn
+	h.pollMu.Unlock()
 }
 
 // reconcileWNSPush provisions DMClient Push/PFN once per server lifecycle and
@@ -425,6 +435,14 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 
 	// ── Step 5: Process Results (device values, responds to our Gets) ─────
 	updateDeviceFromResults(h.db, deviceID, sess, incoming.SyncBody.Results)
+	if len(incoming.SyncBody.Results) > 0 {
+		h.pollMu.Lock()
+		hook := h.onDeviceUpdated
+		h.pollMu.Unlock()
+		if hook != nil {
+			hook(deviceID)
+		}
+	}
 
 	// ── Step 6: Build commands to deliver ─────────────────────────────────
 	var outboundCmds []interface{}
@@ -452,6 +470,7 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 
 	// Load any pending commands from the queue
 	wipeDelivered := false
+	retireDelivered := false
 	pending, err := loadPendingCommands(h.db, deviceID)
 	if err != nil {
 		slog.Error("mdm: loading pending commands", "device_id", deviceID, "err", err)
@@ -465,23 +484,25 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 			if c.CommandType == "Exec" && c.OMAURI == OMAExecWipe {
 				wipeDelivered = true
 			}
+			if c.CommandType == "Exec" && c.OMAURI == OMADMClientUnenroll {
+				retireDelivered = true
+			}
 		}
 		if err := markCommandsSent(h.db, ids); err != nil {
 			slog.Error("mdm: marking commands sent", "device_id", deviceID, "err", err)
 		}
-		// Finalise teardown the moment the wipe is delivered: deactivate the
-		// device and revoke its certificate. This is deliberate and fail-closed —
-		// a wipe means "remove this device", and for a lost/compromised device we
-		// want its access cut immediately rather than contingent on it cooperating
-		// with (and ACKing) the wipe (a reset device rarely reports back anyway).
-		// Tradeoff: if the wipe fails or is never received, the device must
-		// re-enroll to be managed again (it cannot retry over the revoked cert).
+		// Finalise teardown the moment the wipe or clean retire is delivered:
+		// deactivate the device and revoke its certificate. Once Windows executes
+		// RemoteWipe or DMClient/Unenroll it tears down the MDM enrollment locally
+		// and does not check in again.
 		if wipeDelivered {
 			h.finalizeWipe(deviceID)
+		} else if retireDelivered {
+			h.finalizeRetire(deviceID)
 		}
 	}
 
-	if !wipeDelivered {
+	if !wipeDelivered && !retireDelivered {
 		outboundCmds = append(outboundCmds, h.reconcilePollSchedule(deviceID, sess)...)
 		if !interrogatedThisTurn {
 			outboundCmds = append(outboundCmds, h.reconcileInitialPosture(deviceID, sess)...)
@@ -677,7 +698,7 @@ func (h *Handler) processStatuses(deviceID string, sess *Session, statuses []Sta
 // remote-wipe command has been delivered. The device will factory-reset and
 // lose its enrollment, so it must not remain a trusted, active device.
 func (h *Handler) finalizeWipe(deviceID string) {
-	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE devices SET is_active = 0 WHERE id = ?`), deviceID); err != nil {
+	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE devices SET is_active = 0, enrollment_state = 'retired', retired_at = CURRENT_TIMESTAMP WHERE id = ?`), deviceID); err != nil {
 		slog.Error("mdm: deactivating wiped device", "device_id", deviceID, "err", err)
 	}
 	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE certificates SET revoked = 1 WHERE device_id = ?`), deviceID); err != nil {
@@ -685,6 +706,22 @@ func (h *Handler) finalizeWipe(deviceID string) {
 	}
 	_, _ = h.db.Exec(dbpkg.Rebind(`DELETE FROM device_wns_channels WHERE device_id = ?`), deviceID)
 	slog.Info("mdm: remote wipe delivered — device deactivated and certs revoked", "device_id", deviceID)
+}
+
+func (h *Handler) finalizeRetire(deviceID string) {
+	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE devices SET is_active = 0, enrollment_state = 'retired', retired_at = CURRENT_TIMESTAMP WHERE id = ?`), deviceID); err != nil {
+		slog.Error("mdm: marking retired device", "device_id", deviceID, "err", err)
+	}
+	if _, err := h.db.Exec(dbpkg.Rebind(`UPDATE certificates SET revoked = 1 WHERE device_id = ?`), deviceID); err != nil {
+		slog.Error("mdm: revoking retired device certs", "device_id", deviceID, "err", err)
+	}
+	_, _ = h.db.Exec(dbpkg.Rebind(`
+		UPDATE command_queue
+		SET status = 'success', result_code = '200', completed_at = CURRENT_TIMESTAMP
+		WHERE device_id = ? AND oma_uri = ? AND status = 'sent'
+	`), deviceID, OMADMClientUnenroll)
+	_, _ = h.db.Exec(dbpkg.Rebind(`DELETE FROM device_wns_channels WHERE device_id = ?`), deviceID)
+	slog.Info("mdm: clean DMClient unenroll delivered — device marked retired and certs revoked", "device_id", deviceID)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

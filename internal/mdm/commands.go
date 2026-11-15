@@ -527,5 +527,7 @@ func isBoolean(s string) bool {
 }
 
 func explicitChrFormatURI(omaURI string) bool {
-	return omaURI == OMADefenderExecScan
+	return omaURI == OMADefenderExecScan ||
+		omaURI == OMADevDetailComputerName ||
+		omaURI == OMADMClientUnenroll
 }

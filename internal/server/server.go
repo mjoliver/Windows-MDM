@@ -119,6 +119,10 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	enrollHandler.SetMDMHost(s.mdmHost())
 	enrollHandler.SetPollSchedule(cfg.MDM.PollIntervalMinutes, cfg.MDM.PollOnLogin)
 	mdmHandler.SetPollSchedule(cfg.MDM.PollIntervalMinutes, cfg.MDM.PollOnLogin)
+	mdmHandler.SetDeviceUpdatedHook(func(devID string) {
+		policy.ReconcileDynamicGroupsForDevice(database.DB, devID)
+	})
+	policy.SetGroupAppReconciler(apiHandler.ReconcileDeviceGroupApps)
 	if cfg.MDM.WNS.Enabled() {
 		wnsClient := wns.NewClient(
 			database.DB,
@@ -333,6 +337,8 @@ func (s *Server) routes() {
 			r.With(admin).Delete("/devices/{id}", s.api.HandleUnenrollDevice)
 			r.With(admin).Post("/devices/{id}/lock", s.api.HandleLockDevice)
 			r.With(admin).Post("/devices/{id}/reboot", s.api.HandleRebootDevice)
+			r.With(admin).Post("/devices/{id}/rename", s.api.HandleRenameDevice)
+			r.With(admin).Post("/devices/{id}/retire", s.api.HandleRetireDevice)
 			r.With(admin).Post("/devices/{id}/wipe", s.api.HandleWipeDevice)
 			r.With(admin).Post("/devices/{id}/sync", s.api.HandleSyncDevice)
 			r.With(admin).Post("/devices/{id}/push", s.api.HandlePushWakeDevice)
@@ -372,8 +378,10 @@ func (s *Server) routes() {
 			// Device groups
 			r.Get("/groups", s.api.HandleListGroups)
 			r.With(admin).Post("/groups", s.api.HandleCreateGroup)
+			r.With(admin).Post("/groups/preview-rules", s.api.HandlePreviewDynamicGroupRules)
 			r.With(admin).Put("/groups/{id}", s.api.HandleUpdateGroup)
 			r.With(admin).Delete("/groups/{id}", s.api.HandleDeleteGroup)
+			r.With(admin).Post("/groups/{id}/reconcile", s.api.HandleReconcileGroup)
 			r.With(admin).Put("/groups/{id}/devices", s.api.HandleAssignDeviceToGroup)
 			r.With(admin).Put("/groups/{id}/profiles", s.api.HandleAssignProfileToGroup)
 

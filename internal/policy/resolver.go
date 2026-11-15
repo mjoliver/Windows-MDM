@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	wakeMu sync.RWMutex
-	wakeFn func(deviceID string)
+	wakeMu         sync.RWMutex
+	wakeFn         func(deviceID string)
+	groupAppSyncFn func(deviceID string)
 )
 
 // SetWakeNotifier registers an optional callback (such as wns.Client.NotifyAsync)
@@ -25,9 +26,27 @@ func SetWakeNotifier(fn func(deviceID string)) {
 	wakeMu.Unlock()
 }
 
+// SetGroupAppReconciler registers an optional callback invoked during ApplyDevice
+// so group-assigned MSI applications are automatically deployed or retracted when
+// a device joins or leaves static or Dynamic Smart Groups.
+func SetGroupAppReconciler(fn func(deviceID string)) {
+	wakeMu.Lock()
+	groupAppSyncFn = fn
+	wakeMu.Unlock()
+}
+
 func notifyWake(deviceID string) {
 	wakeMu.RLock()
 	fn := wakeFn
+	wakeMu.RUnlock()
+	if fn != nil {
+		fn(deviceID)
+	}
+}
+
+func notifyGroupAppSync(deviceID string) {
+	wakeMu.RLock()
+	fn := groupAppSyncFn
 	wakeMu.RUnlock()
 	if fn != nil {
 		fn(deviceID)
@@ -152,6 +171,7 @@ func ApplyDevice(db *sql.DB, deviceID string) {
 	secQueued := ReconcileEndpointSecurityDevice(db, deviceID)
 	connQueued := ReconcileConnectivityDevice(db, deviceID)
 	lockQueued := ReconcileLockdownDevice(db, deviceID)
+	notifyGroupAppSync(deviceID)
 
 	if queued > 0 || retracted > 0 || blQueued > 0 || wuQueued > 0 || secQueued > 0 || connQueued > 0 || lockQueued > 0 {
 		slog.Info("policy: applied settings to device",

@@ -42,6 +42,7 @@ export interface Device {
   id: string
   hardware_id: string
   device_name: string
+  pending_hostname?: string
   os_version: string
   os_build: string
   manufacturer: string
@@ -51,6 +52,8 @@ export interface Device {
   enrolled_by: string
   last_checkin: string | null
   compliance_status: 'compliant' | 'non_compliant' | 'unknown' | 'pending'
+  enrollment_state?: 'enrolled' | 'retiring' | 'retired'
+  retired_at?: string | null
   is_active: boolean
 }
 
@@ -87,10 +90,19 @@ export interface PolicySetting {
   allowed_values?: { value: string; label: string }[]
 }
 
+export interface DynamicGroupRule {
+  field: string
+  operator: string
+  value: string
+}
+
 export interface Group {
   id: string
   name: string
   description: string
+  is_dynamic: boolean
+  match_mode: 'all' | 'any'
+  dynamic_rules: DynamicGroupRule[]
   created_at: string
   device_count: number
   profile_count: number
@@ -579,6 +591,9 @@ export const api = {
     unenroll:(id: string) => del<{ status: string }>(`/devices/${enc(id)}`),
     lock:    (id: string) => post<{ status: string; queue_id: number }>(`/devices/${enc(id)}/lock`),
     reboot:  (id: string) => post<{ status: string; queue_id: number }>(`/devices/${enc(id)}/reboot`),
+    rename:  (id: string, hostname: string, rebootNow = false) =>
+      post<{ status: string; hostname: string; reboot_now: boolean; queue_id: number }>(`/devices/${enc(id)}/rename`, { hostname, reboot_now: rebootNow }),
+    retire:  (id: string) => post<{ status: string; enrollment_state: string; queue_id: number }>(`/devices/${enc(id)}/retire`, { confirm: true }),
     wipe:    (id: string) => post<{ status: string }>(`/devices/${enc(id)}/wipe`, { confirm: true }),
     sync:    (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/sync`),
     getCommands: (id: string) => get<{ commands: DeviceCommand[] }>(`/devices/${enc(id)}/commands`),
@@ -612,9 +627,28 @@ export const api = {
   // Groups
   groups: {
     list:   () => get<Group[]>('/groups'),
-    create: (data: { name: string; description: string }) => post<Group>('/groups', data),
-    update: (id: string, data: { name: string; description: string }) => put(`/groups/${enc(id)}`, data),
+    create: (data: {
+      name: string
+      description: string
+      is_dynamic?: boolean
+      match_mode?: 'all' | 'any'
+      dynamic_rules?: DynamicGroupRule[]
+    }) => post<Group>('/groups', data),
+    update: (id: string, data: {
+      name: string
+      description: string
+      is_dynamic?: boolean
+      match_mode?: 'all' | 'any'
+      dynamic_rules?: DynamicGroupRule[]
+    }) => put(`/groups/${enc(id)}`, data),
     delete: (id: string) => del(`/groups/${enc(id)}`),
+    reconcile: (id: string) =>
+      post<{ status: string; added: number; removed: number; device_count: number }>(`/groups/${enc(id)}/reconcile`),
+    previewRules: (matchMode: 'all' | 'any', dynamicRules: DynamicGroupRule[]) =>
+      post<{ match_count: number; devices: { id: string; device_name: string; os_version: string; model: string }[] }>('/groups/preview-rules', {
+        match_mode: matchMode,
+        dynamic_rules: dynamicRules,
+      }),
     assignDevices: (id: string, deviceIds: string[], action: 'add'|'remove') =>
       put(`/groups/${enc(id)}/devices`, { device_ids: deviceIds, action }),
     assignProfiles: (id: string, profileIds: string[], action: 'add'|'remove') =>

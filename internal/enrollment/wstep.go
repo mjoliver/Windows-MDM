@@ -53,7 +53,8 @@ func upsertDevice(ctx context.Context, db *sql.DB, info DeviceInfo, userEmail st
 		}
 		if _, err := db.ExecContext(ctx, dbpkg.Rebind(`
 			UPDATE devices SET device_name = ?, os_version = ?, manufacturer = ?, model = ?,
-				serial_number = ?, enrolled_by = ?, enrolled_at = CURRENT_TIMESTAMP, is_active = 1
+				serial_number = ?, enrolled_by = ?, enrolled_at = CURRENT_TIMESTAMP,
+				is_active = 1, enrollment_state = 'enrolled', retired_at = NULL, pending_hostname = ''
 			WHERE id = ?
 		`), info.DeviceName, info.OSVersion, info.Manufacturer, info.Model, info.SerialNumber, userEmail, existingID); err != nil {
 			return "", err

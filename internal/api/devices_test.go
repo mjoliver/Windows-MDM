@@ -172,3 +172,53 @@ func TestHandleSyncDevice_QueuesPolicyReplace(t *testing.T) {
 		t.Fatalf("expected HandleSyncDevice to queue at least 1 Get, got %d", getCount)
 	}
 }
+
+func TestHandleRenameAndRetireDevice(t *testing.T) {
+	database := testutil.DB(t)
+	h := NewHandler(database.DB)
+	devID := testutil.SeedDevice(t, database, "HW-RENAME-RETIRE")
+
+	// Invalid hostname -> 400
+	w := httptest.NewRecorder()
+	h.HandleRenameDevice(w, withRoute("POST", "/api/devices/"+devID+"/rename", `{"hostname":"bad space"}`, devID))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 on invalid hostname, got %d", w.Code)
+	}
+
+	// Valid hostname with %SERIAL% -> 200 and pending_hostname persisted
+	w = httptest.NewRecorder()
+	h.HandleRenameDevice(w, withRoute("POST", "/api/devices/"+devID+"/rename", `{"hostname":"LZ-%serial%","reboot_now":false}`, devID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 on rename, got %d (%s)", w.Code, w.Body.String())
+	}
+	var pendingHost string
+	_ = database.QueryRow(`SELECT pending_hostname FROM devices WHERE id = ?`, devID).Scan(&pendingHost)
+	if pendingHost != "LZ-%SERIAL%" {
+		t.Fatalf("pending_hostname = %q, want LZ-%%SERIAL%%", pendingHost)
+	}
+
+	// Retire without confirm -> 400
+	w = httptest.NewRecorder()
+	h.HandleRetireDevice(w, withRoute("POST", "/api/devices/"+devID+"/retire", `{"confirm":false}`, devID))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 without confirm on retire, got %d", w.Code)
+	}
+
+	// Retire with confirm -> 200, enrollment_state='retiring', DMClient Unenroll queued
+	w = httptest.NewRecorder()
+	h.HandleRetireDevice(w, withRoute("POST", "/api/devices/"+devID+"/retire", `{"confirm":true}`, devID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 on retire, got %d (%s)", w.Code, w.Body.String())
+	}
+	var state, omaURI string
+	_ = database.QueryRow(`SELECT enrollment_state FROM devices WHERE id = ?`, devID).Scan(&state)
+	if state != "retiring" {
+		t.Fatalf("enrollment_state = %q, want retiring", state)
+	}
+	if err := database.QueryRow(`SELECT oma_uri FROM command_queue WHERE device_id = ? AND status = 'pending'`, devID).Scan(&omaURI); err != nil {
+		t.Fatal(err)
+	}
+	if omaURI != "./Device/Vendor/MSFT/DMClient/Provider/LatchzMDM/Unenroll" {
+		t.Fatalf("unexpected retire oma_uri: %s", omaURI)
+	}
+}
