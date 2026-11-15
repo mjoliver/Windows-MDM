@@ -111,7 +111,7 @@ func TestBitLockerPolicyEscrowAndAuditedReveal(t *testing.T) {
 	}
 
 	var auditCount int
-	if err := database.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action = 'bitlocker.reveal_key' AND actor = 'admin@lab.local' AND target_id = ?`, devID).Scan(&auditCount); err != nil {
+	if err := database.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action = 'bitlocker.reveal_key' AND user_email = 'admin@lab.local' AND target_id = ?`, devID).Scan(&auditCount); err != nil {
 		t.Fatal(err)
 	}
 	if auditCount != 1 {
