@@ -1020,7 +1020,7 @@ func TestHandleUnenrollDeviceRevokesCertificates(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE devices SET is_active = 0 WHERE id = \\?").
+	mock.ExpectExec("UPDATE devices SET is_active = 0").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE certificates SET revoked = 1 WHERE device_id = \\?").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -1610,7 +1610,7 @@ func TestHandleAssignDeviceToGroupPartialFailure(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectQuery(".").WillReturnRows(sqlmock.NewRows([]string{"is_dynamic"}).AddRow(0))
 	mock.ExpectExec(".").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(".").WillReturnError(sql.ErrConnDone)
 	mock.ExpectExec(".").WillReturnResult(sqlmock.NewResult(1, 1))
