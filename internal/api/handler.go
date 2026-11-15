@@ -6,27 +6,56 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/mdm"
+	"github.com/latchzmdm/latchz/internal/msi"
 	"github.com/latchzmdm/latchz/internal/policy"
 	"github.com/latchzmdm/latchz/internal/wns"
 )
 
 // Handler holds dependencies for all API handlers.
 type Handler struct {
-	db  *sql.DB
-	wns *wns.Client
+	db             *sql.DB
+	wns            *wns.Client
+	contentBaseURL string
+	contentSecret  []byte
+	contentClient  *http.Client
 }
 
 // NewHandler creates an API handler.
 func NewHandler(db *sql.DB) *Handler {
-	return &Handler{db: db}
+	return &Handler{
+		db:            db,
+		contentClient: msi.NewIdentityHTTPClient(0),
+	}
 }
 
 // SetWNSClient attaches an optional WNS push client for instant device wake-ups.
 func (h *Handler) SetWNSClient(c *wns.Client) {
 	h.wns = c
+}
+
+// ConfigureContentRelay enables HMAC-signed, identity-encoding MSI content relay
+// URLs (/mdm/apps/{id}/content.msi) so Windows 11 Delivery Optimization (DoSvc)
+// receives uncompressed HTTP 206 byte-range slices even when upstream CDNs
+// (such as dl.google.com) serve Content-Encoding: gzip on Range requests.
+func (h *Handler) ConfigureContentRelay(publicBaseURL string, signingSecret []byte) {
+	h.contentBaseURL = strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")
+	if len(signingSecret) > 0 {
+		key := make([]byte, len(signingSecret))
+		copy(key, signingSecret)
+		h.contentSecret = key
+	}
+}
+
+// SetContentHTTPClient overrides the upstream HTTP client used by the MSI
+// content relay (intended for offline unit tests).
+func (h *Handler) SetContentHTTPClient(c *http.Client) {
+	if c != nil {
+		h.contentClient = c
+	}
 }
 
 func (h *Handler) wakeDevice(deviceID string) {

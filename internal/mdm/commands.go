@@ -122,6 +122,7 @@ type MSIInstallSpec struct {
 	ProductCode          string
 	Version              string
 	ContentURL           string
+	ContentURLs          []string
 	SHA256               string
 	CommandLine          string
 	TimeoutMinutes       int
@@ -182,12 +183,22 @@ func BuildMSIInstallJobXML(spec MSIInstallSpec) string {
 		retryInterval = 5
 	}
 
+	var urls []string
+	seen := make(map[string]bool)
+	for _, rawU := range append(append([]string(nil), spec.ContentURLs...), spec.ContentURL) {
+		u := strings.TrimSpace(rawU)
+		if u != "" && !seen[u] {
+			seen[u] = true
+			urls = append(urls, u)
+		}
+	}
+
 	job := msiInstallJobXML{
 		ID: prodCode,
 		Product: msiProductXML{
 			Version: version,
 			Download: msiDownloadXML{
-				ContentURLs: []string{strings.TrimSpace(spec.ContentURL)},
+				ContentURLs: urls,
 			},
 			Enforcement: msiEnforcementXML{
 				CommandLine:   cmdLine,

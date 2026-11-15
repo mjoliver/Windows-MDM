@@ -93,6 +93,7 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	enrollHandler := enrollment.NewHandler(cfg.Server.Domain, cfg.Server.EnrollmentDomain)
 	mdmHandler := mdm.NewHandler(database.DB, ca.TLSPool(), cfg.Server.Domain, proxyCertHeader)
 	apiHandler := api.NewHandler(database.DB)
+	apiHandler.ConfigureContentRelay("https://"+cfg.Server.Domain, jwtSecret)
 
 	s := &Server{
 		cfg:        cfg,
@@ -284,6 +285,12 @@ func (s *Server) routes() {
 	// ── OMA-DM endpoint ─────────────────────────────────────────────────────
 	// Enrolled devices check in here periodically (SyncML over HTTPS + mTLS)
 	r.Post("/omadm", s.mdm.HandleOMADM)
+
+	// Signed, identity-encoding MSI content relay for Windows Delivery Optimization
+	// (DoSvc). Strips Accept-Encoding upstream so CDNs like dl.google.com never
+	// serve Content-Encoding: gzip on HTTP 206 partial byte-range slices.
+	r.Get("/mdm/apps/{id}/{exp}/{sig}/package.msi", s.api.HandleServeAppContent)
+	r.Head("/mdm/apps/{id}/{exp}/{sig}/package.msi", s.api.HandleServeAppContent)
 
 	// ── REST API (dashboard backend) ──────────────────────────────────────
 	r.Route("/api", func(r chi.Router) {

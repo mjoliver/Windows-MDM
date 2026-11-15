@@ -130,3 +130,20 @@ func TestUpdateAppInstallsRecordsStatus70(t *testing.T) {
 		t.Fatalf("got code=%d label=%q lastErr=%q, want 70/Installed/empty", code, label, lastErr)
 	}
 }
+
+func TestBuildMSIInstallJobXMLMultipleContentURLs(t *testing.T) {
+	relayURL := "https://mdm.example.com/mdm/apps/app-1/1900000000/deadbeef/package.msi"
+	originURL := "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi"
+	raw := BuildMSIInstallJobXML(MSIInstallSpec{
+		ProductCode: "{B3DB5E18-7FDA-3432-9931-2E60D41BD242}",
+		Version:     "157.0.8103.79",
+		ContentURL:  originURL,
+		ContentURLs: []string{relayURL, originURL},
+		SHA256:      "385A8817EC8513536E57E7177ACF226104E7F13910D83EA1BBFE39C3D9AC2D03",
+	})
+
+	want := "<ContentURLList><ContentURL>" + relayURL + "</ContentURL><ContentURL>" + originURL + "</ContentURL></ContentURLList>"
+	if !strings.Contains(raw, want) {
+		t.Fatalf("expected ordered deduplicated ContentURLList %q in %s", want, raw)
+	}
+}

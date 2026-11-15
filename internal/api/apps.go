@@ -2,11 +2,17 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +81,7 @@ func (h *Handler) HandleInspectMSI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(4 * time.Minute))
 	meta, err := msiInspectURL(r.Context(), body.ContentURL)
 	if err != nil {
 		slog.Warn("api: MSI inspection failed", "url", body.ContentURL, "err", err)
@@ -160,6 +167,7 @@ func (h *Handler) HandleCreateApp(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-inspect remote MSI if critical cryptographic/identity metadata is omitted
 	if strings.TrimSpace(body.ProductCode) == "" || strings.TrimSpace(body.SHA256) == "" || strings.TrimSpace(body.Name) == "" {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(4 * time.Minute))
 		meta, err := msiInspectURL(r.Context(), body.ContentURL)
 		if err != nil {
 			respondErr(w, http.StatusBadGateway, "failed to auto-inspect MSI URL: "+err.Error())
@@ -654,10 +662,16 @@ func (h *Handler) deployMSIAppToDevice(ctx context.Context, app *MSIApp, deviceI
 		return 0, err
 	}
 
+	var contentURLs []string
+	if relayURL := h.SignedAppContentURL(app.ID, time.Now().UTC().Add(7*24*time.Hour)); relayURL != "" {
+		contentURLs = []string{relayURL, app.ContentURL}
+	}
+
 	queued, err := mdm.EnqueueMSIInstall(h.db, deviceID, mdm.MSIInstallSpec{
 		ProductCode:          app.ProductCode,
 		Version:              app.Version,
 		ContentURL:           app.ContentURL,
+		ContentURLs:          contentURLs,
 		SHA256:               app.SHA256,
 		CommandLine:          app.CommandLine,
 		TimeoutMinutes:       app.TimeoutMinutes,
@@ -669,6 +683,144 @@ func (h *Handler) deployMSIAppToDevice(ctx context.Context, app *MSIApp, deviceI
 	}
 	h.wakeDevice(deviceID)
 	return queued, nil
+}
+
+func (h *Handler) computeContentSignature(appID, expStr string) string {
+	mac := hmac.New(sha256.New, h.contentSecret)
+	mac.Write([]byte("latchz-msi-content-v1:"))
+	mac.Write([]byte(appID))
+	mac.Write([]byte(":"))
+	mac.Write([]byte(expStr))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// SignedAppContentURL generates a time-limited, HMAC-signed HTTPS relay URL
+// ending in /package.msi for Windows Delivery Optimization (DoSvc) downloads.
+func (h *Handler) SignedAppContentURL(appID string, expiresAt time.Time) string {
+	if h.contentBaseURL == "" || len(h.contentSecret) == 0 || strings.TrimSpace(appID) == "" {
+		return ""
+	}
+	expStr := strconv.FormatInt(expiresAt.UTC().Unix(), 10)
+	sig := h.computeContentSignature(appID, expStr)
+	return fmt.Sprintf("%s/mdm/apps/%s/%s/%s/package.msi",
+		h.contentBaseURL, url.PathEscape(appID), expStr, sig)
+}
+
+// HandleServeAppContent streams uncompressed MSI bytes (supporting HEAD and
+// HTTP 206 Range requests) to Windows Delivery Optimization while stripping
+// Accept-Encoding on the upstream CDN request so providers like dl.google.com
+// never return Content-Encoding: gzip on partial byte-range slices.
+// GET|HEAD /mdm/apps/{id}/{exp}/{sig}/package.msi
+func (h *Handler) HandleServeAppContent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if len(h.contentSecret) == 0 {
+		http.Error(w, "content relay not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	appID := strings.TrimSpace(chi.URLParam(r, "id"))
+	expStr := strings.TrimSpace(chi.URLParam(r, "exp"))
+	sigHex := strings.TrimSpace(chi.URLParam(r, "sig"))
+	if appID == "" || expStr == "" || sigHex == "" {
+		http.Error(w, "invalid content token", http.StatusForbidden)
+		return
+	}
+
+	expUnix, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid expiry", http.StatusForbidden)
+		return
+	}
+	nowUnix := time.Now().UTC().Unix()
+	if expUnix < nowUnix || expUnix > nowUnix+int64((31*24*time.Hour).Seconds()) {
+		http.Error(w, "content token expired", http.StatusForbidden)
+		return
+	}
+
+	expectedSig := h.computeContentSignature(appID, expStr)
+	gotBytes, err := hex.DecodeString(sigHex)
+	if err != nil {
+		http.Error(w, "invalid signature", http.StatusForbidden)
+		return
+	}
+	expBytes, _ := hex.DecodeString(expectedSig)
+	if !hmac.Equal(gotBytes, expBytes) {
+		http.Error(w, "invalid signature", http.StatusForbidden)
+		return
+	}
+
+	var contentURL string
+	var fileSizeBytes int64
+	err = h.db.QueryRowContext(r.Context(),
+		dbpkg.Rebind(`SELECT content_url, file_size_bytes FROM msi_apps WHERE id = ?`), appID,
+	).Scan(&contentURL, &fileSizeBytes)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		slog.Error("api: querying MSI content_url for relay", "app_id", appID, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := msi.ValidateContentURL(contentURL); err != nil {
+		http.Error(w, "invalid upstream content URL", http.StatusBadGateway)
+		return
+	}
+
+	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, contentURL, nil)
+	if err != nil {
+		http.Error(w, "failed building upstream request", http.StatusBadGateway)
+		return
+	}
+	if rng := strings.TrimSpace(r.Header.Get("Range")); rng != "" {
+		upReq.Header.Set("Range", rng)
+	}
+	if ifRng := strings.TrimSpace(r.Header.Get("If-Range")); ifRng != "" {
+		upReq.Header.Set("If-Range", ifRng)
+	}
+	upReq.Header.Del("Accept-Encoding")
+
+	client := h.contentClient
+	if client == nil {
+		client = msi.NewIdentityHTTPClient(0)
+	}
+	resp, err := client.Do(upReq)
+	if err != nil {
+		slog.Warn("api: upstream MSI content relay failed", "app_id", appID, "err", err)
+		http.Error(w, "upstream download failed", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 500 {
+		http.Error(w, "upstream server error", http.StatusBadGateway)
+		return
+	}
+
+	for _, hdr := range []string{"Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"} {
+		if val := resp.Header.Get(hdr); val != "" {
+			w.Header().Set(hdr, val)
+		}
+	}
+	if resp.StatusCode == http.StatusOK && w.Header().Get("Content-Length") == "" && fileSizeBytes > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSizeBytes, 10))
+	}
+	if w.Header().Get("Accept-Ranges") == "" {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
+	w.Header().Set("Content-Type", "application/x-msi")
+	w.Header().Set("Cache-Control", "no-transform, private, max-age=3600")
+
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(15 * time.Minute))
+	w.WriteHeader(resp.StatusCode)
+	if r.Method != http.MethodHead {
+		_, _ = io.Copy(w, resp.Body)
+	}
 }
 
 func (h *Handler) uninstallMSIAppFromDevice(ctx context.Context, app *MSIApp, deviceID string) error {

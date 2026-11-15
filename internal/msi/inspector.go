@@ -110,17 +110,23 @@ func isBlockedIP(ip net.IP) bool {
 		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
 }
 
-// InspectRemoteURL downloads an HTTPS .msi file to a temporary file, computes
-// its SHA-256 hash, and extracts MSI Property table metadata.
-func InspectRemoteURL(ctx context.Context, rawURL string) (*Metadata, error) {
-	if err := ValidateContentURL(rawURL); err != nil {
-		return nil, err
-	}
-	client := &http.Client{
-		Timeout: 3 * time.Minute,
+// NewIdentityHTTPClient returns an SSRF-hardened HTTPS client with automatic
+// gzip compression disabled (DisableCompression: true). Omitting Accept-Encoding
+// prevents CDNs such as dl.google.com from serving Content-Encoding: gzip on
+// HTTP 206 byte-range slices (which breaks Windows 11 Delivery Optimization).
+func NewIdentityHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
 		Transport: &http.Transport{
+			DisableCompression:    true,
+			MaxIdleConns:          64,
+			MaxIdleConnsPerHost:   16,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
 			DialContext: (&net.Dialer{
-				Timeout: 15 * time.Second,
+				Timeout:   15 * time.Second,
+				KeepAlive: 30 * time.Second,
 				Control: func(_, address string, _ syscall.RawConn) error {
 					host, _, err := net.SplitHostPort(address)
 					if err != nil {
@@ -140,7 +146,15 @@ func InspectRemoteURL(ctx context.Context, rawURL string) (*Metadata, error) {
 			return ValidateContentURL(req.URL.String())
 		},
 	}
-	return inspectURLWithClient(ctx, rawURL, client)
+}
+
+// InspectRemoteURL downloads an HTTPS .msi file to a temporary file, computes
+// its SHA-256 hash, and extracts MSI Property table metadata.
+func InspectRemoteURL(ctx context.Context, rawURL string) (*Metadata, error) {
+	if err := ValidateContentURL(rawURL); err != nil {
+		return nil, err
+	}
+	return inspectURLWithClient(ctx, rawURL, NewIdentityHTTPClient(3*time.Minute))
 }
 
 func inspectURLWithClient(ctx context.Context, rawURL string, client *http.Client) (*Metadata, error) {
