@@ -338,6 +338,8 @@ func (s *Server) routes() {
 			r.With(admin).Post("/devices/{id}/push", s.api.HandlePushWakeDevice)
 			r.Get("/devices/{id}/commands", s.api.HandleGetDeviceCommands)
 			r.Get("/devices/{id}/apps", s.api.HandleGetDeviceApps)
+			r.Get("/devices/{id}/inventory", s.api.HandleGetDeviceInventory)
+			r.With(admin).Post("/devices/{id}/inventory/sync", s.api.HandleSyncDeviceInventory)
 			r.Get("/devices/{id}/posture", s.api.HandleGetDevicePosture)
 			r.With(admin).Post("/devices/{id}/posture/refresh", s.api.HandleRefreshDevicePosture)
 			r.Get("/devices/{id}/bitlocker", s.api.HandleGetDeviceBitLocker)
@@ -383,6 +385,7 @@ func (s *Server) routes() {
 			r.With(admin).Put("/apps/{id}/groups", s.api.HandleAssignAppGroups)
 			r.With(admin).Post("/apps/{id}/install", s.api.HandleInstallAppOnDevices)
 			r.With(admin).Post("/apps/{id}/uninstall", s.api.HandleUninstallAppOnDevices)
+			r.With(admin).Post("/apps/{id}/winget-refresh", s.api.HandleRefreshWinGetApp)
 
 			// Windows Update Rings (Policy/Config/Update & Update CSPs)
 			r.Get("/updates/rings", s.api.HandleListUpdateRings)

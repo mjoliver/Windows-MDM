@@ -762,9 +762,26 @@ function DeployAppModal({
               >
                 <Monitor size={16} style={{ opacity: 0.6, flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{inst.device_name || inst.device_id}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{inst.device_name || inst.device_id}</span>
+                    {inst.installed_version && (
+                      <span className="mono" style={{ fontSize: '0.75rem', opacity: 0.85 }}>
+                        v{inst.installed_version}
+                      </span>
+                    )}
+                    {inst.version_state === 'auto_updated' && (
+                      <Badge status="compliant" label="Auto-Updated" />
+                    )}
+                    {inst.version_state === 'update_available' && (
+                      <Badge status="pending" label={`Catalog v${inst.version}`} />
+                    )}
+                  </div>
                   <div style={{ fontSize: '0.75rem', opacity: 0.6 }}>
                     Updated {timeAgo(inst.updated_at)}
+                    {inst.version_state === 'auto_updated' ? ` · Seed v${inst.version}` : ''}
+                    {inst.installed_product_code && inst.installed_product_code !== inst.product_code
+                      ? ` · Live MSI ${inst.installed_product_code}`
+                      : ''}
                     {inst.last_error && inst.last_error !== '0' ? ` · Error ${inst.last_error}${inst.last_error_desc ? `: ${inst.last_error_desc}` : ''}` : ''}
                   </div>
                 </div>
@@ -891,6 +908,7 @@ export function AppsPage() {
   const [pageDragActive, setPageDragActive] = useState(false)
   const [deploying, setDeploying]         = useState<MSIApp | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<MSIApp | null>(null)
+  const [refreshingId, setRefreshingId]   = useState<string | null>(null)
   const toast = useToast()
 
   const load = useCallback(() => {
@@ -921,6 +939,23 @@ export function AppsPage() {
       toast.success(`Removed "${target.name}" from catalog`)
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to delete application')
+    }
+  }
+
+  const refreshWinGetSeed = async (target: MSIApp) => {
+    setRefreshingId(target.id)
+    try {
+      const res = await api.apps.wingetRefresh(target.id)
+      setApps(prev => prev.map(x => (x.id === target.id ? res.app : x)))
+      if (res.updated) {
+        toast.success(`Updated "${res.app.name}" seed installer: ${res.previous_version} → ${res.latest_version}`)
+      } else {
+        toast.success(`"${res.app.name}" is already at the latest WinGet MSI version (${res.latest_version})`)
+      }
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to check WinGet for updates')
+    } finally {
+      setRefreshingId(null)
     }
   }
 
@@ -1029,7 +1064,7 @@ export function AppsPage() {
                     return (
                       <tr key={app.id}>
                         <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                             <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{app.name}</span>
                             <span
                               style={{
@@ -1042,7 +1077,11 @@ export function AppsPage() {
                               }}
                               title={isLocal ? `Hosted locally by Latchz (${app.original_filename || 'package.msi'})` : app.content_url}
                             >
-                              {isLocal ? `Hosted · ${app.original_filename || 'local.msi'}` : 'HTTPS URL'}
+                              {isLocal
+                                ? `Hosted · ${app.original_filename || 'local.msi'}`
+                                : app.winget_package_id
+                                  ? `WinGet · ${app.winget_package_id}`
+                                  : 'HTTPS URL'}
                             </span>
                           </div>
                           <div style={{ fontSize: '0.78rem', opacity: 0.6 }}>
@@ -1052,6 +1091,16 @@ export function AppsPage() {
                         <td>
                           <div style={{ fontWeight: 600 }}>{app.version}</div>
                           <div style={{ fontSize: '0.75rem', opacity: 0.55 }}>{formatBytes(app.file_size_bytes)}</div>
+                          {(app.auto_updated_count ?? 0) > 0 && (
+                            <div style={{ fontSize: '0.71rem', color: 'var(--md-sys-color-primary)', marginTop: 2 }}>
+                              {app.auto_updated_count} device(s) auto-updated newer
+                            </div>
+                          )}
+                          {(app.outdated_count ?? 0) > 0 && (
+                            <div style={{ fontSize: '0.71rem', opacity: 0.7, marginTop: 2 }}>
+                              {app.outdated_count} device(s) behind catalog
+                            </div>
+                          )}
                         </td>
                         <td>
                           <div className="mono" style={{ fontSize: '0.78rem' }}>{app.product_code}</div>
@@ -1073,6 +1122,17 @@ export function AppsPage() {
                         </td>
                         <td style={{ textAlign: 'right' }}>
                           <div style={{ display: 'inline-flex', gap: 8 }}>
+                            {(!isLocal || !!app.winget_package_id) && (
+                              <button
+                                className="btn btn-sm btn-secondary"
+                                disabled={refreshingId === app.id}
+                                title="Check microsoft/winget-pkgs for a newer MSI seed installer"
+                                onClick={() => void refreshWinGetSeed(app)}
+                              >
+                                <RefreshCw size={13} className={refreshingId === app.id ? 'spin' : ''} />
+                                {refreshingId === app.id ? 'Checking…' : 'Check Update'}
+                              </button>
+                            )}
                             <button className="btn btn-sm btn-primary" onClick={() => setDeploying(app)}>
                               <Download size={14} /> Deploy
                             </button>

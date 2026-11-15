@@ -48,9 +48,13 @@ type MSIApp struct {
 	RetryIntervalMinutes int       `json:"retry_interval_minutes"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
+	WinGetPackageID      string    `json:"winget_package_id,omitempty"`
+	WinGetArch           string    `json:"winget_arch,omitempty"`
 	GroupCount           int       `json:"group_count"`
 	InstalledCount       int       `json:"installed_count"`
 	TargetDeviceCount    int       `json:"target_device_count"`
+	AutoUpdatedCount     int       `json:"auto_updated_count"`
+	OutdatedCount        int       `json:"outdated_count"`
 }
 
 func appSourceType(storageFilename string) string {
@@ -62,19 +66,22 @@ func appSourceType(storageFilename string) string {
 
 // DeviceAppInstall tracks the deployment state of an MSI package on a device.
 type DeviceAppInstall struct {
-	DeviceID      string    `json:"device_id"`
-	DeviceName    string    `json:"device_name"`
-	AppID         string    `json:"app_id"`
-	AppName       string    `json:"app_name"`
-	Publisher     string    `json:"publisher"`
-	Version       string    `json:"version"`
-	ProductCode   string    `json:"product_code"`
-	DesiredAction string    `json:"desired_action"`
-	StatusCode    *int64    `json:"status_code"`
-	StatusLabel   string    `json:"status_label"`
-	LastError     string    `json:"last_error"`
-	LastErrorDesc string    `json:"last_error_desc"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	DeviceID             string    `json:"device_id"`
+	DeviceName           string    `json:"device_name"`
+	AppID                string    `json:"app_id"`
+	AppName              string    `json:"app_name"`
+	Publisher            string    `json:"publisher"`
+	Version              string    `json:"version"`
+	ProductCode          string    `json:"product_code"`
+	InstalledVersion     string    `json:"installed_version"`
+	InstalledProductCode string    `json:"installed_product_code"`
+	VersionState         string    `json:"version_state"`
+	DesiredAction        string    `json:"desired_action"`
+	StatusCode           *int64    `json:"status_code"`
+	StatusLabel          string    `json:"status_label"`
+	LastError            string    `json:"last_error"`
+	LastErrorDesc        string    `json:"last_error_desc"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // HandleInspectMSI downloads an HTTPS .msi package, computes its SHA-256 hash,
@@ -112,6 +119,7 @@ func (h *Handler) HandleListApps(w http.ResponseWriter, r *http.Request) {
 		       a.sha256, a.file_size_bytes, a.command_line,
 		       a.timeout_minutes, a.retry_count, a.retry_interval_minutes,
 		       a.created_at, a.updated_at,
+		       COALESCE(a.winget_package_id, ''), COALESCE(a.winget_arch, ''),
 		       (SELECT COUNT(*) FROM group_apps ga WHERE ga.app_id = a.id) AS group_count,
 		       (SELECT COUNT(*) FROM device_app_installs dai
 		          JOIN devices d ON d.id = dai.device_id
@@ -138,6 +146,7 @@ func (h *Handler) HandleListApps(w http.ResponseWriter, r *http.Request) {
 			&a.SHA256, &a.FileSizeBytes, &a.CommandLine,
 			&a.TimeoutMinutes, &a.RetryCount, &a.RetryIntervalMinutes,
 			&a.CreatedAt, &a.UpdatedAt,
+			&a.WinGetPackageID, &a.WinGetArch,
 			&a.GroupCount, &a.InstalledCount, &a.TargetDeviceCount,
 		); err != nil {
 			slog.Error("api: scanning MSI app row", "err", err)
@@ -149,6 +158,7 @@ func (h *Handler) HandleListApps(w http.ResponseWriter, r *http.Request) {
 	if apps == nil {
 		apps = []MSIApp{}
 	}
+	h.populateAppVersionCounts(r.Context(), apps)
 	respondOK(w, apps)
 }
 
@@ -276,6 +286,7 @@ func (h *Handler) HandleCreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor := emailFromCtx(r)
+	h.reconcileFleetInventoryVersions(r.Context())
 	h.audit(r, actor, "app.create", "app", id, fmt.Sprintf(`{"name":%q,"product_code":%q,"version":%q}`, name, prodCode, version))
 	slog.Info("MSI app registered", "app_id", id, "name", name, "product_code", prodCode, "actor", actor)
 
@@ -523,6 +534,7 @@ func (h *Handler) HandleUploadApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor := emailFromCtx(r)
+	h.reconcileFleetInventoryVersions(r.Context())
 	h.audit(r, actor, "app.upload", "app", id,
 		fmt.Sprintf(`{"name":%q,"filename":%q,"product_code":%q,"version":%q,"bytes":%d}`, name, originalFilename, prodCode, version, written))
 	slog.Info("MSI app uploaded", "app_id", id, "name", name, "filename", originalFilename, "product_code", prodCode, "bytes", written, "actor", actor)
@@ -579,6 +591,7 @@ func (h *Handler) HandleGetApp(w http.ResponseWriter, r *http.Request) {
 	if iRows, err := h.db.QueryContext(r.Context(), dbpkg.Rebind(`
 		SELECT dai.device_id, COALESCE(d.device_name, ''), dai.app_id,
 		       a.name, a.publisher, a.version, dai.product_code,
+		       COALESCE(dai.installed_version, ''), COALESCE(dai.installed_product_code, ''),
 		       dai.desired_action, dai.status_code, dai.status_label,
 		       dai.last_error, dai.last_error_desc, dai.updated_at
 		FROM device_app_installs dai
@@ -594,6 +607,7 @@ func (h *Handler) HandleGetApp(w http.ResponseWriter, r *http.Request) {
 			if err := iRows.Scan(
 				&inst.DeviceID, &inst.DeviceName, &inst.AppID,
 				&inst.AppName, &inst.Publisher, &inst.Version, &inst.ProductCode,
+				&inst.InstalledVersion, &inst.InstalledProductCode,
 				&inst.DesiredAction, &sc, &inst.StatusLabel,
 				&inst.LastError, &inst.LastErrorDesc, &inst.UpdatedAt,
 			); err == nil {
@@ -601,6 +615,7 @@ func (h *Handler) HandleGetApp(w http.ResponseWriter, r *http.Request) {
 					v := sc.Int64
 					inst.StatusCode = &v
 				}
+				inst.VersionState = ComputeAppVersionState(inst.InstalledVersion, inst.Version)
 				installs = append(installs, inst)
 			}
 		}
@@ -858,6 +873,7 @@ func (h *Handler) HandleGetDeviceApps(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.QueryContext(r.Context(), dbpkg.Rebind(`
 		SELECT dai.device_id, COALESCE(d.device_name, ''), dai.app_id,
 		       a.name, a.publisher, a.version, dai.product_code,
+		       COALESCE(dai.installed_version, ''), COALESCE(dai.installed_product_code, ''),
 		       dai.desired_action, dai.status_code, dai.status_label,
 		       dai.last_error, dai.last_error_desc, dai.updated_at
 		FROM device_app_installs dai
@@ -880,6 +896,7 @@ func (h *Handler) HandleGetDeviceApps(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&inst.DeviceID, &inst.DeviceName, &inst.AppID,
 			&inst.AppName, &inst.Publisher, &inst.Version, &inst.ProductCode,
+			&inst.InstalledVersion, &inst.InstalledProductCode,
 			&inst.DesiredAction, &sc, &inst.StatusLabel,
 			&inst.LastError, &inst.LastErrorDesc, &inst.UpdatedAt,
 		); err == nil {
@@ -887,6 +904,7 @@ func (h *Handler) HandleGetDeviceApps(w http.ResponseWriter, r *http.Request) {
 				v := sc.Int64
 				inst.StatusCode = &v
 			}
+			inst.VersionState = ComputeAppVersionState(inst.InstalledVersion, inst.Version)
 			installs = append(installs, inst)
 		}
 	}
@@ -901,6 +919,7 @@ func (h *Handler) loadMSIApp(ctx context.Context, id string) (*MSIApp, error) {
 		       a.sha256, a.file_size_bytes, a.command_line,
 		       a.timeout_minutes, a.retry_count, a.retry_interval_minutes,
 		       a.created_at, a.updated_at,
+		       COALESCE(a.winget_package_id, ''), COALESCE(a.winget_arch, ''),
 		       (SELECT COUNT(*) FROM group_apps ga WHERE ga.app_id = a.id),
 		       (SELECT COUNT(*) FROM device_app_installs dai
 		          JOIN devices d ON d.id = dai.device_id
@@ -916,13 +935,16 @@ func (h *Handler) loadMSIApp(ctx context.Context, id string) (*MSIApp, error) {
 		&a.SHA256, &a.FileSizeBytes, &a.CommandLine,
 		&a.TimeoutMinutes, &a.RetryCount, &a.RetryIntervalMinutes,
 		&a.CreatedAt, &a.UpdatedAt,
+		&a.WinGetPackageID, &a.WinGetArch,
 		&a.GroupCount, &a.InstalledCount, &a.TargetDeviceCount,
 	)
 	if err != nil {
 		return nil, err
 	}
 	a.SourceType = appSourceType(a.StorageFilename)
-	return &a, nil
+	slice := []MSIApp{a}
+	h.populateAppVersionCounts(ctx, slice)
+	return &slice[0], nil
 }
 
 func (h *Handler) deployMSIAppToDevice(ctx context.Context, app *MSIApp, deviceID string) (int, error) {
@@ -972,6 +994,7 @@ func (h *Handler) deployMSIAppToDevice(ctx context.Context, app *MSIApp, deviceI
 	if err != nil {
 		return 0, err
 	}
+	mdm.ReconcileDeviceAppVersions(h.db, deviceID)
 	h.wakeDevice(deviceID)
 	return queued, nil
 }
@@ -1148,24 +1171,35 @@ func (h *Handler) HandleServeAppContent(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) uninstallMSIAppFromDevice(ctx context.Context, app *MSIApp, deviceID string) error {
+	targetProdCode := app.ProductCode
+	var instProdCode string
+	_ = h.db.QueryRowContext(ctx, dbpkg.Rebind(
+		`SELECT COALESCE(installed_product_code, '') FROM device_app_installs WHERE device_id = ? AND app_id = ?`,
+	), deviceID, app.ID).Scan(&instProdCode)
+	if strings.HasPrefix(strings.TrimSpace(instProdCode), "{") {
+		targetProdCode = strings.ToUpper(strings.TrimSpace(instProdCode))
+	}
+
 	_, err := h.db.ExecContext(ctx, dbpkg.Rebind(`
 		INSERT INTO device_app_installs (
-			device_id, app_id, product_code, desired_action,
-			status_code, status_label, last_error, last_error_desc, updated_at
-		) VALUES (?, ?, ?, 'uninstall', NULL, 'Uninstalling', '', '', CURRENT_TIMESTAMP)
+			device_id, app_id, product_code, installed_version, installed_product_code,
+			desired_action, status_code, status_label, last_error, last_error_desc, updated_at
+		) VALUES (?, ?, ?, '', '', 'uninstall', NULL, 'Uninstalling', '', '', CURRENT_TIMESTAMP)
 		ON CONFLICT (device_id, app_id) DO UPDATE SET
-			product_code    = EXCLUDED.product_code,
-			desired_action  = 'uninstall',
-			status_code     = NULL,
-			status_label    = 'Uninstalling',
-			last_error      = '',
-			last_error_desc = '',
-			updated_at      = CURRENT_TIMESTAMP
-	`), deviceID, app.ID, app.ProductCode)
+			product_code           = EXCLUDED.product_code,
+			installed_version      = '',
+			installed_product_code = '',
+			desired_action         = 'uninstall',
+			status_code            = NULL,
+			status_label           = 'Uninstalling',
+			last_error             = '',
+			last_error_desc        = '',
+			updated_at             = CURRENT_TIMESTAMP
+	`), deviceID, app.ID, targetProdCode)
 	if err != nil {
 		return err
 	}
-	if _, err := mdm.EnqueueMSIUninstall(h.db, deviceID, app.ProductCode); err != nil {
+	if _, err := mdm.EnqueueMSIUninstall(h.db, deviceID, targetProdCode); err != nil {
 		return err
 	}
 	h.wakeDevice(deviceID)

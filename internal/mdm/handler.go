@@ -38,6 +38,7 @@ type Handler struct {
 	pollOnLogin         bool
 	pollSynced          map[string]string
 	postureSynced       map[string]bool
+	inventorySyncedAt   map[string]time.Time
 	wnsPFN              string
 	wnsPFNSynced        map[string]string
 }
@@ -46,14 +47,15 @@ type Handler struct {
 // proxy is configured to forward the device client certificate.
 func NewHandler(db *sql.DB, caPool *x509.CertPool, domain, proxyCertHeader string) *Handler {
 	return &Handler{
-		db:              db,
-		ca:              caPool,
-		domain:          domain,
-		store:           newSessionStore(),
-		proxyCertHeader: proxyCertHeader,
-		pollSynced:      make(map[string]string),
-		postureSynced:   make(map[string]bool),
-		wnsPFNSynced:    make(map[string]string),
+		db:                db,
+		ca:                caPool,
+		domain:            domain,
+		store:             newSessionStore(),
+		proxyCertHeader:   proxyCertHeader,
+		pollSynced:        make(map[string]string),
+		postureSynced:     make(map[string]bool),
+		inventorySyncedAt: make(map[string]time.Time),
+		wnsPFNSynced:      make(map[string]string),
 	}
 }
 
@@ -274,6 +276,72 @@ func (h *Handler) reconcileActiveAppPolls(deviceID string, sess *Session, alread
 	return cmds
 }
 
+// reconcileSoftwareInventory issues StructData Get commands for MSI and Win32
+// software inventory once per refresh interval (or immediately on first check-in
+// when a device has no stored software inventory yet).
+func (h *Handler) reconcileSoftwareInventory(deviceID string, sess *Session, alreadySent []PendingCommand) []interface{} {
+	if sess.AppInventoryQueried {
+		return nil
+	}
+
+	now := time.Now()
+	h.pollMu.Lock()
+	lastSync, synced := h.inventorySyncedAt[deviceID]
+	h.pollMu.Unlock()
+
+	if synced && now.Sub(lastSync) < softwareInventoryRefreshInterval {
+		return nil
+	}
+
+	if !synced {
+		// Check whether a very recent inventory snapshot already exists in DB (e.g. across tests/restarts)
+		var count int
+		_ = h.db.QueryRow(dbpkg.Rebind(`SELECT COUNT(*) FROM device_software_inventory WHERE device_id = ?`), deviceID).Scan(&count)
+		if count > 0 {
+			// Still refresh once per server lifecycle after a short window, or mark synced if fresh
+			var latestStr sql.NullString
+			_ = h.db.QueryRow(dbpkg.Rebind(`SELECT MAX(updated_at) FROM device_software_inventory WHERE device_id = ?`), deviceID).Scan(&latestStr)
+			if latestStr.Valid && latestStr.String != "" {
+				for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05.999999999-07:00", "2006-01-02 15:04:05"} {
+					if t, err := time.Parse(layout, latestStr.String); err == nil {
+						if now.Sub(t) < softwareInventoryRefreshInterval {
+							h.pollMu.Lock()
+							h.inventorySyncedAt[deviceID] = t
+							h.pollMu.Unlock()
+							return nil
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
+	h.pollMu.Lock()
+	h.inventorySyncedAt[deviceID] = now
+	h.pollMu.Unlock()
+	sess.AppInventoryQueried = true
+
+	sentURIs := make(map[string]bool, len(alreadySent))
+	for _, c := range alreadySent {
+		if c.CommandType == "Get" {
+			sentURIs[c.OMAURI] = true
+		}
+	}
+
+	var cmds []interface{}
+	for _, uri := range SoftwareInventoryURIs {
+		if sentURIs[uri] {
+			continue
+		}
+		cmds = append(cmds, Get{
+			CmdID: sess.nextCmdID(),
+			Items: []Item{{Target: &LocURI{LocURI: uri}}},
+		})
+	}
+	return cmds
+}
+
 // HandleOMADM is the main OMA-DM endpoint. Devices POST here on every check-in.
 //
 // Flow:
@@ -294,7 +362,9 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Step 2: Parse SyncML body ─────────────────────────────────────────
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MB limit
+	// Allow up to 16 MiB so full Win32AppInventory / MSI StructData XML payloads
+	// from developer workstations with hundreds of installed apps never truncate.
+	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
 	if err != nil {
 		slog.Error("mdm: reading request body", "device_id", deviceID, "err", err)
 		http.Error(w, "error reading body", http.StatusBadRequest)
@@ -418,6 +488,7 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 		}
 		outboundCmds = append(outboundCmds, h.reconcileWNSPush(deviceID, sess)...)
 		outboundCmds = append(outboundCmds, h.reconcileActiveAppPolls(deviceID, sess, pending)...)
+		outboundCmds = append(outboundCmds, h.reconcileSoftwareInventory(deviceID, sess, pending)...)
 	}
 
 	// ── Step 7: Build SyncML response ────────────────────────────────────

@@ -228,6 +228,8 @@ export interface MSIApp {
   content_url: string
   source_type?: 'upload' | 'url'
   original_filename?: string
+  winget_package_id?: string
+  winget_arch?: string
   sha256: string
   file_size_bytes: number
   command_line: string
@@ -239,6 +241,8 @@ export interface MSIApp {
   group_count: number
   installed_count: number
   target_device_count: number
+  auto_updated_count?: number
+  outdated_count?: number
 }
 
 export interface DeviceAppInstall {
@@ -249,12 +253,38 @@ export interface DeviceAppInstall {
   publisher: string
   version: string
   product_code: string
+  installed_version: string
+  installed_product_code: string
+  version_state: 'up_to_date' | 'auto_updated' | 'update_available' | 'unknown' | string
   desired_action: 'install' | 'uninstall'
   status_code: number | null
   status_label: string
   last_error: string
   last_error_desc: string
   updated_at: string
+}
+
+export interface SoftwareInventoryItem {
+  app_key: string
+  name: string
+  publisher: string
+  version: string
+  source: 'msi' | 'win32' | string
+  product_code: string
+  upgrade_code: string
+  install_date: string
+  install_location: string
+  managed_app_id?: string
+  catalog_version?: string
+  version_state?: 'up_to_date' | 'auto_updated' | 'update_available' | 'unknown' | string
+  updated_at: string
+}
+
+export interface DeviceSoftwareInventory {
+  device_id: string
+  total: number
+  last_synced_at: string | null
+  items: SoftwareInventoryItem[]
 }
 
 export interface MSIAppDetail {
@@ -437,6 +467,10 @@ export const api = {
     sync:    (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/sync`),
     getCommands: (id: string) => get<{ commands: DeviceCommand[] }>(`/devices/${enc(id)}/commands`),
     apps:    (id: string) => get<DeviceAppInstall[]>(`/devices/${enc(id)}/apps`),
+    inventory: (id: string, q = '') =>
+      get<DeviceSoftwareInventory>(`/devices/${enc(id)}/inventory${q.trim() ? `?q=${enc(q.trim())}` : ''}`),
+    syncInventory: (id: string) =>
+      post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/inventory/sync`),
     posture: (id: string) => get<DevicePosture>(`/devices/${enc(id)}/posture`),
     refreshPosture: (id: string) => post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/posture/refresh`),
     pushWake: (id: string) => post<{ status: string; wns_status?: string }>(`/devices/${enc(id)}/push`),
@@ -591,6 +625,11 @@ export const api = {
       get<WinGetResolvedMSI>(`/apps/winget/resolve?package_id=${enc(packageId)}&arch=${enc(arch)}`),
     wingetImport: (data: { package_id: string; architecture?: string; command_line?: string }) =>
       post<MSIApp>('/apps/winget/import', data),
+    wingetRefresh: (id: string, packageId?: string) =>
+      post<{ updated: boolean; previous_version: string; latest_version: string; app: MSIApp }>(
+        `/apps/${enc(id)}/winget-refresh`,
+        packageId ? { package_id: packageId } : {}
+      ),
   },
 
   // BitLocker CSP & AES-256-GCM Recovery Key Vault

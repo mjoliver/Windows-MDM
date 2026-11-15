@@ -44,18 +44,19 @@ func newSessionStore() *sessionStore {
 // concurrent HTTP requests). All mutable fields below are guarded by mu; callers
 // must hold it for the duration of request processing for a given session.
 type Session struct {
-	mu                sync.Mutex
-	DeviceID          string
-	SessionID         string
-	NextMsgID         int
-	NextCmdID         int
-	IsFirst           bool // first session after enrollment (alert 1200)
-	Interrogations    int  // device-info Get rounds issued this session
-	WNSChannelQueried bool // WNS Push/ChannelURI Get issued this session
-	AppStatusQueried  bool // MSI deployment Status Get issued this session
-	StartedAt         time.Time
-	LastSeen          time.Time
-	CmdMap            map[string]int // maps CmdID (from SyncML) -> queueID (from DB)
+	mu                  sync.Mutex
+	DeviceID            string
+	SessionID           string
+	NextMsgID           int
+	NextCmdID           int
+	IsFirst             bool // first session after enrollment (alert 1200)
+	Interrogations      int  // device-info Get rounds issued this session
+	WNSChannelQueried   bool // WNS Push/ChannelURI Get issued this session
+	AppStatusQueried    bool // MSI deployment Status Get issued this session
+	AppInventoryQueried bool // Software inventory StructData Get issued this session
+	StartedAt           time.Time
+	LastSeen            time.Time
+	CmdMap              map[string]int // maps CmdID (from SyncML) -> queueID (from DB)
 }
 
 // get retrieves or creates a session for the given device+session key.
@@ -132,7 +133,7 @@ func updateDeviceFromResults(db *sql.DB, deviceID string, sess *Session, results
 		for _, item := range r.Items {
 			if item.Source != nil && item.Data != "" {
 				updates[item.Source.LocURI] = item.Data
-				if ok {
+				if ok && payload.Len() < 4096 {
 					payload.WriteString(item.Data)
 					payload.WriteString("\n")
 				}
@@ -143,6 +144,9 @@ func updateDeviceFromResults(db *sql.DB, deviceID string, sess *Session, results
 			_, _ = db.Exec(dbpkg.Rebind(`UPDATE command_queue SET result_data = ? WHERE id = ?`), payload.String(), queueID)
 		}
 	}
+
+	// Persist Win32 & MSI software inventory StructData results and reconcile live versions
+	updateSoftwareInventory(db, deviceID, results)
 
 	if len(updates) == 0 {
 		return
@@ -438,15 +442,41 @@ func updateAppInstalls(db *sql.DB, deviceID string, values map[string]string) {
 				continue
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				var appID string
-				if qErr := db.QueryRow(dbpkg.Rebind(`SELECT id FROM msi_apps WHERE product_code = ?`), prodCode).Scan(&appID); qErr == nil && appID != "" {
+				var appID, catVer string
+				if qErr := db.QueryRow(dbpkg.Rebind(`SELECT id, version FROM msi_apps WHERE product_code = ?`), prodCode).Scan(&appID, &catVer); qErr == nil && appID != "" {
+					initVer, initCode := "", ""
+					if rep.statusCode == 70 {
+						initVer = catVer
+						initCode = prodCode
+					}
 					_, _ = db.Exec(dbpkg.Rebind(`
 						INSERT INTO device_app_installs (
 							device_id, app_id, product_code, desired_action,
-							status_code, status_label, last_error, last_error_desc, updated_at
-						) VALUES (?, ?, ?, 'install', ?, ?, ?, ?, CURRENT_TIMESTAMP)
-					`), deviceID, appID, prodCode, rep.statusCode, label, lastErr, lastDesc)
+							status_code, status_label, last_error, last_error_desc,
+							installed_version, installed_product_code, updated_at
+						) VALUES (?, ?, ?, 'install', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+					`), deviceID, appID, prodCode, rep.statusCode, label, lastErr, lastDesc, initVer, initCode)
 				}
+			} else if rep.statusCode == 70 {
+				_, _ = db.Exec(dbpkg.Rebind(`
+					UPDATE device_app_installs
+					SET installed_version = CASE
+					        WHEN installed_version = '' THEN COALESCE((SELECT version FROM msi_apps WHERE id = device_app_installs.app_id), '')
+					        ELSE installed_version
+					    END,
+					    installed_product_code = CASE
+					        WHEN installed_product_code = '' THEN product_code
+					        ELSE installed_product_code
+					    END
+					WHERE device_id = ? AND product_code = ?
+				`), deviceID, prodCode)
+				ReconcileDeviceAppVersions(db, deviceID)
+			} else if rep.statusCode == 0 {
+				_, _ = db.Exec(dbpkg.Rebind(`
+					UPDATE device_app_installs
+					SET installed_version = '', installed_product_code = ''
+					WHERE device_id = ? AND product_code = ?
+				`), deviceID, prodCode)
 			}
 			continue
 		}

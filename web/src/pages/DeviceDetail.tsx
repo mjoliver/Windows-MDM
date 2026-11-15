@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap, Package, KeyRound, UserCheck, Eye, Plus, Copy } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, Zap, Package, Layers, Search, KeyRound, UserCheck, Eye, Plus, Copy } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -34,6 +34,8 @@ export function DeviceDetailPage() {
   const [laps, setLaps]               = useState<DeviceLAPSStatus | null>(null)
   const [updateTel, setUpdateTel]     = useState<DeviceUpdateTelemetry | null>(null)
   const [apps, setApps]               = useState<DeviceAppInstall[]>([])
+  const [inventory, setInventory]     = useState<DeviceSoftwareInventory | null>(null)
+  const [invSearch, setInvSearch]     = useState('')
   const [commands, setCommands]       = useState<DeviceCommand[]>([])
   const [loading, setLoading]         = useState(true)
   const [error, setError]             = useState<string | null>(null)
@@ -78,6 +80,10 @@ export function DeviceDetailPage() {
       .then(a => setApps(a ?? []))
       .catch(() => setApps([]))
 
+    api.devices.inventory(id!)
+      .then(setInventory)
+      .catch(() => setInventory(null))
+
     api.bitlocker.device(id!)
       .then(setBitlocker)
       .catch(() => setBitlocker(null))
@@ -106,6 +112,7 @@ export function DeviceDetailPage() {
       api.devices.getCommands(id).then(cmd => setCommands(cmd.commands ?? [])).catch(() => {})
       api.devices.posture(id).then(setPosture).catch(() => {})
       api.devices.apps(id).then(a => setApps(a ?? [])).catch(() => {})
+      api.devices.inventory(id).then(setInventory).catch(() => {})
       api.bitlocker.device(id).then(setBitlocker).catch(() => {})
       api.laps.device(id).then(setLaps).catch(() => {})
       api.updates.device(id).then(setUpdateTel).catch(() => {})
@@ -129,6 +136,9 @@ export function DeviceDetailPage() {
       } else if (name === 'posture') {
         const queued = (res as { commands_queued?: number } | undefined)?.commands_queued ?? 0
         toast.success(`Queued ${queued} inventory & security posture query command(s) for next check-in.`)
+      } else if (name === 'inventory-sync') {
+        const queued = (res as { commands_queued?: number } | undefined)?.commands_queued ?? 0
+        toast.success(`Queued ${queued} agentless Win32 & MSI software inventory query command(s) for next check-in.`)
       } else if (name === 'push') {
         const st = (res as { status?: string; wns_status?: string } | undefined)?.status
         if (st === 'sent') {
@@ -351,9 +361,30 @@ export function DeviceDetailPage() {
                         <tr key={app.app_id}>
                           <td>
                             <div style={{ fontWeight: 600 }}>{app.app_name}</div>
-                            <div className="mono" style={{ fontSize: '0.7rem', opacity: 0.5 }}>{app.product_code}</div>
+                            <div className="mono" style={{ fontSize: '0.7rem', opacity: 0.5 }}>
+                              {app.installed_product_code && app.installed_product_code !== app.product_code
+                                ? `${app.installed_product_code} (auto-updated MSI)`
+                                : app.product_code}
+                            </div>
                           </td>
-                          <td>{app.version}</td>
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <span className="mono" style={{ fontWeight: 600 }}>
+                                {app.installed_version || app.version}
+                              </span>
+                              {app.version_state === 'auto_updated' && (
+                                <Badge status="compliant" label="Auto-Updated" />
+                              )}
+                              {app.version_state === 'update_available' && (
+                                <Badge status="pending" label={`Catalog ${app.version}`} />
+                              )}
+                            </div>
+                            {app.version_state === 'auto_updated' && (
+                              <div style={{ fontSize: '0.7rem', opacity: 0.55, marginTop: 2 }}>
+                                Catalog seed: {app.version}
+                              </div>
+                            )}
+                          </td>
                           <td>
                             <Badge
                               status={
@@ -381,6 +412,142 @@ export function DeviceDetailPage() {
               ) : (
                 <div style={{ padding: '0 32px 28px', opacity: 0.55, fontSize: '0.88rem' }}>
                   No MSI applications deployed to this device yet.
+                </div>
+              )}
+            </div>
+
+            {/* Installed Software Inventory (Agentless Win32AppInventory + EnterpriseDesktopAppManagement CSP) */}
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '24px 32px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Layers size={18} />
+                    Installed Software Inventory
+                  </div>
+                  <Badge
+                    status={(inventory?.total ?? 0) > 0 ? 'compliant' : 'unknown'}
+                    label={`${inventory?.total ?? 0} discovered`}
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {inventory?.last_synced_at && (
+                    <span style={{ fontSize: '0.75rem', opacity: 0.55 }}>
+                      Synced {timeAgo(inventory.last_synced_at)}
+                    </span>
+                  )}
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    disabled={!!actionLoading}
+                    onClick={() => action('inventory-sync', () => api.devices.syncInventory(id!))}
+                    title="Queue OMA-DM Win32AppInventory & MSI StructData queries"
+                  >
+                    <RefreshCw size={13} className={actionLoading === 'inventory-sync' ? 'spin' : ''} />
+                    Sync Inventory
+                  </button>
+                </div>
+              </div>
+
+              {(inventory?.total ?? 0) > 0 ? (
+                <>
+                  <div style={{ padding: '0 32px 14px' }}>
+                    <div style={{ position: 'relative' }}>
+                      <Search
+                        size={14}
+                        style={{
+                          position: 'absolute',
+                          left: 12,
+                          top: '50%',
+                          transform: 'translateY(-50%)',
+                          opacity: 0.5,
+                          pointerEvents: 'none',
+                        }}
+                      />
+                      <input
+                        className="input"
+                        style={{ paddingLeft: 34, fontSize: '0.84rem' }}
+                        value={invSearch}
+                        onChange={e => setInvSearch(e.target.value)}
+                        placeholder="Filter installed applications by name, publisher, version, or MSI GUID…"
+                      />
+                    </div>
+                  </div>
+                  <div className="table-wrap" style={{ border: 'none', borderRadius: 0, maxHeight: 420, overflowY: 'auto' }}>
+                    <table className="table-static">
+                      <thead>
+                        <tr>
+                          <th>Application</th>
+                          <th>Publisher</th>
+                          <th>Live Version</th>
+                          <th>Source</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(inventory?.items ?? [])
+                          .filter(it => {
+                            const q = invSearch.trim().toLowerCase()
+                            if (!q) return true
+                            return (
+                              it.name.toLowerCase().includes(q) ||
+                              it.publisher.toLowerCase().includes(q) ||
+                              it.version.toLowerCase().includes(q) ||
+                              it.product_code.toLowerCase().includes(q) ||
+                              it.source.toLowerCase().includes(q)
+                            )
+                          })
+                          .map(it => (
+                            <tr key={it.app_key}>
+                              <td>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                  <span style={{ fontWeight: 600 }}>{it.name}</span>
+                                  {it.managed_app_id && (
+                                    <Badge
+                                      status={it.version_state === 'update_available' ? 'pending' : 'compliant'}
+                                      label={
+                                        it.version_state === 'auto_updated'
+                                          ? 'Managed · Auto-Updated'
+                                          : it.version_state === 'update_available'
+                                            ? `Managed · Catalog ${it.catalog_version}`
+                                            : 'Managed'
+                                      }
+                                    />
+                                  )}
+                                </div>
+                                {it.product_code && (
+                                  <div className="mono" style={{ fontSize: '0.68rem', opacity: 0.45 }}>
+                                    {it.product_code}
+                                  </div>
+                                )}
+                              </td>
+                              <td style={{ opacity: 0.78, fontSize: '0.85rem' }}>{it.publisher || '—'}</td>
+                              <td>
+                                <div className="mono" style={{ fontWeight: 600 }}>{it.version || '—'}</div>
+                                {it.version_state === 'auto_updated' && it.catalog_version && (
+                                  <div style={{ fontSize: '0.7rem', opacity: 0.55 }}>Seed: {it.catalog_version}</div>
+                                )}
+                              </td>
+                              <td>
+                                <span
+                                  className="mono"
+                                  style={{
+                                    fontSize: '0.7rem',
+                                    padding: '2px 8px',
+                                    borderRadius: 999,
+                                    background: 'rgba(255,255,255,0.06)',
+                                    textTransform: 'uppercase',
+                                  }}
+                                >
+                                  {it.source}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ) : (
+                <div style={{ padding: '0 32px 28px', opacity: 0.55, fontSize: '0.88rem' }}>
+                  Software inventory will populate automatically on the device&apos;s next OMA-DM check-in (or click <strong>Sync Inventory</strong> above).
                 </div>
               )}
             </div>
