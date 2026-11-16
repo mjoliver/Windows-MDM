@@ -34,10 +34,11 @@ var nowFunc = time.Now
 
 // CA holds the active root certificate and private key.
 type CA struct {
-	cert    *x509.Certificate
-	certPEM []byte
-	key     *rsa.PrivateKey
-	db      *sql.DB
+	cert          *x509.Certificate
+	certPEM       []byte
+	key           *rsa.PrivateKey
+	db            *sql.DB
+	publicBaseURL string
 }
 
 // Load loads the CA from the database, or generates a new one if none exists.
@@ -222,6 +223,7 @@ func (ca *CA) IssueDeviceCert(deviceID, enrolledBy string, csrPEM []byte) ([]byt
 	if enrolledBy != "" {
 		template.EmailAddresses = []string{enrolledBy}
 	}
+	ca.applyRevocationURLs(template)
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, csr.PublicKey, ca.key)
 	if err != nil {
@@ -269,7 +271,14 @@ func (ca *CA) IssueDeviceCertFromDER(deviceID, enrolledBy string, csrDER []byte)
 
 // RevokeDeviceCerts marks all certificates for a device as revoked.
 func (ca *CA) RevokeDeviceCerts(deviceID string) error {
-	_, err := ca.db.Exec(dbpkg.Rebind(`UPDATE certificates SET revoked = 1 WHERE device_id = ?`), deviceID)
+	now := nowFunc().UTC()
+	_, err := ca.db.Exec(dbpkg.Rebind(`
+		UPDATE certificates
+		SET revoked = 1,
+		    revoked_at = COALESCE(revoked_at, ?),
+		    revocation_reason = CASE WHEN revoked = 0 THEN 5 ELSE revocation_reason END
+		WHERE device_id = ?
+	`), now, deviceID)
 	if err != nil {
 		return fmt.Errorf("revoking device certs: %w", err)
 	}
@@ -283,7 +292,14 @@ func (ca *CA) RevokeCertByThumbprint(thumbprint string) error {
 	if tp == "" {
 		return nil
 	}
-	_, err := ca.db.Exec(dbpkg.Rebind(`UPDATE certificates SET revoked = 1 WHERE LOWER(thumbprint) = ?`), tp)
+	now := nowFunc().UTC()
+	_, err := ca.db.Exec(dbpkg.Rebind(`
+		UPDATE certificates
+		SET revoked = 1,
+		    revoked_at = COALESCE(revoked_at, ?),
+		    revocation_reason = CASE WHEN revoked = 0 THEN 4 ELSE revocation_reason END
+		WHERE LOWER(thumbprint) = ?
+	`), now, tp)
 	return err
 }
 
@@ -367,6 +383,7 @@ func (ca *CA) IssueClientPFX(deviceID, subjectCN string, dnsSANs []string, valid
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
+	ca.applyRevocationURLs(template)
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &privKey.PublicKey, ca.key)
 	if err != nil {

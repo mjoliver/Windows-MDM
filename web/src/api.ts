@@ -688,6 +688,40 @@ export interface BulkEnrollmentTokenItem {
   created_at: string
 }
 
+export interface PKISummary {
+  ca_subject: string
+  ca_thumbprint_sha1: string
+  ca_serial_number: string
+  ca_not_before: string
+  ca_not_after: string
+  crl_url: string
+  crl_pem_url: string
+  ocsp_url: string
+  crl_sequence_number: number
+  total_issued: number
+  active_certs: number
+  expiring_30d: number
+  revoked_certs: number
+}
+
+export interface IssuedCertificateItem {
+  id: number
+  cert_type: string
+  subject: string
+  thumbprint: string
+  serial_number: string
+  device_id: string
+  device_name: string
+  not_before: string
+  not_after: string
+  days_remaining: number
+  revoked: boolean
+  revoked_at: string | null
+  revocation_reason: number
+  revocation_reason_label: string
+  created_at: string
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -1063,6 +1097,10 @@ export const api = {
     }) => post<ConnectivityProfile>('/connectivity/profiles', data),
     deleteProfile: (id: string) =>
       del<{ deleted: boolean; commands_queued: number }>(`/connectivity/profiles/${enc(id)}`),
+    pkiSummary: () => get<PKISummary>('/pki/summary'),
+    listCertificates: () => get<IssuedCertificateItem[]>('/pki/certificates'),
+    revokeCertificate: (certId: number, reason = 0) =>
+      post<{ revoked: boolean; id: number; reason: number; reason_label: string }>(`/pki/certificates/${certId}/revoke`, { reason }),
   },
 
   // Device Lockdown: Storage, DeviceLock, Camera/Bluetooth & AssignedAccess Kiosk CSPs

@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Wifi, GlobeLock, FileKey2, ShieldCheck, Plus, Trash2 } from 'lucide-react'
+import { Wifi, GlobeLock, FileKey2, ShieldCheck, Plus, Trash2, Download, Copy, ShieldAlert } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
-import { api, type ConnectivityProfile, type Group } from '../api'
+import { api, type ConnectivityProfile, type Group, type PKISummary, type IssuedCertificateItem } from '../api'
 import { useToast } from '../hooks/useToast'
 
 type ProfileKind = 'root_ca' | 'intermediate_ca' | 'client_cert' | 'wifi' | 'vpn'
@@ -12,6 +12,8 @@ type ProfileKind = 'root_ca' | 'intermediate_ca' | 'client_cert' | 'wifi' | 'vpn
 export function ConnectivityPage() {
   const [profiles, setProfiles] = useState<ConnectivityProfile[]>([])
   const [groups, setGroups] = useState<Group[]>([])
+  const [pkiSum, setPkiSum] = useState<PKISummary | null>(null)
+  const [issuedCerts, setIssuedCerts] = useState<IssuedCertificateItem[]>([])
   const [loading, setLoading] = useState(true)
   const [openModal, setOpenModal] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -44,10 +46,14 @@ export function ConnectivityPage() {
     Promise.all([
       api.connectivity.listProfiles(),
       api.groups.list().catch(() => []),
+      api.connectivity.pkiSummary().catch(() => null),
+      api.connectivity.listCertificates().catch(() => []),
     ])
-      .then(([p, g]) => {
+      .then(([p, g, sum, certs]) => {
         setProfiles(p)
         setGroups(g)
+        setPkiSum(sum)
+        setIssuedCerts(certs)
       })
       .catch(e => toast.error(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false))
@@ -302,6 +308,119 @@ export function ConnectivityPage() {
           </table>
         )}
       </div>
+
+      {/* Internal Root CA, RFC 5280 CRL & RFC 6960 OCSP Responder */}
+      {pkiSum && (
+        <div className="card" style={{ marginTop: 28, padding: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16, marginBottom: 20 }}>
+            <div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <ShieldCheck size={18} />
+                Internal Certificate Authority, CRL &amp; OCSP Responder
+              </div>
+              <div style={{ fontSize: '0.82rem', opacity: 0.72, marginTop: 4 }}>
+                <strong>{pkiSum.ca_subject}</strong> • SHA-1 <code className="mono">{pkiSum.ca_thumbprint_sha1}</code> • Valid through{' '}
+                {new Date(pkiSum.ca_not_after).toLocaleDateString()}
+              </div>
+              <div style={{ fontSize: '0.76rem', opacity: 0.62, marginTop: 4 }}>
+                Active: <strong>{pkiSum.active_certs}</strong> • Expiring (&le;30d): <strong>{pkiSum.expiring_30d}</strong> • Revoked: <strong>{pkiSum.revoked_certs}</strong> • CRL Sequence #{pkiSum.crl_sequence_number}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <a className="btn btn-sm btn-secondary" href="/pki/ca.pem" download="latchz-root-ca.pem">
+                <Download size={13} /> Root CA (.pem)
+              </a>
+              <a className="btn btn-sm btn-secondary" href="/pki/crl.der" download="latchz-ca.crl">
+                <Download size={13} /> CRL (.der)
+              </a>
+              <a className="btn btn-sm btn-secondary" href="/pki/crl.pem" download="latchz-ca-crl.pem">
+                <Download size={13} /> CRL (.pem)
+              </a>
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => {
+                  navigator.clipboard?.writeText(pkiSum.ocsp_url)
+                  toast.success(`Copied OCSP Responder URL (${pkiSum.ocsp_url}).`)
+                }}
+              >
+                <Copy size={13} /> Copy OCSP URL
+              </button>
+            </div>
+          </div>
+
+          {issuedCerts.length > 0 && (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Subject / Device</th>
+                    <th>Kind</th>
+                    <th>Thumbprint / Serial</th>
+                    <th>Validity</th>
+                    <th>Status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {issuedCerts.map(c => (
+                    <tr key={c.id}>
+                      <td>
+                        <div style={{ fontWeight: 700, fontSize: '0.84rem' }}>{c.device_name || c.subject}</div>
+                        <div className="mono" style={{ fontSize: '0.71rem', opacity: 0.6 }}>{c.subject}</div>
+                      </td>
+                      <td>
+                        <Badge
+                          status={c.cert_type === 'client_pfx' ? 'compliant' : 'unknown'}
+                          label={c.cert_type === 'client_pfx' ? '802.1X / VPN PFX' : 'OMA-DM mTLS'}
+                          dot={false}
+                        />
+                      </td>
+                      <td className="mono" style={{ fontSize: '0.73rem' }}>
+                        <div>{c.thumbprint.slice(0, 20)}…</div>
+                        <div style={{ opacity: 0.55 }}>SN {c.serial_number.slice(0, 14)}…</div>
+                      </td>
+                      <td style={{ fontSize: '0.8rem' }}>
+                        {new Date(c.not_after).toLocaleDateString()} ({c.days_remaining}d)
+                      </td>
+                      <td>
+                        {c.revoked ? (
+                          <Badge status="non_compliant" label={`Revoked (${c.revocation_reason_label})`} />
+                        ) : c.days_remaining <= 30 ? (
+                          <Badge status="pending" label="Expiring Soon" />
+                        ) : (
+                          <Badge status="compliant" label="Good (OCSP)" />
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {!c.revoked && (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            style={{ color: 'var(--md-sys-color-error)' }}
+                            title="Revoke certificate (published immediately on /pki/crl.der & /pki/ocsp)"
+                            onClick={async () => {
+                              try {
+                                await api.connectivity.revokeCertificate(c.id, 1)
+                                toast.success(`Revoked certificate ${c.thumbprint.slice(0, 12)}… (reason: Key Compromise).`)
+                                load()
+                              } catch (e) {
+                                toast.error(e instanceof Error ? e.message : String(e))
+                              }
+                            }}
+                          >
+                            <ShieldAlert size={13} /> Revoke
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {openModal && (
         <Modal open={openModal} title="Create Connectivity / PKI Profile" onClose={() => setOpenModal(false)}>

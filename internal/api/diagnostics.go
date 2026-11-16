@@ -45,11 +45,14 @@ func (h *Handler) HandleGetDeviceCSPExplorer(w http.ResponseWriter, r *http.Requ
 	rows, err := h.db.QueryContext(r.Context(), dbpkg.Rebind(`
 		SELECT
 			q.id, q.device_id, COALESCE(q.queue_id, 0), q.label, q.oma_uri,
-			COALESCE(cq.status, q.status),
-			CASE WHEN COALESCE(cq.result_code, '') <> '' THEN cq.result_code ELSE q.result_code END,
+			CASE
+				WHEN q.status IN ('success', 'failed') THEN q.status
+				ELSE COALESCE(cq.status, q.status)
+			END,
+			CASE WHEN COALESCE(q.result_code, '') <> '' THEN q.result_code ELSE COALESCE(cq.result_code, '') END,
 			CASE WHEN COALESCE(q.result_data, '') <> '' THEN q.result_data ELSE COALESCE(cq.result_data, '') END,
 			q.queried_by, q.created_at,
-			COALESCE(q.completed_at, cq.completed_at)
+			q.completed_at, cq.completed_at
 		FROM device_csp_queries q
 		LEFT JOIN command_queue cq ON cq.id = q.queue_id
 		WHERE q.device_id = ?
@@ -66,16 +69,19 @@ func (h *Handler) HandleGetDeviceCSPExplorer(w http.ResponseWriter, r *http.Requ
 	queries := []CSPExplorerQueryItem{}
 	for rows.Next() {
 		var it CSPExplorerQueryItem
-		var compAt sql.NullTime
+		var qCompAt, cqCompAt sql.NullTime
 		if err := rows.Scan(
 			&it.ID, &it.DeviceID, &it.QueueID, &it.Label, &it.OMAURI,
 			&it.Status, &it.ResultCode, &it.ResultData,
-			&it.QueriedBy, &it.CreatedAt, &compAt,
+			&it.QueriedBy, &it.CreatedAt, &qCompAt, &cqCompAt,
 		); err != nil {
 			continue
 		}
-		if compAt.Valid {
-			t := compAt.Time
+		if qCompAt.Valid {
+			t := qCompAt.Time
+			it.CompletedAt = &t
+		} else if cqCompAt.Valid {
+			t := cqCompAt.Time
 			it.CompletedAt = &t
 		}
 		queries = append(queries, it)

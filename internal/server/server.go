@@ -97,6 +97,7 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	apiHandler := api.NewHandler(database.DB)
 	apiHandler.ConfigureContentRelay("https://"+cfg.Server.Domain, jwtSecret)
 	apiHandler.SetPackagesDir(cfg.MDM.PackagesDir)
+	ca.SetPublicBaseURL("https://" + cfg.Server.Domain)
 	apiHandler.SetDeviceAuth(ca.TLSPool(), proxyCertHeader)
 	apiHandler.SetCA(ca)
 	var secretVault *vault.Vault
@@ -349,8 +350,12 @@ func (s *Server) routes() {
 	// MS-XCEP: certificate enrollment policy
 	r.Post("/xcep", s.enrollment.HandleXCEP(s.ca))
 
-	// Root CA download (so admins can install the CA cert on trusted devices)
+	// Root CA download + RFC 5280 CRL & RFC 6960 OCSP responder
 	r.Get("/pki/ca.pem", s.enrollment.HandleCADownload(s.ca))
+	r.Get("/pki/crl.der", s.api.HandleServeCRLDER)
+	r.Get("/pki/crl.pem", s.api.HandleServeCRLPEM)
+	r.Post("/pki/ocsp", s.api.HandleOCSP)
+	r.Get("/pki/ocsp/{reqB64}", s.api.HandleOCSP)
 
 	// MS-WSTEP: certificate enrollment (device gets its client cert here). The
 	// enrollment token is always validated by the real auth provider — there is
@@ -488,6 +493,9 @@ func (s *Server) routes() {
 			r.Get("/connectivity/profiles", s.api.HandleListConnectivityProfiles)
 			r.With(admin).Post("/connectivity/profiles", s.api.HandleCreateConnectivityProfile)
 			r.With(admin).Delete("/connectivity/profiles/{id}", s.api.HandleDeleteConnectivityProfile)
+			r.Get("/pki/summary", s.api.HandleGetPKISummary)
+			r.Get("/pki/certificates", s.api.HandleListPKICertificates)
+			r.With(admin).Post("/pki/certificates/{certId}/revoke", s.api.HandleRevokePKICertificate)
 			r.Get("/lockdown/policy", s.api.HandleGetLockdownPolicy)
 			r.With(admin).Put("/lockdown/policy", s.api.HandleUpdateLockdownPolicy)
 			r.Get("/hardening/policy", s.api.HandleGetHardeningPolicy)
@@ -825,7 +833,7 @@ func (s *Server) verifyPeerCert(rawCerts [][]byte, _ [][]*x509.Certificate) erro
 	}
 	var revoked int
 	err = s.db.DB.QueryRow(db.Rebind(
-		`SELECT revoked FROM certificates WHERE thumbprint = ? AND cert_type = 'device'`), devauth.Thumbprint(cert)).Scan(&revoked)
+		`SELECT revoked FROM certificates WHERE thumbprint = ? AND cert_type IN ('device', 'client_pfx')`), devauth.Thumbprint(cert)).Scan(&revoked)
 	if err == sql.ErrNoRows || err != nil {
 		return nil
 	}
