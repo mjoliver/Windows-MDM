@@ -156,14 +156,29 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 			})
 		}
 	})
-	enrollHandler.SetEnrolledHook(func(devID, userEmail, devName, _ string) {
+	enrollHandler.SetEnrolledHook(func(devID, userEmail, devName, rawToken string) {
+		var autoGroupID string
+		if strings.HasPrefix(strings.TrimSpace(rawToken), auth.BulkTokenPrefix) {
+			_, autoGroupID = auth.LookupBulkTokenAutoGroup(database.DB, rawToken)
+			if autoGroupID != "" {
+				_, _ = database.DB.Exec(db.Rebind(`
+					INSERT INTO device_group_members (device_id, group_id)
+					VALUES (?, ?)
+					ON CONFLICT DO NOTHING
+				`), devID, autoGroupID)
+			}
+		}
+		policy.ReconcileDynamicGroupsForDevice(database.DB, devID)
+		policy.ApplyDevice(database.DB, devID)
+
 		webhookDispatcher.EmitAsync(webhooks.Event{
 			Type:     "device.enroll",
 			Actor:    userEmail,
 			TargetID: devID,
 			Summary:  fmt.Sprintf("Device %q (%s) enrolled by %s", devName, devID, userEmail),
 			Data: map[string]interface{}{
-				"device_name": devName,
+				"device_name":   devName,
+				"auto_group_id": autoGroupID,
 			},
 		})
 	})
@@ -485,6 +500,12 @@ func (s *Server) routes() {
 			r.Get("/webhooks/deliveries", s.api.HandleListWebhookDeliveries)
 			r.Get("/export/devices", s.api.HandleExportDevices)
 			r.Get("/export/software", s.api.HandleExportSoftware)
+
+			// Bulk Enrollment Tokens & OOBE Staging Bootstrap
+			r.Get("/enrollment/tokens", s.api.HandleListEnrollmentTokens)
+			r.With(admin).Post("/enrollment/tokens", s.api.HandleCreateEnrollmentToken)
+			r.With(admin).Delete("/enrollment/tokens/{id}", s.api.HandleDeleteEnrollmentToken)
+			r.Get("/enrollment/bootstrap.ps1", s.api.HandleDownloadEnrollmentBootstrap)
 
 			// Administration: Users & Audit Log
 			r.With(admin).Get("/users", s.api.HandleListUsers)

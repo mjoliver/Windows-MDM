@@ -8,16 +8,18 @@ Latchz is an open-source, single-binary Windows MDM (Mobile Device Management) s
 
 ## Features
 
-- **WSTEP Zero-Touch Enrollment** — Windows devices auto-discover the server via `enterpriseenrollment.<domain>` and complete enrollment through Microsoft's standard flow, with no manual setup.
-- **SyncML/OMA-DM Policy Management** — Push, retrieve, and reconcile device configuration policies using the OMA-DM protocol over HTTPS.
+- **WSTEP Zero-Touch Enrollment & Bulk OOBE Staging Tokens** — Windows devices auto-discover the server via `enterpriseenrollment.<domain>` and complete enrollment through Microsoft's standard flow, or enroll via SHA-256-hashed multi-use `lzbt_…` Bulk Enrollment Tokens with automatic group assignment and a 1-click PowerShell OOBE bootstrap script (`/api/enrollment/bootstrap.ps1`).
+- **SyncML/OMA-DM Policy Management & Auto-Remediation** — Push, retrieve, and reconcile device configuration policies using the OMA-DM protocol over HTTPS, with optional real-time drift auto-remediation on check-in.
+- **Dynamic Smart Groups, Remote Hostname Rename & Clean MDM Retire** — Rule-driven Dynamic Smart Groups matching hardware/OS/posture attributes (`os_build`, `manufacturer`, `model`, `serial_number`, `device_name`, `compliance_status`, `tpm_version`) with automatic policy/MSI reconciliation, remote PC rename via `DevDetail/Ext/Microsoft/DNSComputerName` (`%SERIAL%` & `%RAND:x%` macros), and non-destructive corporate unenrollment via `DMClient/Provider/LatchzMDM/Unenroll`.
 - **Win32 MSI & WinGet Application Deployment** — Drag-and-drop local `.msi` uploads, 1-click imports & seed refreshes from Microsoft's `winget-pkgs` catalog (native MSI/WiX manifests), or remote HTTPS URLs with pure-Go CFB metadata/SHA-256 inspection, `HTTP 206` Delivery Optimization streaming, and silent `EnterpriseDesktopAppManagement` CSP installs/uninstalls.
 - **Agentless Software Inventory & Live Version Tracking** — Automatic `Win32AppInventory` + `EnterpriseDesktopAppManagement` `StructData` discovery of all installed Win32 and MSI programs on each endpoint, reconciling self-updating apps (such as Chrome `GoogleUpdate.exe` replacing `ProductCode` GUIDs) to display live per-device versions alongside catalog seeds.
 - **BitLocker CSP & Recovery Key Escrow Vault** — Zero-touch `BitLocker` CSP enforcement (XTS-AES 256-bit ciphers, silent standard-user encryption) paired with an Argon2id + AES-256-GCM device-bound 48-digit recovery password vault, mTLS device escrow, and audited reveals.
 - **Windows Update Rings** — Granular `Policy/Config/Update` & `Update` CSP deployment rings controlling quality/feature update deferrals, active hours, installation deadlines, grace periods, and 35-day emergency pause/resume.
 - **Agentless Cloud LAPS (Ephemeral Local Admin)** — 100% agentless local administrator lifecycle management using native Windows `Accounts` + `LocalUsersAndGroups` CSPs (`S-1-5-32-544`), zero-plaintext AES-256-GCM credential vaulting, scheduled & post-reveal auto-rotation, and audited reveals.
-- **Defender Antivirus & Firewall CSP Baselines** — Fleet-wide `Policy/Config/Defender` + `Firewall` (`MdmStore`) security baselines, transactional SyncML `<Atomic>` custom inbound/outbound firewall rules (`FirewallRules/{RuleKey}`), and remote Quick/Full Defender scans & signature updates (`Defender/Scan`, `Defender/UpdateSignature`).
-- **Enterprise Wi-Fi, VPNv2 & Root/Intermediate CA Provisioning** — Zero-touch X.509 Root & Intermediate CA certificate trust (`RootCATrustedCertificates` CSP), WPA2/WPA3 Wi-Fi `WLANProfile` deployment with AES-256-GCM vault-encrypted passphrases (`WiFi` CSP), and transactional `<Atomic>` IKEv2 / Always-On VPN tunnels (`VPNv2` CSP).
+- **Defender Antivirus, ASR Rules, SmartScreen & Firewall CSP Baselines** — Fleet-wide `Policy/Config/Defender` + `Firewall` (`MdmStore`) security baselines, all 10 flagship Microsoft Defender Attack Surface Reduction (ASR) rules (`AttackSurfaceReductionRules`) + SmartScreen / App Install Control hardening (`Policy/Config/SmartScreen`), transactional SyncML `<Atomic>` custom firewall rules, and remote Quick/Full Defender scans & signature updates.
+- **Per-Device X.509 Client Certificates, 802.1X EAP-TLS Wi-Fi & VPNv2** — Zero-touch Root & Intermediate CA certificate trust (`RootCATrustedCertificates` CSP), per-device PKCS#12 client authentication certificates minted by the Latchz CA and delivered via transactional `<Atomic>` `ClientCertificateInstall/PFXCertInstall` CSP (Hardware TPM or Software KSP), WPA2/WPA3-Personal & 802.1X `WPA2Enterprise` EAP-TLS Wi-Fi (`WiFi` CSP), and `<Atomic>` IKEv2 / Always-On VPN tunnels (`VPNv2` CSP).
 - **Device Lockdown, USB Storage & Kiosk Controls** — Removable USB storage allow / read-only / block-all controls (`Policy/Config/Storage`), password/PIN complexity & screen inactivity timeouts (`Policy/Config/DeviceLock`), camera/Bluetooth hardware toggles, and single-app kiosk mode (`AssignedAccess` CSP).
+- **SIEM / Chat Event Webhooks & Fleet CSV/JSON Exports** — HMAC-SHA256-signed (`X-Latchz-Signature-256`) outbound webhooks formatted for generic SIEM JSON, Slack, Microsoft Teams, and Discord across enrollment, compliance drift, BitLocker/LAPS secret reveals, and retire/wipe actions, plus 1-click formula-injection-safe CSV & JSON fleet hardware and software inventory exports.
 - **Hardware & Security Posture Telemetry** — Continuous inventory of RAM, disk, BIOS, Secure Boot, BitLocker, Windows Defender AV/tamper protection, and Firewall state.
 - **Instant Device Wake-Up (WNS)** — Optional Windows Push Notification Services (`wns/raw`) integration alongside automatic `DMClient` background polling.
 - **Built-in PKI** — Self-hosted RSA 4096-bit Certificate Authority with encrypted key-at-rest (argon2id-derived master secret) for device certificate issuance via XCEP.
@@ -267,11 +269,12 @@ The embedded React dashboard provides the following pages:
 | Page | Description |
 |------|-------------|
 | **Overview** | System health, device counts, compliance summary |
-| **Devices** | List of all enrolled devices with status |
-| **Device Detail** | Per-device hardware & security posture, full Win32/MSI software inventory, BitLocker vault, Cloud LAPS admin credentials, Update Ring status, WNS wake-up, remote actions |
-| **Groups** | Device groups for bulk policy, app, BitLocker, Update Ring, and LAPS assignment |
-| **Compliance** | Fleet security posture, BitLocker CSP policy configuration, and Cloud LAPS policy settings |
-| **Applications** | Win32 `.msi` catalog (drag-and-drop local hosting, 1-click WinGet MSI import & seed update check, HTTPS URLs), live endpoint version reconciliation & group/device deployment |
+| **Devices** | Fleet device list, CSV/JSON hardware & posture export, Bulk Enrollment Tokens (`lzbt_…`), and PowerShell OOBE staging bootstrap |
+| **Device Detail** | Per-device hardware & security posture, full Win32/MSI software inventory, BitLocker vault, Cloud LAPS credentials, Connectivity/PKI certificates, remote Rename PC, Clean MDM Retire, WNS wake-up, and remote actions |
+| **Groups** | Static & Dynamic Smart Groups (hardware/OS/posture rule builder + live preview) for bulk policy, MSI app, BitLocker, Update Ring, Security, Connectivity, and LAPS assignment |
+| **Compliance** | Fleet security posture, BitLocker, Cloud LAPS, Defender AV & Firewall, ASR Rules & SmartScreen Hardening, Device Lockdown/USB/Kiosk, Auto-Remediation, and HMAC-SHA256 SIEM/Chat Event Webhooks |
+| **Connectivity** | Trusted Root/Intermediate CA certs, per-device PKCS#12 Client Auth certs (`PFXCertInstall`), WPA2/WPA3 & 802.1X EAP-TLS Wi-Fi, and Always-On `VPNv2` profiles |
+| **Applications** | Win32 `.msi` catalog (drag-and-drop local hosting, 1-click WinGet MSI import & seed update check, HTTPS URLs), CSV/JSON software inventory export, live endpoint version reconciliation & group/device deployment |
 | **Update Rings** | Windows Update for Business rings (deferrals, active hours, deadlines, 35-day pause/resume) |
 | **Profiles** | Configuration profiles (policies) created for devices |
 | **Profile Detail** | Profile settings, catalog browsing, device targeting |
@@ -382,7 +385,8 @@ make clean        # Remove build artifacts
 │   ├── pki/                 # RSA 4096-bit CA + certificate issuance
 │   ├── policy/              # ADMX policy resolution + BitLocker & Update Ring reconciliation
 │   ├── server/              # HTTP server, middleware, TLS, embedded web assets
-│   ├── vault/               # Argon2id + AES-256-GCM device-bound secret vault (BitLocker & Cloud LAPS)
+│   ├── vault/               # Argon2id + AES-256-GCM device-bound secret vault (BitLocker, LAPS, PFX & Webhooks)
+│   ├── webhooks/            # HMAC-SHA256 SIEM / Slack / Teams / Discord event dispatcher & auto-remediation
 │   ├── winget/              # Agentless Microsoft winget-pkgs YAML manifest resolver & MSI catalog search
 │   └── wns/                 # Windows Push Notification Services (WNS) OAuth2 + wns/raw wake-up client
 ├── web/                     # React + TypeScript frontend (Vite)

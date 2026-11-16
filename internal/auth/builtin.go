@@ -118,6 +118,32 @@ func (p *BuiltinProvider) handleLoginSubmit(w http.ResponseWriter, r *http.Reque
 	flow := r.PostForm.Get("flow")
 	appru := r.PostForm.Get("appru")
 
+	if flow == "enroll" && strings.HasPrefix(strings.TrimSpace(password), BulkTokenPrefix) {
+		rawBulk := strings.TrimSpace(password)
+		ownerEmail, err := VerifyBulkEnrollmentTokenUnconsumed(p.db, rawBulk)
+		if err != nil {
+			p.renderLoginForm(w, r, http.StatusUnauthorized, builtinLoginData{
+				Flow: flow, Appru: appru, Email: email, Error: err.Error(),
+			})
+			return
+		}
+		if appru == "" {
+			writeHTML(w, http.StatusOK, tmplEnrollLegacy, struct{ Email, Token string }{ownerEmail, rawBulk})
+			return
+		}
+		safe, ok := appruAllowed(appru, p.baseURL)
+		if !ok {
+			slog.Warn("auth: rejected enrollment return URL (appru)", "appru", appru, "email", ownerEmail)
+			writeHTML(w, http.StatusBadRequest, tmplEnrollRejected, nil)
+			return
+		}
+		writeHTML(w, http.StatusOK, tmplEnrollAppru, struct {
+			Email, Token string
+			Appru        template.URL
+		}{ownerEmail, rawBulk, safe})
+		return
+	}
+
 	role, ok := p.authenticate(r.Context(), email, password)
 	if !ok {
 		p.renderLoginForm(w, r, http.StatusUnauthorized, builtinLoginData{
@@ -343,7 +369,7 @@ var tmplBuiltinLogin = template.Must(template.New("builtinLogin").Parse(`<!DOCTY
       <input id="email" name="email" type="email" placeholder="admin@lab.local" value="{{.Email}}" autocomplete="username" autofocus required>
     </div>
     <div class="field">
-      <label for="password">Password</label>
+      <label for="password">{{if eq .Flow "enroll"}}Password or Bulk Token (lzbt_…){{else}}Password{{end}}</label>
       <input id="password" name="password" type="password" placeholder="••••••••" autocomplete="current-password" required>
     </div>
     <button type="submit">Sign In</button>

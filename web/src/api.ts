@@ -645,6 +645,21 @@ export interface ComplianceAutomationSettings {
   updated_at: string | null
 }
 
+export interface BulkEnrollmentTokenItem {
+  id: string
+  name: string
+  token_prefix: string
+  token?: string
+  auto_group_id: string
+  auto_group_name: string
+  max_uses: number
+  use_count: number
+  expires_at: string | null
+  revoked: boolean
+  created_by: string
+  created_at: string
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -1074,5 +1089,18 @@ export const api = {
     automation: () => get<ComplianceAutomationSettings>('/compliance/automation'),
     updateAutomation: (autoRemediate: boolean) =>
       put<ComplianceAutomationSettings>('/compliance/automation', { auto_remediate: autoRemediate }),
+  },
+
+  // Bulk Enrollment Tokens & OOBE Staging Bootstrap
+  enrollmentTokens: {
+    list: () => get<BulkEnrollmentTokenItem[]>('/enrollment/tokens'),
+    create: (data: {
+      name: string
+      auto_group_id?: string
+      max_uses: number
+      expires_in_days: number
+    }) => post<BulkEnrollmentTokenItem>('/enrollment/tokens', data),
+    revoke: (id: string, hard = false) =>
+      del<{ deleted: boolean; revoked: boolean; id: string }>(`/enrollment/tokens/${enc(id)}${hard ? '?hard=1' : ''}`),
   },
 }

@@ -15,10 +15,14 @@ import (
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 )
 
-// validateEnrollmentToken parses + type-checks an enrollment JWT and consumes it
-// (single-use). Shared by both auth providers so their enrollment-token rules
-// (and replay protection) cannot diverge.
+// validateEnrollmentToken parses + type-checks an enrollment JWT (single-use) or
+// a multi-use / time-bounded Bulk Enrollment Token ("lzbt_..."). Shared by both
+// auth providers so their enrollment-token rules cannot diverge.
 func validateEnrollmentToken(secret []byte, db *sql.DB, tokenStr string) (string, error) {
+	if strings.HasPrefix(strings.TrimSpace(tokenStr), BulkTokenPrefix) {
+		email, _, _, err := ConsumeBulkEnrollmentToken(db, tokenStr)
+		return email, err
+	}
 	claims, err := parseHMACToken(secret, tokenStr)
 	if err != nil {
 		return "", err
