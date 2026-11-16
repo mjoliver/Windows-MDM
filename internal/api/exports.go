@@ -107,7 +107,7 @@ func (h *Handler) HandleExportDevices(w http.ResponseWriter, r *http.Request) {
 		       d.compliance_status, COALESCE(d.enrollment_state,'enrolled'), d.is_active,
 		       COALESCE(d.enrolled_by,''), d.enrolled_at, d.last_checkin,
 		       dp.total_ram_mb, dp.total_storage_mb, dp.free_storage_mb,
-		       COALESCE(dp.tpm_version,''), dp.secure_boot_enabled,
+		       COALESCE(dp.tpm_version,''), dp.secure_boot_state,
 		       dp.encryption_status, dp.antivirus_status, dp.firewall_status
 		FROM devices d
 		LEFT JOIN device_posture dp ON dp.device_id = d.id
