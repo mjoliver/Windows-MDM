@@ -423,6 +423,9 @@ func (s *Server) routes() {
 			r.Get("/devices/{id}/connectivity", s.api.HandleGetDeviceConnectivity)
 			r.Get("/devices/{id}/lockdown", s.api.HandleGetDeviceLockdown)
 			r.Get("/devices/{id}/hardening", s.api.HandleGetDeviceHardening)
+			r.Get("/devices/{id}/csp-explorer", s.api.HandleGetDeviceCSPExplorer)
+			r.With(admin).Post("/devices/{id}/csp-explorer", s.api.HandleCreateDeviceCSPQuery)
+			r.With(admin).Delete("/devices/{id}/csp-explorer/{queryId}", s.api.HandleDeleteDeviceCSPQuery)
 
 			// Policy catalog (order matters: specific before param)
 			r.Get("/catalog/csps", s.api.HandleListCSPs)

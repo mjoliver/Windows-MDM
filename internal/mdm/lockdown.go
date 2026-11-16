@@ -213,16 +213,17 @@ func RetractDeviceLockdown(dbConn *sql.DB, deviceID string, prevKioskEnforced bo
 	}
 
 	// Windows desktop Policy CSP requires DeviceLock operations (including Delete)
-	// to be wrapped in <Atomic>. Delete dependent child policies before DevicePasswordEnabled,
-	// each in its own <Atomic> so an unconfigured optional child never rolls back parent removal.
-	deviceLockDeletes := []string{
+	// to be wrapped in <Atomic>. Delete dependent child policies first, then explicitly
+	// disable DevicePasswordEnabled (1 = Disabled) so Windows's EAS engine clears
+	// HKLM\SYSTEM\CurrentControlSet\Control\EAS\Policies without tattooing local SAM
+	// accounts, and finally Delete DevicePasswordEnabled from PolicyManager.
+	deviceLockChildDeletes := []string{
 		OMADeviceLockMinLength,
 		OMADeviceLockAlphanumeric,
 		OMADeviceLockMaxInactivity,
 		OMADeviceLockMaxFailed,
-		OMADeviceLockPasswordEnabled,
 	}
-	for _, u := range deviceLockDeletes {
+	for _, u := range deviceLockChildDeletes {
 		if _, err := EnqueueAtomic(dbConn, deviceID, u+"#delete", []AtomicSubCommand{
 			{CommandType: "Delete", OMAURI: u},
 		}); err != nil {
@@ -230,5 +231,17 @@ func RetractDeviceLockdown(dbConn *sql.DB, deviceID string, prevKioskEnforced bo
 		}
 		queued++
 	}
+	if _, err := EnqueueAtomic(dbConn, deviceID, OMADeviceLockPasswordEnabled+"#disable", []AtomicSubCommand{
+		{CommandType: "Replace", OMAURI: OMADeviceLockPasswordEnabled, Payload: "1", Format: "int"},
+	}); err != nil {
+		return queued, err
+	}
+	queued++
+	if _, err := EnqueueAtomic(dbConn, deviceID, OMADeviceLockPasswordEnabled+"#delete", []AtomicSubCommand{
+		{CommandType: "Delete", OMAURI: OMADeviceLockPasswordEnabled},
+	}); err != nil {
+		return queued, err
+	}
+	queued++
 	return queued, nil
 }

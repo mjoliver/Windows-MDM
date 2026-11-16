@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, ShieldAlert, GlobeLock, Zap, Package, Layers, Search, KeyRound, UserCheck, Eye, Plus, Copy, Edit3, LogOut } from 'lucide-react'
+import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, ShieldAlert, GlobeLock, Zap, Package, Layers, Search, KeyRound, UserCheck, Eye, Plus, Copy, Edit3, LogOut, Terminal } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials, type DeviceSecurityState, type DeviceConnectivityItem, type DeviceLockdownState, type DeviceEndpointHardeningState } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials, type DeviceSecurityState, type DeviceConnectivityItem, type DeviceLockdownState, type DeviceEndpointHardeningState, type CSPPreset, type CSPExplorerQueryItem } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -41,6 +41,10 @@ export function DeviceDetailPage() {
   const [inventory, setInventory]     = useState<DeviceSoftwareInventory | null>(null)
   const [invSearch, setInvSearch]     = useState('')
   const [commands, setCommands]       = useState<DeviceCommand[]>([])
+  const [cspPresets, setCspPresets]   = useState<CSPPreset[]>([])
+  const [cspQueries, setCspQueries]   = useState<CSPExplorerQueryItem[]>([])
+  const [customCspUri, setCustomCspUri] = useState('')
+  const [cspBusy, setCspBusy]         = useState(false)
   const [loading, setLoading]         = useState(true)
   const [error, setError]             = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -119,6 +123,13 @@ export function DeviceDetailPage() {
     api.updates.device(id!)
       .then(setUpdateTel)
       .catch(() => setUpdateTel(null))
+
+    api.devices.cspExplorer(id!)
+      .then(res => {
+        setCspPresets(res.presets ?? [])
+        setCspQueries(res.queries ?? [])
+      })
+      .catch(() => {})
   }, [id])
 
   useEffect(() => {
@@ -144,6 +155,7 @@ export function DeviceDetailPage() {
       api.devices.lockdown(id).then(setLockState).catch(() => {})
       api.devices.hardening(id).then(setHardeningState).catch(() => {})
       api.updates.device(id).then(setUpdateTel).catch(() => {})
+      api.devices.cspExplorer(id).then(res => { setCspPresets(res.presets ?? []); setCspQueries(res.queries ?? []) }).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
   }, [id])
@@ -247,6 +259,9 @@ export function DeviceDetailPage() {
               )}
               {device.enrollment_state === 'retiring' && (
                 <Badge status="non_compliant" label="Retiring (Unenroll Queued)" />
+              )}
+              {posture?.reboot_required === true && (
+                <Badge status="pending" label="Reboot Pending" />
               )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 24, opacity: 0.6, fontSize: '1rem', fontWeight: 500 }}>
@@ -949,6 +964,155 @@ export function DeviceDetailPage() {
               )}
             </div>
 
+            {/* Live CSP Explorer (Ad-Hoc OMA-URI Get Inspector) */}
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '24px 32px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                <div>
+                  <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Terminal size={18} />
+                    Live CSP Explorer
+                  </div>
+                  <div style={{ fontSize: '0.8rem', opacity: 0.65, marginTop: 4 }}>
+                    Queue an agentless SyncML <code className="mono">&lt;Get&gt;</code> against any read-only Windows 10/11 CSP node and inspect the live endpoint value.
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ padding: '0 32px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {cspPresets.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {cspPresets.map(p => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        disabled={cspBusy}
+                        title={`${p.oma_uri} — ${p.description}`}
+                        onClick={async () => {
+                          setCspBusy(true)
+                          try {
+                            await api.devices.queryCSP(id!, p.oma_uri, p.label)
+                            toast.success(`Queued CSP Get "${p.label}" for next check-in.`)
+                            refresh()
+                          } catch (e) {
+                            toast.error(e instanceof Error ? e.message : String(e))
+                          } finally {
+                            setCspBusy(false)
+                          }
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <form
+                  onSubmit={async e => {
+                    e.preventDefault()
+                    if (!customCspUri.trim()) return
+                    setCspBusy(true)
+                    try {
+                      await api.devices.queryCSP(id!, customCspUri.trim())
+                      toast.success(`Queued CSP Get on ${customCspUri.trim()}.`)
+                      setCustomCspUri('')
+                      refresh()
+                    } catch (err) {
+                      toast.error(err instanceof Error ? err.message : String(err))
+                    } finally {
+                      setCspBusy(false)
+                    }
+                  }}
+                  style={{ display: 'flex', gap: 8 }}
+                >
+                  <input
+                    className="form-input mono"
+                    style={{ flex: 1 }}
+                    placeholder="./Device/Vendor/MSFT/Reboot/RebootRequired"
+                    value={customCspUri}
+                    onChange={e => setCustomCspUri(e.target.value)}
+                  />
+                  <button type="submit" className="btn btn-primary" disabled={cspBusy || !customCspUri.trim()}>
+                    {cspBusy ? 'Queueing…' : 'Query URI'}
+                  </button>
+                </form>
+
+                {cspQueries.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+                    {cspQueries.slice(0, 8).map(q => (
+                      <div
+                        key={q.id}
+                        style={{
+                          padding: '12px 14px',
+                          borderRadius: 12,
+                          background: 'rgba(255,255,255,0.03)',
+                          border: '1px solid var(--md-sys-color-outline-variant)',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                          <div>
+                            {q.label && <span style={{ fontWeight: 700, fontSize: '0.85rem', marginRight: 8 }}>{q.label}</span>}
+                            <span className="mono" style={{ fontSize: '0.73rem', opacity: 0.7 }}>{q.oma_uri}</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Badge
+                              status={q.status === 'success' ? 'compliant' : q.status === 'failed' ? 'non_compliant' : 'pending'}
+                              label={q.result_code ? `${q.status} (${q.result_code})` : q.status}
+                            />
+                            {q.result_data && (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                onClick={() => {
+                                  navigator.clipboard?.writeText(q.result_data)
+                                  toast.success('Copied CSP response value.')
+                                }}
+                              >
+                                <Copy size={12} />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              aria-label="Delete CSP query"
+                              onClick={async () => {
+                                try {
+                                  await api.devices.deleteCSPQuery(id!, q.id)
+                                  refresh()
+                                } catch {
+                                  // ignore
+                                }
+                              }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                        {q.result_data && (
+                          <pre
+                            className="mono"
+                            style={{
+                              margin: '8px 0 0',
+                              padding: '8px 10px',
+                              borderRadius: 8,
+                              background: 'rgba(0,0,0,0.28)',
+                              fontSize: '0.76rem',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-all',
+                              maxHeight: 160,
+                              overflowY: 'auto',
+                            }}
+                          >
+                            {q.result_data}
+                          </pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* History Table */}
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '24px 32px' }}>
@@ -1040,6 +1204,11 @@ export function DeviceDetailPage() {
                     text: posture?.firewall_label ?? 'Unknown',
                     ok: posture?.firewall_status == null ? null : posture.firewall_status === 0,
                   },
+                  {
+                    label: 'Reboot State',
+                    text: posture?.reboot_label ?? 'Unknown',
+                    ok: posture?.reboot_required == null ? null : posture.reboot_required === false,
+                  },
                 ].map(item => (
                   <div
                     key={item.label}
@@ -1108,8 +1277,10 @@ export function DeviceDetailPage() {
                 fields={[
                   { label: 'Manufacturer', value: device.manufacturer },
                   { label: 'Model', value: device.model },
+                  { label: 'Windows Edition', value: posture?.windows_edition_label && posture.windows_edition_label !== 'Unknown' ? posture.windows_edition_label : '—' },
                   { label: 'OS Platform', value: posture?.os_platform || device.os_version },
                   { label: 'OS Build', value: device.os_build },
+                  { label: 'Endpoint Clock', value: posture?.local_time || '—' },
                   { label: 'Physical RAM', value: formatMBAsGB(posture?.total_ram_mb) },
                   {
                     label: 'Disk Storage',

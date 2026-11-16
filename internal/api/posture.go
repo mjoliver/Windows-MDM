@@ -10,32 +10,38 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
+	"github.com/latchzmdm/latchz/internal/mdm"
 )
 
 // DevicePosture represents hardware inventory and Windows security posture for a device.
 type DevicePosture struct {
-	DeviceID          string     `json:"device_id"`
-	Collected         bool       `json:"collected"`
-	TotalRAMMB        *int64     `json:"total_ram_mb"`
-	TotalStorageMB    *int64     `json:"total_storage_mb"`
-	FreeStorageMB     *int64     `json:"free_storage_mb"`
-	BIOSVersion       string     `json:"bios_version"`
-	OSPlatform        string     `json:"os_platform"`
-	TPMVersion        string     `json:"tpm_version"`
-	SecureBootState   *int64     `json:"secure_boot_state"`
-	SecureBootLabel   string     `json:"secure_boot_label"`
-	EncryptionStatus  *int64     `json:"encryption_status"`
-	EncryptionLabel   string     `json:"encryption_label"`
-	AntivirusStatus   *int64     `json:"antivirus_status"`
-	AntivirusLabel    string     `json:"antivirus_label"`
-	FirewallStatus    *int64     `json:"firewall_status"`
-	FirewallLabel     string     `json:"firewall_label"`
-	UpdatedAt         *time.Time `json:"updated_at"`
-	WNSEnabled        bool       `json:"wns_enabled"`
-	WNSChannelActive  bool       `json:"wns_channel_active"`
-	WNSUpdatedAt      *time.Time `json:"wns_updated_at"`
-	WNSLastPushAt     *time.Time `json:"wns_last_push_at"`
-	WNSLastPushStatus string     `json:"wns_last_push_status"`
+	DeviceID            string     `json:"device_id"`
+	Collected           bool       `json:"collected"`
+	TotalRAMMB          *int64     `json:"total_ram_mb"`
+	TotalStorageMB      *int64     `json:"total_storage_mb"`
+	FreeStorageMB       *int64     `json:"free_storage_mb"`
+	BIOSVersion         string     `json:"bios_version"`
+	OSPlatform          string     `json:"os_platform"`
+	TPMVersion          string     `json:"tpm_version"`
+	SecureBootState     *int64     `json:"secure_boot_state"`
+	SecureBootLabel     string     `json:"secure_boot_label"`
+	EncryptionStatus    *int64     `json:"encryption_status"`
+	EncryptionLabel     string     `json:"encryption_label"`
+	AntivirusStatus     *int64     `json:"antivirus_status"`
+	AntivirusLabel      string     `json:"antivirus_label"`
+	FirewallStatus      *int64     `json:"firewall_status"`
+	FirewallLabel       string     `json:"firewall_label"`
+	RebootRequired      *bool      `json:"reboot_required"`
+	RebootLabel         string     `json:"reboot_label"`
+	WindowsEdition      *int64     `json:"windows_edition"`
+	WindowsEditionLabel string     `json:"windows_edition_label"`
+	LocalTime           string     `json:"local_time"`
+	UpdatedAt           *time.Time `json:"updated_at"`
+	WNSEnabled          bool       `json:"wns_enabled"`
+	WNSChannelActive    bool       `json:"wns_channel_active"`
+	WNSUpdatedAt        *time.Time `json:"wns_updated_at"`
+	WNSLastPushAt       *time.Time `json:"wns_last_push_at"`
+	WNSLastPushStatus   string     `json:"wns_last_push_status"`
 }
 
 // FleetPostureSummary aggregates security posture health across active enrolled devices.
@@ -46,6 +52,7 @@ type FleetPostureSummary struct {
 	BitLockerEncrypted     int `json:"bitlocker_encrypted"`
 	AntivirusHealthy       int `json:"antivirus_healthy"`
 	FirewallHealthy        int `json:"firewall_healthy"`
+	RebootPendingDevices   int `json:"reboot_pending_devices"`
 }
 
 func secureBootLabel(v *int64) string {
@@ -113,8 +120,9 @@ func (h *Handler) HandleGetDevicePosture(w http.ResponseWriter, r *http.Request)
 
 	var (
 		ram, totalDisk, freeDisk           sql.NullInt64
-		bios, platform, tpm                sql.NullString
+		bios, platform, tpm, localTime     sql.NullString
 		secBoot, encStatus, avStat, fwStat sql.NullInt64
+		rebootReq, winEdition              sql.NullInt64
 		updatedAt                          time.Time
 	)
 
@@ -122,6 +130,7 @@ func (h *Handler) HandleGetDevicePosture(w http.ResponseWriter, r *http.Request)
 		SELECT total_ram_mb, total_storage_mb, free_storage_mb,
 		       COALESCE(bios_version,''), COALESCE(os_platform,''), COALESCE(tpm_version,''),
 		       secure_boot_state, encryption_status, antivirus_status, firewall_status,
+		       reboot_required, windows_edition, COALESCE(local_time,''),
 		       updated_at
 		FROM device_posture
 		WHERE device_id = ?
@@ -129,6 +138,7 @@ func (h *Handler) HandleGetDevicePosture(w http.ResponseWriter, r *http.Request)
 		&ram, &totalDisk, &freeDisk,
 		&bios, &platform, &tpm,
 		&secBoot, &encStatus, &avStat, &fwStat,
+		&rebootReq, &winEdition, &localTime,
 		&updatedAt,
 	)
 
@@ -158,12 +168,14 @@ func (h *Handler) HandleGetDevicePosture(w http.ResponseWriter, r *http.Request)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		p := DevicePosture{
-			DeviceID:        id,
-			Collected:       false,
-			SecureBootLabel: "Unknown",
-			EncryptionLabel: "Unknown",
-			AntivirusLabel:  "Unknown",
-			FirewallLabel:   "Unknown",
+			DeviceID:            id,
+			Collected:           false,
+			SecureBootLabel:     "Unknown",
+			EncryptionLabel:     "Unknown",
+			AntivirusLabel:      "Unknown",
+			FirewallLabel:       "Unknown",
+			RebootLabel:         "Unknown",
+			WindowsEditionLabel: "Unknown",
 		}
 		populateWNS(&p)
 		respondOK(w, p)
@@ -183,6 +195,18 @@ func (h *Handler) HandleGetDevicePosture(w http.ResponseWriter, r *http.Request)
 		return &v
 	}
 
+	var rebBoolPtr *bool
+	rebLabel := "Unknown"
+	if rebootReq.Valid {
+		rb := rebootReq.Int64 != 0
+		rebBoolPtr = &rb
+		if rb {
+			rebLabel = "Reboot Pending"
+		} else {
+			rebLabel = "No Reboot Pending"
+		}
+	}
+
 	p := DevicePosture{
 		DeviceID:         id,
 		Collected:        true,
@@ -196,12 +220,17 @@ func (h *Handler) HandleGetDevicePosture(w http.ResponseWriter, r *http.Request)
 		EncryptionStatus: toPtr(encStatus),
 		AntivirusStatus:  toPtr(avStat),
 		FirewallStatus:   toPtr(fwStat),
+		RebootRequired:   rebBoolPtr,
+		RebootLabel:      rebLabel,
+		WindowsEdition:   toPtr(winEdition),
+		LocalTime:        localTime.String,
 		UpdatedAt:        &updatedAt,
 	}
 	p.SecureBootLabel = secureBootLabel(p.SecureBootState)
 	p.EncryptionLabel = encryptionLabel(p.EncryptionStatus)
 	p.AntivirusLabel = securityMonitorLabel(p.AntivirusStatus)
 	p.FirewallLabel = securityMonitorLabel(p.FirewallStatus)
+	p.WindowsEditionLabel = mdm.WindowsEditionLabel(p.WindowsEdition)
 	populateWNS(&p)
 
 	respondOK(w, p)
@@ -251,7 +280,8 @@ func (h *Handler) HandleFleetPostureSummary(w http.ResponseWriter, r *http.Reque
 			COALESCE(SUM(CASE WHEN dp.secure_boot_state = 1 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN dp.encryption_status = 0 THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN dp.antivirus_status = 0 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN dp.firewall_status = 0 THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN dp.firewall_status = 0 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN dp.reboot_required = 1 THEN 1 ELSE 0 END), 0)
 		FROM device_posture dp
 		JOIN devices d ON d.id = dp.device_id
 		WHERE d.is_active = 1
@@ -261,6 +291,7 @@ func (h *Handler) HandleFleetPostureSummary(w http.ResponseWriter, r *http.Reque
 		&summary.BitLockerEncrypted,
 		&summary.AntivirusHealthy,
 		&summary.FirewallHealthy,
+		&summary.RebootPendingDevices,
 	)
 	if err != nil {
 		slog.Error("api: querying fleet posture summary", "err", err)

@@ -353,4 +353,7 @@ var FirstCheckInURIs = []string{
 	OMADeviceStatusAntivirus,
 	OMADeviceStatusFirewall,
 	OMABitLockerEncryptionStatus,
+	OMARebootRequired,
+	OMAWindowsLicensingEdition,
+	OMADevDetailLocalTime,
 }

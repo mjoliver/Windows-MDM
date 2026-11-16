@@ -26,7 +26,7 @@ func loadPendingCommands(dbConn *sql.DB, deviceID string) ([]PendingCommand, err
 		FROM command_queue
 		WHERE device_id = ? AND status = 'pending'
 		ORDER BY id ASC
-		LIMIT 20
+		LIMIT 30
 	`), deviceID)
 	if err != nil {
 		return nil, fmt.Errorf("querying command queue: %w", err)
@@ -61,6 +61,17 @@ func markCommandsSent(dbConn *sql.DB, ids []int) error {
 	}
 	query += ")"
 	_, err := dbConn.Exec(db.Rebind(query), args...)
+	if err == nil {
+		cspQuery := "UPDATE device_csp_queries SET status = 'sent' WHERE status = 'pending' AND queue_id IN ("
+		for i := range ids {
+			if i > 0 {
+				cspQuery += ","
+			}
+			cspQuery += "?"
+		}
+		cspQuery += ")"
+		_, _ = dbConn.Exec(db.Rebind(cspQuery), args...)
+	}
 	return err
 }
 

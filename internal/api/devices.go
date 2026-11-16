@@ -441,7 +441,7 @@ func (h *Handler) HandleGetDeviceCommands(w http.ResponseWriter, r *http.Request
 		       COALESCE(result_code,''), COALESCE(result_data,'')
 		FROM command_queue
 		WHERE device_id = ?
-		ORDER BY created_at DESC
+		ORDER BY id DESC
 		LIMIT 50
 	`), id)
 	if err != nil {

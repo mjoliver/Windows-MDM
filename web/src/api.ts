@@ -174,6 +174,11 @@ export interface DevicePosture {
   antivirus_label: string
   firewall_status: number | null
   firewall_label: string
+  reboot_required: boolean | null
+  reboot_label: string
+  windows_edition: number | null
+  windows_edition_label: string
+  local_time: string
   updated_at: string | null
   wns_enabled: boolean
   wns_channel_active: boolean
@@ -189,6 +194,29 @@ export interface FleetPostureSummary {
   bitlocker_encrypted: number
   antivirus_healthy: number
   firewall_healthy: number
+  reboot_pending_devices: number
+}
+
+export interface CSPPreset {
+  id: string
+  category: string
+  label: string
+  oma_uri: string
+  description: string
+}
+
+export interface CSPExplorerQueryItem {
+  id: string
+  device_id: string
+  queue_id: number
+  label: string
+  oma_uri: string
+  status: string
+  result_code: string
+  result_data: string
+  queried_by: string
+  created_at: string
+  completed_at: string | null
 }
 
 export interface UserSummary {
@@ -699,6 +727,11 @@ export const api = {
     connectivity: (id: string) => get<DeviceConnectivityItem[]>(`/devices/${enc(id)}/connectivity`),
     lockdown: (id: string) => get<DeviceLockdownState>(`/devices/${enc(id)}/lockdown`),
     hardening: (id: string) => get<DeviceEndpointHardeningState>(`/devices/${enc(id)}/hardening`),
+    cspExplorer: (id: string) => get<{ presets: CSPPreset[]; queries: CSPExplorerQueryItem[] }>(`/devices/${enc(id)}/csp-explorer`),
+    queryCSP: (id: string, omaUri: string, label?: string) =>
+      post<CSPExplorerQueryItem>(`/devices/${enc(id)}/csp-explorer`, { oma_uri: omaUri, label }),
+    deleteCSPQuery: (id: string, queryId: string) =>
+      del<{ deleted: boolean; id: string }>(`/devices/${enc(id)}/csp-explorer/${enc(queryId)}`),
     pushWake: (id: string) => post<{ status: string; wns_status?: string }>(`/devices/${enc(id)}/push`),
   },
 

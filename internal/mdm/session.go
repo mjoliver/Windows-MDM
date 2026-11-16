@@ -130,18 +130,28 @@ func updateDeviceFromResults(db *sql.DB, deviceID string, sess *Session, results
 		queueID, ok := sess.CmdMap[r.CmdRef]
 
 		var payload strings.Builder
+		hasItem := false
 		for _, item := range r.Items {
-			if item.Source != nil && item.Data != "" {
-				updates[item.Source.LocURI] = item.Data
-				if ok && payload.Len() < 4096 {
+			if item.Source != nil {
+				hasItem = true
+				if item.Data != "" {
+					updates[item.Source.LocURI] = item.Data
+				}
+				if ok && payload.Len() < 65536 {
+					if payload.Len() > 0 {
+						payload.WriteString("\n")
+					}
 					payload.WriteString(item.Data)
-					payload.WriteString("\n")
 				}
 			}
 		}
 
-		if ok && payload.Len() > 0 {
-			_, _ = db.Exec(dbpkg.Rebind(`UPDATE command_queue SET result_data = ? WHERE id = ?`), payload.String(), queueID)
+		if ok && hasItem {
+			resStr := payload.String()
+			if resStr != "" {
+				_, _ = db.Exec(dbpkg.Rebind(`UPDATE command_queue SET result_data = ? WHERE id = ?`), resStr, queueID)
+			}
+			SyncCSPQueryResult(db, queueID, resStr)
 		}
 	}
 
@@ -256,6 +266,9 @@ func updatePosture(db *sql.DB, deviceID string, values map[string]string) {
 		encryption     sql.NullInt64
 		antivirus      sql.NullInt64
 		firewall       sql.NullInt64
+		rebootReq      sql.NullInt64
+		winEdition     sql.NullInt64
+		localTime      sql.NullString
 	)
 
 	for rawURI, val := range values {
@@ -304,6 +317,19 @@ func updatePosture(db *sql.DB, deviceID string, values map[string]string) {
 			if n := parseOptionalInt(trimmed); n.Valid {
 				firewall, hasAny = n, true
 			}
+		case OMARebootRequired:
+			if b := ParseOptionalBoolInt(trimmed); b.Valid {
+				rebootReq, hasAny = b, true
+			}
+		case OMAWindowsLicensingEdition:
+			if n := parseOptionalInt(trimmed); n.Valid {
+				winEdition, hasAny = n, true
+			}
+		case OMADevDetailLocalTime:
+			if trimmed != "" {
+				localTime = sql.NullString{String: trimmed, Valid: true}
+				hasAny = true
+			}
 		}
 	}
 
@@ -316,8 +342,9 @@ func updatePosture(db *sql.DB, deviceID string, values map[string]string) {
 			device_id, total_ram_mb, total_storage_mb, free_storage_mb,
 			bios_version, os_platform, tpm_version,
 			secure_boot_state, encryption_status, antivirus_status, firewall_status,
+			reboot_required, windows_edition, local_time,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ''), CURRENT_TIMESTAMP)
 		ON CONFLICT (device_id) DO UPDATE SET
 			total_ram_mb      = COALESCE(EXCLUDED.total_ram_mb, device_posture.total_ram_mb),
 			total_storage_mb  = COALESCE(EXCLUDED.total_storage_mb, device_posture.total_storage_mb),
@@ -329,10 +356,14 @@ func updatePosture(db *sql.DB, deviceID string, values map[string]string) {
 			encryption_status = COALESCE(EXCLUDED.encryption_status, device_posture.encryption_status),
 			antivirus_status  = COALESCE(EXCLUDED.antivirus_status, device_posture.antivirus_status),
 			firewall_status   = COALESCE(EXCLUDED.firewall_status, device_posture.firewall_status),
+			reboot_required   = COALESCE(EXCLUDED.reboot_required, device_posture.reboot_required),
+			windows_edition   = COALESCE(EXCLUDED.windows_edition, device_posture.windows_edition),
+			local_time        = CASE WHEN EXCLUDED.local_time <> '' THEN EXCLUDED.local_time ELSE device_posture.local_time END,
 			updated_at        = CURRENT_TIMESTAMP
 	`), deviceID, ramMB, totalStorageMB, freeStorageMB,
 		biosVersion, osPlatform, tpmVersion,
-		secureBoot, encryption, antivirus, firewall)
+		secureBoot, encryption, antivirus, firewall,
+		rebootReq, winEdition, localTime)
 	if err != nil {
 		slog.Error("mdm: updating device posture from results", "device_id", deviceID, "err", err)
 	}

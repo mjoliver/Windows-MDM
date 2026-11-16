@@ -706,6 +706,7 @@ func (h *Handler) processStatuses(deviceID string, sess *Session, statuses []Sta
 
 		// Promote or fail any pending Cloud LAPS rotation tied to this queue entry
 		h.handleLAPSCommandStatus(deviceID, queueID, s.Data)
+		SyncCSPQueryStatus(h.db, queueID, resultCodeForQueue)
 
 		// Update command status in DB
 		if err := markCommandResult(h.db, queueID, resultCodeForQueue, ""); err != nil {
