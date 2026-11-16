@@ -250,6 +250,30 @@ export interface SecurityGovernanceSettings {
   updated_at: string | null
 }
 
+export interface SystemStatus {
+  status: string
+  db_driver: string
+  db_ok: boolean
+  ca_loaded: boolean
+  vault_configured: boolean
+  wns_configured: boolean
+  backup_supported: boolean
+  started_at: string
+  uptime_seconds: number
+  active_devices: number
+  retired_devices: number
+  offline_24h_devices: number
+  reboot_pending_devices: number
+  queue_pending: number
+  queue_sent: number
+  queue_failed_24h: number
+  active_certs: number
+  expiring_certs_30d: number
+  revoked_certs: number
+  omadm_checkins_total: number
+  omadm_avg_duration_ms: number
+}
+
 export interface AuditEntry {
   id: number
   user_email: string
@@ -1259,5 +1283,10 @@ export const api = {
     }) => post<BulkEnrollmentTokenItem>('/enrollment/tokens', data),
     revoke: (id: string, hard = false) =>
       del<{ deleted: boolean; revoked: boolean; id: string }>(`/enrollment/tokens/${enc(id)}${hard ? '?hard=1' : ''}`),
+  },
+
+  // System Status, Prometheus Metrics & Online Backup
+  system: {
+    status: () => get<SystemStatus>('/system/status'),
   },
 }

@@ -540,8 +540,11 @@ func (s *Server) routes() {
 			r.With(admin).Put("/security/governance", s.api.HandleUpdateSecurityGovernance)
 			r.With(admin).Get("/audit", s.api.HandleListAudit)
 
-			// System
+			// System Health, Prometheus Metrics & Online Backup
 			r.Get("/system/health", s.handleHealth)
+			r.Get("/system/status", s.api.HandleSystemStatus)
+			r.Get("/system/metrics", s.api.HandlePrometheusMetrics)
+			r.With(admin).Get("/system/backup", s.api.HandleDownloadBackup)
 		})
 	})
 
@@ -775,11 +778,15 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
+		dur := time.Since(start)
+		if r.URL.Path == "/omadm" {
+			api.RecordOMADMMetric(dur)
+		}
 		slog.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", ww.Status(),
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", dur.Milliseconds(),
 			"remote_addr", r.RemoteAddr,
 			"request_id", middleware.GetReqID(r.Context()),
 		)

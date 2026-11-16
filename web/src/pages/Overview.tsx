@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Monitor, Shield, Users, CheckSquare, AlertTriangle, Clock } from 'lucide-react'
+import { Monitor, Shield, Users, CheckSquare, AlertTriangle, Clock, Activity, Download } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
-import { api, type Device, type FleetCompliance } from '../api'
+import { api, type Device, type FleetCompliance, type SystemStatus } from '../api'
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'
 import { timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
@@ -11,6 +11,7 @@ import { EmptyState } from '../components/EmptyState'
 export function OverviewPage() {
   const [devices, setDevices]           = useState<Device[]>([])
   const [compliance, setCompliance]     = useState<FleetCompliance | null>(null)
+  const [sysStatus, setSysStatus]       = useState<SystemStatus | null>(null)
   const [_loading, setLoading] = useState(true)
   const navigate = useNavigate()
 
@@ -18,9 +19,11 @@ export function OverviewPage() {
     Promise.all([
       api.devices.list(),
       api.compliance.fleet(),
-    ]).then(([d, c]) => {
+      api.system.status().catch(() => null),
+    ]).then(([d, c, st]) => {
       setDevices(d)
       setCompliance(c)
+      setSysStatus(st)
     }).finally(() => setLoading(false))
   }, [])
 
@@ -211,6 +214,49 @@ export function OverviewPage() {
             )}
           </div>
         </div>
+
+        {/* System Operations, Prometheus Metrics & Hot SQLite Backup */}
+        {sysStatus && (
+          <div className="card" style={{ marginTop: 32, padding: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16, marginBottom: 18 }}>
+              <div>
+                <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Activity size={18} />
+                  System Operations, Prometheus Telemetry &amp; Hot Backup
+                </div>
+                <div style={{ fontSize: '0.82rem', opacity: 0.72, marginTop: 4 }}>
+                  Engine: <strong className="mono">{sysStatus.db_driver}</strong> • Root CA: <strong>{sysStatus.ca_loaded ? 'Loaded' : 'Missing'}</strong> • Vault: <strong>{sysStatus.vault_configured ? 'AES-256-GCM Ready' : 'Unconfigured'}</strong> • Uptime: <strong>{Math.floor(sysStatus.uptime_seconds / 60)}m</strong>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <a className="btn btn-sm btn-secondary" href="/api/system/metrics" target="_blank" rel="noreferrer">
+                  Prometheus /metrics
+                </a>
+                {sysStatus.backup_supported && (
+                  <a className="btn btn-sm btn-primary" href="/api/system/backup" download>
+                    <Download size={14} />
+                    Download Hot Backup (.sqlite3)
+                  </a>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+              {[
+                { label: 'OMA-DM Check-Ins', value: `${sysStatus.omadm_checkins_total} (${sysStatus.omadm_avg_duration_ms.toFixed(1)} ms avg)` },
+                { label: 'Queue Depth', value: `${sysStatus.queue_pending} pending / ${sysStatus.queue_sent} sent` },
+                { label: 'Offline > 24h', value: `${sysStatus.offline_24h_devices} device(s)` },
+                { label: 'Reboot Pending', value: `${sysStatus.reboot_pending_devices} device(s)` },
+                { label: 'Active Leaf Certs', value: `${sysStatus.active_certs} (${sysStatus.revoked_certs} revoked)` },
+              ].map(m => (
+                <div key={m.label} style={{ padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)' }}>
+                  <div style={{ fontSize: '0.73rem', opacity: 0.65 }}>{m.label}</div>
+                  <div className="mono" style={{ fontSize: '0.9rem', fontWeight: 700, marginTop: 4 }}>{m.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </Layout>
   )
