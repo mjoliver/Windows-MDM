@@ -266,13 +266,13 @@ func TestPFXClientCertificateAtomicOrderingVaultAndEAPTLSWiFi(t *testing.T) {
 	}
 
 	// CRITICAL: PFXCertBlob MUST be the LAST <Add> inside <Atomic>!
-	idxKeyLoc := strings.Index(out, "/KeyLocation")
-	idxExport := strings.Index(out, "/PFXKeyExportable")
-	idxEncType := strings.Index(out, "/PFXCertPasswordEncryptionType")
-	idxPwd := strings.Index(out, "/PFXCertPassword")
-	idxBlob := strings.Index(out, "/PFXCertBlob")
+	idxKeyLoc := strings.Index(out, "/KeyLocation</LocURI>")
+	idxExport := strings.Index(out, "/PFXKeyExportable</LocURI>")
+	idxEncType := strings.Index(out, "/PFXCertPasswordEncryptionType</LocURI>")
+	idxPwd := strings.Index(out, "/PFXCertPassword</LocURI>")
+	idxBlob := strings.Index(out, "/PFXCertBlob</LocURI>")
 	if !(idxKeyLoc > 0 && idxKeyLoc < idxExport && idxExport < idxEncType && idxEncType < idxPwd && idxPwd < idxBlob) {
-		t.Fatalf("PFXCertBlob MUST be last inside <Atomic>! indices: keyLoc=%d export=%d enc=%d pwd=%d blob=%d",
+		t.Fatalf("PFXCertBlob MUST be last inside <Atomic>! indices: keyLoc=%d export=%d enc=%d pfxPwd=%d blob=%d",
 			idxKeyLoc, idxExport, idxEncType, idxPwd, idxBlob)
 	}
 }
