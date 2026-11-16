@@ -258,10 +258,10 @@ func TestPFXClientCertificateAtomicOrderingVaultAndEAPTLSWiFi(t *testing.T) {
 	if !strings.Contains(out, plainPwd) || !strings.Contains(out, plainBlob) {
 		t.Fatalf("expected decrypted PFX password and blob in SyncML: %s", out)
 	}
-	if !strings.Contains(out, `KeyLocation</LocURI></Target><Meta><Format xmlns="syncml:metinf">int</Format><Type xmlns="syncml:metinf">text/plain</Type></Meta><Data>3</Data>`) {
+	if !strings.Contains(out, `KeyLocation</LocURI></Target><Meta><Format xmlns="syncml:metinf">int</Format><Type>text/plain</Type></Meta><Data>3</Data>`) {
 		t.Fatalf("expected KeyLocation=3 (int) in SyncML: %s", out)
 	}
-	if !strings.Contains(out, `PFXKeyExportable</LocURI></Target><Meta><Format xmlns="syncml:metinf">bool</Format><Type xmlns="syncml:metinf">text/plain</Type></Meta><Data>true</Data>`) {
+	if !strings.Contains(out, `PFXKeyExportable</LocURI></Target><Meta><Format xmlns="syncml:metinf">bool</Format><Type>text/plain</Type></Meta><Data>true</Data>`) {
 		t.Fatalf("expected PFXKeyExportable=true (bool) in SyncML: %s", out)
 	}
 
