@@ -4,7 +4,7 @@ import { Monitor, Lock, Trash2, RefreshCw, RotateCcw, HelpCircle, ShieldCheck, S
 import { Layout } from '../components/Layout'
 import { Breadcrumb } from '../components/Breadcrumb'
 import { Badge } from '../components/Badge'
-import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials, type DeviceSecurityState, type DeviceConnectivityItem, type DeviceLockdownState } from '../api'
+import { api, type Device, type DeviceCompliance, type DeviceCommand, type DevicePosture, type DeviceAppInstall, type DeviceSoftwareInventory, type DeviceBitLocker, type DeviceUpdateTelemetry, type DeviceLAPSStatus, type RevealedLAPSCredentials, type DeviceSecurityState, type DeviceConnectivityItem, type DeviceLockdownState, type DeviceEndpointHardeningState } from '../api'
 import { formatResultCode, timeAgo } from '../format'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
@@ -35,6 +35,7 @@ export function DeviceDetailPage() {
   const [secState, setSecState]       = useState<DeviceSecurityState | null>(null)
   const [connItems, setConnItems]     = useState<DeviceConnectivityItem[]>([])
   const [lockState, setLockState]     = useState<DeviceLockdownState | null>(null)
+  const [hardeningState, setHardeningState] = useState<DeviceEndpointHardeningState | null>(null)
   const [updateTel, setUpdateTel]     = useState<DeviceUpdateTelemetry | null>(null)
   const [apps, setApps]               = useState<DeviceAppInstall[]>([])
   const [inventory, setInventory]     = useState<DeviceSoftwareInventory | null>(null)
@@ -111,6 +112,10 @@ export function DeviceDetailPage() {
       .then(setLockState)
       .catch(() => setLockState(null))
 
+    api.devices.hardening(id!)
+      .then(setHardeningState)
+      .catch(() => setHardeningState(null))
+
     api.updates.device(id!)
       .then(setUpdateTel)
       .catch(() => setUpdateTel(null))
@@ -137,6 +142,7 @@ export function DeviceDetailPage() {
       api.devices.security(id).then(setSecState).catch(() => {})
       api.devices.connectivity(id).then(c => setConnItems(c ?? [])).catch(() => {})
       api.devices.lockdown(id).then(setLockState).catch(() => {})
+      api.devices.hardening(id).then(setHardeningState).catch(() => {})
       api.updates.device(id).then(setUpdateTel).catch(() => {})
     }, 10000)
     return () => clearInterval(t)
@@ -839,6 +845,12 @@ export function DeviceDetailPage() {
                     <Badge
                       status="compliant"
                       label={lockState.kiosk_enforced ? 'Lockdown + Kiosk' : 'USB & DeviceLock Enforced'}
+                    />
+                  )}
+                  {hardeningState?.enforced && (
+                    <Badge
+                      status="compliant"
+                      label={`ASR & SmartScreen (${hardeningState.active_asr_count} rule${hardeningState.active_asr_count !== 1 ? 's' : ''})`}
                     />
                   )}
                 </div>

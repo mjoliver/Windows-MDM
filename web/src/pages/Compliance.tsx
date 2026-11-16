@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, UserCheck, Save, ShieldAlert, Plus, Trash2, Usb } from 'lucide-react'
+import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, UserCheck, Save, ShieldAlert, Plus, Trash2, Usb, Shield } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
-import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type EndpointSecurityPolicy, type FirewallRule, type DeviceLockdownPolicy, type Group } from '../api'
+import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type EndpointSecurityPolicy, type FirewallRule, type DeviceLockdownPolicy, type EndpointHardeningPolicy, type Group } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { useToast } from '../hooks/useToast'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
@@ -23,11 +23,13 @@ export function CompliancePage() {
   const [secPolicy, setSecPolicy] = useState<EndpointSecurityPolicy | null>(null)
   const [fwRules, setFwRules]   = useState<FirewallRule[]>([])
   const [lockdown, setLockdown] = useState<DeviceLockdownPolicy | null>(null)
+  const [hardening, setHardening] = useState<EndpointHardeningPolicy | null>(null)
   const [groups, setGroups]     = useState<Group[]>([])
   const [savingBL, setSavingBL] = useState(false)
   const [savingLAPS, setSavingLAPS] = useState(false)
   const [savingSec, setSavingSec] = useState(false)
   const [savingLock, setSavingLock] = useState(false)
+  const [savingHardening, setSavingHardening] = useState(false)
   const [fwName, setFwName]     = useState('')
   const [fwDir, setFwDir]       = useState<'IN' | 'OUT'>('IN')
   const [fwAction, setFwAction] = useState<number>(0)
@@ -49,8 +51,9 @@ export function CompliancePage() {
       api.security.policy().catch(() => null),
       api.security.listFirewallRules().catch(() => []),
       api.lockdown.policy().catch(() => null),
+      api.hardening.policy().catch(() => null),
       api.groups.list().catch(() => []),
-    ]).then(([f, d, p, bl, lp, sp, fr, lk, g]) => {
+    ]).then(([f, d, p, bl, lp, sp, fr, lk, hd, g]) => {
       setFleet(f)
       setDevices(d)
       setPosture(p)
@@ -59,6 +62,7 @@ export function CompliancePage() {
       setSecPolicy(sp)
       setFwRules(fr)
       setLockdown(lk)
+      setHardening(hd)
       setGroups(g)
     }).finally(() => setLoading(false))
   }, [])
@@ -218,6 +222,45 @@ export function CompliancePage() {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setSavingLock(false)
+    }
+  }
+
+  const applyASRPreset = (mode: 0 | 1 | 2) => {
+    if (!hardening) return
+    const next: Record<string, number> = {}
+    if (mode !== 0) {
+      for (const r of hardening.catalog) {
+        next[r.guid] = mode
+      }
+    }
+    setHardening({ ...hardening, asr_rules: next, active_asr_count: Object.keys(next).length })
+  }
+
+  const saveHardeningPolicy = async () => {
+    if (!hardening) return
+    setSavingHardening(true)
+    try {
+      const updated = await api.hardening.updatePolicy({
+        enabled: hardening.enabled,
+        asr_rules: hardening.asr_rules,
+        enable_smartscreen_shell: hardening.enable_smartscreen_shell,
+        prevent_smartscreen_override: hardening.prevent_smartscreen_override,
+        app_install_control: hardening.app_install_control,
+        submit_samples_consent: hardening.submit_samples_consent,
+        disable_local_admin_merge: hardening.disable_local_admin_merge,
+        target_all_devices: hardening.target_all_devices,
+        group_ids: hardening.group_ids,
+      })
+      setHardening(updated)
+      toast.success(
+        updated.enabled
+          ? `Defender ASR & SmartScreen hardening saved — ${updated.active_asr_count} active rule(s) queued across ${updated.enforced_devices} device(s) (${updated.commands_queued ?? 0} CSP commands).`
+          : 'Defender ASR & SmartScreen hardening disabled and retracted via <Delete>.'
+      )
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingHardening(false)
     }
   }
 
@@ -954,6 +997,166 @@ export function CompliancePage() {
                   onChange={e => setLockdown({ ...lockdown, kiosk_app_aumid: e.target.value })}
                   placeholder="Microsoft.MicrosoftEdge_8wekyb3d8bbwe!MicrosoftEdge"
                 />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Defender ASR Rules & SmartScreen Hardening */}
+      {hardening && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
+            <div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Shield size={18} color="var(--accent)" />
+                Defender Attack Surface Reduction (ASR) &amp; SmartScreen Hardening
+                <Badge status={hardening.enabled ? 'compliant' : 'unknown'} label={hardening.enabled ? `Enforced (${Object.values(hardening.asr_rules).filter(v => v > 0).length} ASR)` : 'Disabled'} />
+              </div>
+              <div style={{ fontSize: '0.8rem', opacity: 0.65, marginTop: 4 }}>
+                Enforce <code className="mono">Defender/AttackSurfaceReductionRules</code> &amp; <code className="mono">Policy/Config/SmartScreen</code> CSPs • {hardening.enforced_devices} device{hardening.enforced_devices !== 1 ? 's' : ''} enforced
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => applyASRPreset(2)}>
+                Audit All (10)
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => applyASRPreset(1)}>
+                Block All Recommended
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => applyASRPreset(0)}>
+                Clear Rules
+              </button>
+              <button className="btn btn-primary btn-sm" onClick={saveHardeningPolicy} disabled={savingHardening}>
+                <Save size={14} />
+                {savingHardening ? 'Saving…' : 'Save Hardening Policy'}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 16 }}>
+            {[
+              { key: 'enabled', title: 'Enable ASR & SmartScreen', sub: 'Enforce Defender ASR + SmartScreen CSPs', val: hardening.enabled },
+              { key: 'enable_smartscreen_shell', title: 'SmartScreen in Explorer', sub: 'Verify downloaded Win32 executables', val: hardening.enable_smartscreen_shell },
+              { key: 'prevent_smartscreen_override', title: 'Prevent User Bypass', sub: 'Block "Run anyway" on SmartScreen prompts', val: hardening.prevent_smartscreen_override },
+              { key: 'disable_local_admin_merge', title: 'Disable Local Admin Merge', sub: 'Ignore local Defender exclusion overrides', val: hardening.disable_local_admin_merge },
+              { key: 'target_all_devices', title: 'Target Entire Fleet', sub: 'Apply across all active enrolled PCs', val: hardening.target_all_devices },
+            ].map(item => (
+              <label key={item.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={item.val}
+                  onChange={e => setHardening({ ...hardening, [item.key]: e.target.checked })}
+                />
+                <div>
+                  <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>{item.title}</div>
+                  <div style={{ fontSize: '0.72rem', opacity: 0.6 }}>{item.sub}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 18 }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">App Install Control (SmartScreen)</label>
+              <select
+                className="form-input"
+                value={hardening.app_install_control}
+                onChange={e => setHardening({ ...hardening, app_install_control: Number(e.target.value) })}
+              >
+                <option value={0}>Anywhere (Standard Desktop)</option>
+                <option value={3}>Warn Before Installing Non-Store Apps</option>
+                <option value={2}>Show Recommendations</option>
+                <option value={1}>Microsoft Store Only</option>
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Defender Sample Submission</label>
+              <select
+                className="form-input"
+                value={hardening.submit_samples_consent}
+                onChange={e => setHardening({ ...hardening, submit_samples_consent: Number(e.target.value) })}
+              >
+                <option value={1}>Send Safe Samples Automatically (Recommended)</option>
+                <option value={3}>Send All Samples Automatically</option>
+                <option value={0}>Always Prompt</option>
+                <option value={2}>Never Send</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Microsoft Defender ASR Rule</th>
+                  <th>Category</th>
+                  <th style={{ width: 190 }}>Enforcement Mode</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hardening.catalog.map(rule => {
+                  const currentMode = hardening.asr_rules[rule.guid] ?? 0
+                  return (
+                    <tr key={rule.guid}>
+                      <td>
+                        <div style={{ fontWeight: 600, fontSize: '0.84rem' }}>{rule.name}</div>
+                        <div className="mono" style={{ fontSize: '0.7rem', opacity: 0.5 }}>{rule.guid}</div>
+                      </td>
+                      <td>
+                        <Badge status="unknown" label={rule.category} dot={false} />
+                      </td>
+                      <td>
+                        <select
+                          className="form-input"
+                          style={{ padding: '6px 10px', fontSize: '0.8rem' }}
+                          value={currentMode}
+                          onChange={e => {
+                            const nextMode = Number(e.target.value)
+                            const nextRules = { ...hardening.asr_rules }
+                            if (nextMode === 0) {
+                              delete nextRules[rule.guid]
+                            } else {
+                              nextRules[rule.guid] = nextMode
+                            }
+                            setHardening({ ...hardening, asr_rules: nextRules })
+                          }}
+                        >
+                          <option value={0}>Off (Not Configured)</option>
+                          <option value={2}>Audit Only (2)</option>
+                          <option value={1}>Block (1)</option>
+                          <option value={6}>Warn — Allow User Bypass (6)</option>
+                        </select>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {!hardening.target_all_devices && groups.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="form-label" style={{ marginBottom: 8 }}>Assigned Device Groups</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {groups.map(g => {
+                  const selected = hardening.group_ids.includes(g.id)
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      className={`btn btn-sm ${selected ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => {
+                        const next = selected
+                          ? hardening.group_ids.filter(x => x !== g.id)
+                          : [...hardening.group_ids, g.id]
+                        setHardening({ ...hardening, group_ids: next })
+                      }}
+                    >
+                      {g.name}
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}

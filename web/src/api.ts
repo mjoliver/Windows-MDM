@@ -581,6 +581,38 @@ export interface DeviceLockdownState {
   updated_at: string | null
 }
 
+export interface ASRRuleCatalogEntry {
+  guid: string
+  name: string
+  category: string
+  recommended_mode: number
+}
+
+export interface EndpointHardeningPolicy {
+  enabled: boolean
+  asr_rules: Record<string, number>
+  active_asr_count: number
+  enable_smartscreen_shell: boolean
+  prevent_smartscreen_override: boolean
+  app_install_control: number
+  submit_samples_consent: number
+  disable_local_admin_merge: boolean
+  target_all_devices: boolean
+  group_ids: string[]
+  enforced_devices: number
+  commands_queued?: number
+  updated_by: string
+  updated_at: string | null
+  catalog: ASRRuleCatalogEntry[]
+}
+
+export interface DeviceEndpointHardeningState {
+  device_id: string
+  enforced: boolean
+  active_asr_count: number
+  updated_at: string | null
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -619,6 +651,7 @@ export const api = {
       post<{ status: string; commands_queued: number }>(`/devices/${enc(id)}/defender/update-signatures`),
     connectivity: (id: string) => get<DeviceConnectivityItem[]>(`/devices/${enc(id)}/connectivity`),
     lockdown: (id: string) => get<DeviceLockdownState>(`/devices/${enc(id)}/lockdown`),
+    hardening: (id: string) => get<DeviceEndpointHardeningState>(`/devices/${enc(id)}/hardening`),
     pushWake: (id: string) => post<{ status: string; wns_status?: string }>(`/devices/${enc(id)}/push`),
   },
 
@@ -971,5 +1004,21 @@ export const api = {
       target_all_devices: boolean
       group_ids: string[]
     }) => put<DeviceLockdownPolicy>('/lockdown/policy', data),
+  },
+
+  // Defender ASR Rules & SmartScreen Hardening CSPs
+  hardening: {
+    policy: () => get<EndpointHardeningPolicy>('/hardening/policy'),
+    updatePolicy: (data: {
+      enabled: boolean
+      asr_rules: Record<string, number>
+      enable_smartscreen_shell: boolean
+      prevent_smartscreen_override: boolean
+      app_install_control: number
+      submit_samples_consent: number
+      disable_local_admin_merge: boolean
+      target_all_devices: boolean
+      group_ids: string[]
+    }) => put<EndpointHardeningPolicy>('/hardening/policy', data),
   },
 }
