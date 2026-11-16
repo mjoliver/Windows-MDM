@@ -56,7 +56,9 @@ func TestBulkEnrollmentTokensAndBootstrapScriptAPI(t *testing.T) {
 	// 4. Download bootstrap.ps1
 	wPS := httptest.NewRecorder()
 	h.HandleDownloadEnrollmentBootstrap(wPS, withDeviceAndKeyRoute("GET", "/api/enrollment/bootstrap.ps1", "", "", "", "admin@lab.local"))
-	if wPS.Code != http.StatusOK || !strings.Contains(wPS.Body.String(), "https://enterpriseenrollment.lab.local/pki/ca.pem") {
+	if wPS.Code != http.StatusOK ||
+		!strings.Contains(wPS.Body.String(), "'https://enterpriseenrollment.lab.local'") ||
+		!strings.Contains(wPS.Body.String(), "$ServerUrl/pki/ca.pem") {
 		t.Fatalf("unexpected bootstrap.ps1 response: code=%d body=%s", wPS.Code, wPS.Body.String())
 	}
 
