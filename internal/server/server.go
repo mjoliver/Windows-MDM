@@ -31,6 +31,7 @@ import (
 	"github.com/latchzmdm/latchz/internal/pki"
 	"github.com/latchzmdm/latchz/internal/policy"
 	"github.com/latchzmdm/latchz/internal/vault"
+	"github.com/latchzmdm/latchz/internal/webhooks"
 	"github.com/latchzmdm/latchz/internal/wns"
 )
 
@@ -98,8 +99,10 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	apiHandler.SetPackagesDir(cfg.MDM.PackagesDir)
 	apiHandler.SetDeviceAuth(ca.TLSPool(), proxyCertHeader)
 	apiHandler.SetCA(ca)
+	var secretVault *vault.Vault
 	if len(cfg.Server.MasterSecret) >= vault.MinSecretLen {
-		secretVault, err := vault.New(cfg.Server.MasterSecret)
+		var err error
+		secretVault, err = vault.New(cfg.Server.MasterSecret)
 		if err != nil {
 			return nil, fmt.Errorf("initialising secret vault: %w", err)
 		}
@@ -109,6 +112,8 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	} else {
 		policy.SetClientCertHandlers(nil, nil)
 	}
+	webhookDispatcher := webhooks.NewDispatcher(database.DB, secretVault)
+	apiHandler.SetWebhooks(webhookDispatcher)
 
 	s := &Server{
 		cfg:        cfg,
@@ -125,6 +130,42 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	mdmHandler.SetPollSchedule(cfg.MDM.PollIntervalMinutes, cfg.MDM.PollOnLogin)
 	mdmHandler.SetDeviceUpdatedHook(func(devID string) {
 		policy.ReconcileDynamicGroupsForDevice(database.DB, devID)
+	})
+	mdmHandler.SetComplianceHook(func(devID, prevStatus, currStatus string) {
+		if currStatus != "non_compliant" {
+			return
+		}
+		if prevStatus != "non_compliant" {
+			webhookDispatcher.EmitAsync(webhooks.Event{
+				Type:     "compliance.non_compliant",
+				TargetID: devID,
+				Summary:  fmt.Sprintf("Device %s drifted to non_compliant (was %s)", devID, prevStatus),
+				Data: map[string]interface{}{
+					"previous_status": prevStatus,
+					"current_status":  currStatus,
+				},
+			})
+		}
+		if webhooks.IsAutoRemediateEnabled(database.DB) {
+			policy.ApplyDevice(database.DB, devID)
+			webhooks.RecordAutoRemediation(database.DB)
+			webhookDispatcher.EmitAsync(webhooks.Event{
+				Type:     "compliance.auto_remediated",
+				TargetID: devID,
+				Summary:  fmt.Sprintf("Auto-remediation re-queued desired CSP settings for drifted device %s", devID),
+			})
+		}
+	})
+	enrollHandler.SetEnrolledHook(func(devID, userEmail, devName, _ string) {
+		webhookDispatcher.EmitAsync(webhooks.Event{
+			Type:     "device.enroll",
+			Actor:    userEmail,
+			TargetID: devID,
+			Summary:  fmt.Sprintf("Device %q (%s) enrolled by %s", devName, devID, userEmail),
+			Data: map[string]interface{}{
+				"device_name": devName,
+			},
+		})
 	})
 	policy.SetGroupAppReconciler(apiHandler.ReconcileDeviceGroupApps)
 	if cfg.MDM.WNS.Enabled() {
@@ -433,6 +474,17 @@ func (s *Server) routes() {
 			r.With(admin).Put("/lockdown/policy", s.api.HandleUpdateLockdownPolicy)
 			r.Get("/hardening/policy", s.api.HandleGetHardeningPolicy)
 			r.With(admin).Put("/hardening/policy", s.api.HandleUpdateHardeningPolicy)
+			r.Get("/compliance/automation", s.api.HandleGetComplianceAutomation)
+			r.With(admin).Put("/compliance/automation", s.api.HandleUpdateComplianceAutomation)
+
+			// Outbound SIEM / Chat Webhooks & Fleet Exports
+			r.Get("/webhooks", s.api.HandleListWebhooks)
+			r.With(admin).Post("/webhooks", s.api.HandleCreateWebhook)
+			r.With(admin).Delete("/webhooks/{id}", s.api.HandleDeleteWebhook)
+			r.With(admin).Post("/webhooks/{id}/test", s.api.HandleTestWebhook)
+			r.Get("/webhooks/deliveries", s.api.HandleListWebhookDeliveries)
+			r.Get("/export/devices", s.api.HandleExportDevices)
+			r.Get("/export/software", s.api.HandleExportSoftware)
 
 			// Administration: Users & Audit Log
 			r.With(admin).Get("/users", s.api.HandleListUsers)

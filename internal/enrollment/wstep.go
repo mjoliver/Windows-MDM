@@ -212,6 +212,7 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 		//     authenticate by that certificate and re-issue for the same device.
 		var userEmail string
 		var renewalDeviceID string
+		var rawEnrollmentToken string
 		hasToken := env.Header.Security != nil && env.Header.Security.BinarySecurityToken != nil
 
 		if hasToken {
@@ -227,6 +228,7 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 				return
 			}
 			userEmail = email
+			rawEnrollmentToken = strings.TrimSpace(tokenStr)
 		} else if id, rerr := devauth.Resolve(db, ca.TLSPool(), r, ""); rerr == nil {
 			// Renewal MINTS a new certificate, so it requires real proof-of-
 			// possession of the existing key. We therefore accept renewal only over
@@ -291,6 +293,9 @@ func (h *Handler) HandleWSTEP(ca *pki.CA, db *sql.DB, validateToken func(token s
 				INSERT INTO audit_log (user_email, action, target_type, target_id, details, ip_address)
 				VALUES (?, 'device.enroll', 'device', ?, ?, ?)
 			`), userEmail, actualDeviceID, fmt.Sprintf(`{"device_name":%q,"hardware_id":%q}`, info.DeviceName, info.HardwareID), r.RemoteAddr)
+			if h.onEnrolled != nil {
+				h.onEnrolled(actualDeviceID, userEmail, info.DeviceName, rawEnrollmentToken)
+			}
 		}
 
 		// ── Step 5: Sign the CSR with our CA ──────────────────────────────

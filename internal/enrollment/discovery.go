@@ -28,6 +28,7 @@ type Handler struct {
 	pollIntervalMinutes int
 	pollOnLogin         bool
 	wnsPFN              string
+	onEnrolled          func(deviceID, userEmail, deviceName, rawToken string)
 }
 
 // NewHandler creates an enrollment handler for the given domain.
@@ -54,6 +55,12 @@ func (h *Handler) SetPollSchedule(intervalMinutes int, pollOnLogin bool) {
 // provisioned into DMClient/Provider/LatchzMDM/Push/PFN during WSTEP enrollment.
 func (h *Handler) SetWNSPFN(pfn string) {
 	h.wnsPFN = strings.TrimSpace(pfn)
+}
+
+// SetEnrolledHook registers an optional callback invoked after a new or re-enrolled
+// device completes WSTEP initial enrollment (not ROBO cert renewal).
+func (h *Handler) SetEnrolledHook(fn func(deviceID, userEmail, deviceName, rawToken string)) {
+	h.onEnrolled = fn
 }
 
 // SetMDMHost overrides the host[:port] advertised for mTLS device endpoints

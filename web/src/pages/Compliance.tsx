@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, UserCheck, Save, ShieldAlert, Plus, Trash2, Usb, Shield } from 'lucide-react'
+import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound, UserCheck, Save, ShieldAlert, Plus, Trash2, Usb, Shield, Bell, Send } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
-import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type EndpointSecurityPolicy, type FirewallRule, type DeviceLockdownPolicy, type EndpointHardeningPolicy, type Group } from '../api'
+import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type EndpointSecurityPolicy, type FirewallRule, type DeviceLockdownPolicy, type EndpointHardeningPolicy, type WebhookEndpoint, type WebhookDeliveryItem, type ComplianceAutomationSettings, type Group } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { useToast } from '../hooks/useToast'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
@@ -24,6 +24,15 @@ export function CompliancePage() {
   const [fwRules, setFwRules]   = useState<FirewallRule[]>([])
   const [lockdown, setLockdown] = useState<DeviceLockdownPolicy | null>(null)
   const [hardening, setHardening] = useState<EndpointHardeningPolicy | null>(null)
+  const [automation, setAutomation] = useState<ComplianceAutomationSettings | null>(null)
+  const [webhooks, setWebhooks] = useState<WebhookEndpoint[]>([])
+  const [whDeliveries, setWhDeliveries] = useState<WebhookDeliveryItem[]>([])
+  const [whName, setWhName]     = useState('')
+  const [whUrl, setWhUrl]       = useState('')
+  const [whFormat, setWhFormat] = useState<'json' | 'slack' | 'teams' | 'discord'>('json')
+  const [whSecret, setWhSecret] = useState('')
+  const [addingWh, setAddingWh] = useState(false)
+  const [testingWhId, setTestingWhId] = useState<string | null>(null)
   const [groups, setGroups]     = useState<Group[]>([])
   const [savingBL, setSavingBL] = useState(false)
   const [savingLAPS, setSavingLAPS] = useState(false)
@@ -52,8 +61,11 @@ export function CompliancePage() {
       api.security.listFirewallRules().catch(() => []),
       api.lockdown.policy().catch(() => null),
       api.hardening.policy().catch(() => null),
+      api.webhooks.automation().catch(() => null),
+      api.webhooks.list().catch(() => ({ endpoints: [], supported_events: [] })),
+      api.webhooks.deliveries().catch(() => []),
       api.groups.list().catch(() => []),
-    ]).then(([f, d, p, bl, lp, sp, fr, lk, hd, g]) => {
+    ]).then(([f, d, p, bl, lp, sp, fr, lk, hd, auto, wh, whDeliv, g]) => {
       setFleet(f)
       setDevices(d)
       setPosture(p)
@@ -63,6 +75,9 @@ export function CompliancePage() {
       setFwRules(fr)
       setLockdown(lk)
       setHardening(hd)
+      setAutomation(auto)
+      setWebhooks(wh.endpoints)
+      setWhDeliveries(whDeliv)
       setGroups(g)
     }).finally(() => setLoading(false))
   }, [])
@@ -261,6 +276,73 @@ export function CompliancePage() {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setSavingHardening(false)
+    }
+  }
+
+  const toggleAutoRemediate = async (next: boolean) => {
+    try {
+      const updated = await api.webhooks.updateAutomation(next)
+      setAutomation(updated)
+      toast.success(
+        next
+          ? 'Compliance Auto-Remediation enabled — drifted CSP settings will re-queue automatically on OMA-DM check-in.'
+          : 'Compliance Auto-Remediation disabled.'
+      )
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const addWebhook = async () => {
+    if (!whName.trim() || !whUrl.trim()) {
+      toast.error('Enter both a webhook name and destination URL.')
+      return
+    }
+    setAddingWh(true)
+    try {
+      const created = await api.webhooks.create({
+        name: whName.trim(),
+        url: whUrl.trim(),
+        format: whFormat,
+        secret: whSecret.trim(),
+      })
+      setWebhooks(prev => [created, ...prev])
+      setWhName('')
+      setWhUrl('')
+      setWhSecret('')
+      toast.success(`Created ${created.format.toUpperCase()} webhook '${created.name}'.`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAddingWh(false)
+    }
+  }
+
+  const sendTestWebhook = async (ep: WebhookEndpoint) => {
+    setTestingWhId(ep.id)
+    try {
+      const res = await api.webhooks.test(ep.id)
+      const latest = await api.webhooks.deliveries().catch(() => [])
+      setWhDeliveries(latest)
+      if (res.success) {
+        toast.success(`Test ping delivered to '${ep.name}' (HTTP ${res.status_code}).`)
+      } else {
+        toast.error(`Test ping failed for '${ep.name}': ${res.error || `HTTP ${res.status_code}`}`)
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTestingWhId(null)
+    }
+  }
+
+  const removeWebhook = async (ep: WebhookEndpoint) => {
+    try {
+      await api.webhooks.delete(ep.id)
+      setWebhooks(prev => prev.filter(x => x.id !== ep.id))
+      toast.success(`Deleted webhook '${ep.name}'.`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -1162,6 +1244,149 @@ export function CompliancePage() {
           )}
         </div>
       )}
+
+      {/* Compliance Auto-Remediation & SIEM / Chat Event Webhooks */}
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
+          <div>
+            <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Bell size={18} color="var(--accent)" />
+              Auto-Remediation &amp; SIEM / Chat Event Webhooks
+              <Badge
+                status={automation?.auto_remediate ? 'compliant' : 'unknown'}
+                label={automation?.auto_remediate ? 'Auto-Remediate Active' : 'Notify Only'}
+              />
+            </div>
+            <div style={{ fontSize: '0.8rem', opacity: 0.65, marginTop: 4 }}>
+              Automatically re-apply drifted OMA-DM settings on check-in ({automation?.remediation_count ?? 0} remediation{automation?.remediation_count === 1 ? '' : 's'} performed) and stream HMAC-SHA256 signed events (<code className="mono">X-Latchz-Signature-256</code>) to SIEM, Slack, Teams, or Discord
+            </div>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--md-sys-color-outline-variant)', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={automation?.auto_remediate ?? false}
+              onChange={e => toggleAutoRemediate(e.target.checked)}
+            />
+            <span style={{ fontSize: '0.84rem', fontWeight: 600 }}>Auto-Remediate Drifted PCs</span>
+          </label>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 2fr 140px 1.4fr auto', gap: 10, alignItems: 'end', marginBottom: 16 }}>
+          <div>
+            <label className="form-label">Endpoint Name</label>
+            <input
+              className="form-input"
+              placeholder="e.g. SOC Slack #mdm-alerts"
+              value={whName}
+              onChange={e => setWhName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="form-label">Webhook URL</label>
+            <input
+              className="form-input mono"
+              placeholder="https://hooks.slack.com/services/..."
+              value={whUrl}
+              onChange={e => setWhUrl(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="form-label">Payload Format</label>
+            <select className="form-input" value={whFormat} onChange={e => setWhFormat(e.target.value as 'json' | 'slack' | 'teams' | 'discord')}>
+              <option value="json">JSON (SIEM)</option>
+              <option value="slack">Slack</option>
+              <option value="teams">MS Teams</option>
+              <option value="discord">Discord</option>
+            </select>
+          </div>
+          <div>
+            <label className="form-label">HMAC Signing Secret (Optional)</label>
+            <input
+              type="password"
+              className="form-input mono"
+              placeholder="whsec_..."
+              value={whSecret}
+              onChange={e => setWhSecret(e.target.value)}
+            />
+          </div>
+          <button className="btn btn-primary" onClick={addWebhook} disabled={addingWh}>
+            <Plus size={14} />
+            {addingWh ? 'Adding…' : 'Add Webhook'}
+          </button>
+        </div>
+
+        {webhooks.length > 0 && (
+          <div className="table-wrap" style={{ marginBottom: whDeliveries.length > 0 ? 16 : 0 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Destination URL</th>
+                  <th>Format</th>
+                  <th>HMAC-SHA256</th>
+                  <th style={{ textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {webhooks.map(ep => (
+                  <tr key={ep.id}>
+                    <td style={{ fontWeight: 600 }}>{ep.name}</td>
+                    <td className="mono" style={{ fontSize: '0.76rem', opacity: 0.75 }}>{ep.url}</td>
+                    <td><Badge status="unknown" label={ep.format.toUpperCase()} dot={false} /></td>
+                    <td>
+                      <Badge
+                        status={ep.has_secret ? 'compliant' : 'unknown'}
+                        label={ep.has_secret ? 'Vault Sealed' : 'Unsigned'}
+                        dot={false}
+                      />
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <div style={{ display: 'inline-flex', gap: 6 }}>
+                        <button
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => sendTestWebhook(ep)}
+                          disabled={testingWhId === ep.id}
+                        >
+                          <Send size={12} />
+                          {testingWhId === ep.id ? 'Pinging…' : 'Test Ping'}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-secondary"
+                          style={{ color: 'var(--md-sys-color-error)' }}
+                          onClick={() => removeWebhook(ep)}
+                          title="Delete webhook"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {whDeliveries.length > 0 && (
+          <div style={{ fontSize: '0.78rem', opacity: 0.8 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>Recent Webhook Deliveries</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {whDeliveries.slice(0, 6).map(d => (
+                <span
+                  key={d.id}
+                  className="mono"
+                  style={{ padding: '4px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--md-sys-color-outline-variant)' }}
+                >
+                  {d.webhook_name} • {d.event_type} •{' '}
+                  <strong style={{ color: d.success ? 'var(--success)' : 'var(--danger)' }}>
+                    {d.status_code > 0 ? `HTTP ${d.status_code}` : d.error || 'ERR'}
+                  </strong>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Per-device table */}
       <div className="table-wrap">

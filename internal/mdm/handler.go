@@ -32,16 +32,17 @@ type Handler struct {
 	// proxy (tls.mode=none). Empty means only direct mTLS is accepted.
 	proxyCertHeader string
 
-	pollMu              sync.Mutex
-	pollConfigured      bool
-	pollIntervalMinutes int
-	pollOnLogin         bool
-	pollSynced          map[string]string
-	postureSynced       map[string]bool
-	inventorySyncedAt   map[string]time.Time
-	wnsPFN              string
-	wnsPFNSynced        map[string]string
-	onDeviceUpdated     func(deviceID string)
+	pollMu                sync.Mutex
+	pollConfigured        bool
+	pollIntervalMinutes   int
+	pollOnLogin           bool
+	pollSynced            map[string]string
+	postureSynced         map[string]bool
+	inventorySyncedAt     map[string]time.Time
+	wnsPFN                string
+	wnsPFNSynced          map[string]string
+	onDeviceUpdated       func(deviceID string)
+	onComplianceEvaluated func(deviceID, prevStatus, currStatus string)
 }
 
 // NewHandler creates an OMA-DM handler. proxyCertHeader is "" unless a trusted
@@ -104,6 +105,14 @@ func (h *Handler) SetVault(v *vault.Vault) {
 func (h *Handler) SetDeviceUpdatedHook(fn func(deviceID string)) {
 	h.pollMu.Lock()
 	h.onDeviceUpdated = fn
+	h.pollMu.Unlock()
+}
+
+// SetComplianceHook registers an optional callback invoked whenever OMA-DM Results
+// evaluate a device's compliance_status (used for SIEM webhooks and auto-remediation).
+func (h *Handler) SetComplianceHook(fn func(deviceID, prevStatus, currStatus string)) {
+	h.pollMu.Lock()
+	h.onComplianceEvaluated = fn
 	h.pollMu.Unlock()
 }
 
@@ -434,13 +443,24 @@ func (h *Handler) HandleOMADM(w http.ResponseWriter, r *http.Request) {
 	h.processStatuses(deviceID, sess, incoming.SyncBody.Statuses)
 
 	// ── Step 5: Process Results (device values, responds to our Gets) ─────
-	updateDeviceFromResults(h.db, deviceID, sess, incoming.SyncBody.Results)
 	if len(incoming.SyncBody.Results) > 0 {
+		var prevStatus string
+		_ = h.db.QueryRow(dbpkg.Rebind(`SELECT compliance_status FROM devices WHERE id = ?`), deviceID).Scan(&prevStatus)
+
+		updateDeviceFromResults(h.db, deviceID, sess, incoming.SyncBody.Results)
+
+		var currStatus string
+		_ = h.db.QueryRow(dbpkg.Rebind(`SELECT compliance_status FROM devices WHERE id = ?`), deviceID).Scan(&currStatus)
+
 		h.pollMu.Lock()
 		hook := h.onDeviceUpdated
+		compHook := h.onComplianceEvaluated
 		h.pollMu.Unlock()
 		if hook != nil {
 			hook(deviceID)
+		}
+		if compHook != nil {
+			compHook(deviceID, prevStatus, currStatus)
 		}
 	}
 

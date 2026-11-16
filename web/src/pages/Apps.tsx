@@ -993,7 +993,13 @@ export function AppsPage() {
           <div style={{ opacity: 0.7, fontSize: '0.95rem' }}>
             Drag & drop local <code>.msi</code> installers, import from WinGet, or register HTTPS URLs to deploy silently via Windows <code>EnterpriseDesktopAppManagement</code> CSP.
           </div>
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <a className="btn btn-secondary" href="/api/export/software?format=csv" download>
+              <Download size={15} /> Export Inventory CSV
+            </a>
+            <a className="btn btn-secondary" href="/api/export/software?format=json" download>
+              <Download size={15} /> Export JSON
+            </a>
             <button
               className="btn btn-secondary"
               onClick={() => { setDroppedFile(null); setCreateMode('winget'); setCreating(true) }}

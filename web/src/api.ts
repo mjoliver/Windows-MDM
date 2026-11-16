@@ -613,6 +613,38 @@ export interface DeviceEndpointHardeningState {
   updated_at: string | null
 }
 
+export interface WebhookEndpoint {
+  id: string
+  name: string
+  url: string
+  format: 'json' | 'slack' | 'teams' | 'discord'
+  has_secret: boolean
+  events: string[]
+  enabled: boolean
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WebhookDeliveryItem {
+  id: number
+  webhook_id: string
+  webhook_name: string
+  event_type: string
+  status_code: number
+  success: boolean
+  error: string
+  delivered_at: string
+}
+
+export interface ComplianceAutomationSettings {
+  auto_remediate: boolean
+  remediation_count: number
+  last_remediated_at: string | null
+  updated_by: string
+  updated_at: string | null
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -1020,5 +1052,27 @@ export const api = {
       target_all_devices: boolean
       group_ids: string[]
     }) => put<EndpointHardeningPolicy>('/hardening/policy', data),
+  },
+
+  // Outbound SIEM / Chat Webhooks, Auto-Remediation & Fleet Exports
+  webhooks: {
+    list: () => get<{ endpoints: WebhookEndpoint[]; supported_events: string[] }>('/webhooks'),
+    create: (data: {
+      name: string
+      url: string
+      format: 'json' | 'slack' | 'teams' | 'discord'
+      secret?: string
+      events?: string[]
+      enabled?: boolean
+    }) => post<WebhookEndpoint>('/webhooks', data),
+    delete: (id: string) => del<{ deleted: boolean; id: string }>(`/webhooks/${enc(id)}`),
+    test: (id: string) =>
+      post<{ webhook_id: string; event_type: string; status_code: number; success: boolean; error?: string; delivered_at: string }>(
+        `/webhooks/${enc(id)}/test`
+      ),
+    deliveries: () => get<WebhookDeliveryItem[]>('/webhooks/deliveries'),
+    automation: () => get<ComplianceAutomationSettings>('/compliance/automation'),
+    updateAutomation: (autoRemediate: boolean) =>
+      put<ComplianceAutomationSettings>('/compliance/automation', { auto_remediate: autoRemediate }),
   },
 }

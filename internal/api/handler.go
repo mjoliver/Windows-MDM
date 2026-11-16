@@ -15,6 +15,7 @@ import (
 	"github.com/latchzmdm/latchz/internal/pki"
 	"github.com/latchzmdm/latchz/internal/policy"
 	"github.com/latchzmdm/latchz/internal/vault"
+	"github.com/latchzmdm/latchz/internal/webhooks"
 	"github.com/latchzmdm/latchz/internal/winget"
 	"github.com/latchzmdm/latchz/internal/wns"
 )
@@ -25,6 +26,7 @@ type Handler struct {
 	wns             *wns.Client
 	vault           *vault.Vault
 	ca              *pki.CA
+	webhooks        *webhooks.Dispatcher
 	winget          *winget.Client
 	deviceCAPool    *x509.CertPool
 	proxyCertHeader string
@@ -85,6 +87,11 @@ func (h *Handler) SetVault(v *vault.Vault) {
 // PKCS#12 client authentication certificates via PFXCertInstall CSP.
 func (h *Handler) SetCA(ca *pki.CA) {
 	h.ca = ca
+}
+
+// SetWebhooks attaches the outbound webhook dispatcher for SIEM & chat alerts.
+func (h *Handler) SetWebhooks(d *webhooks.Dispatcher) {
+	h.webhooks = d
 }
 
 // SetDeviceAuth configures X.509 client-certificate trust so enrolled devices

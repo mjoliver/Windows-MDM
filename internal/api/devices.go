@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/mdm"
+	"github.com/latchzmdm/latchz/internal/webhooks"
 )
 
 // Device is the JSON representation of an enrolled device.
@@ -533,6 +534,22 @@ func (h *Handler) audit(r *http.Request, actor, action, targetType, targetID, de
 		INSERT INTO audit_log (user_email, action, target_type, target_id, details, ip_address)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`), actor, action, targetType, targetID, details, r.RemoteAddr)
+
+	if h.webhooks != nil {
+		switch action {
+		case "bitlocker.reveal_key", "laps.reveal_password", "device.retire", "device.wipe":
+			h.webhooks.EmitAsync(webhooks.Event{
+				Type:     action,
+				Actor:    actor,
+				TargetID: targetID,
+				Summary:  fmt.Sprintf("%s triggered by %s on %s %s", action, actor, targetType, targetID),
+				Data: map[string]interface{}{
+					"target_type": targetType,
+					"details":     details,
+				},
+			})
+		}
+	}
 }
 
 // keep imports used

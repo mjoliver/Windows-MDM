@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Monitor, RefreshCw } from 'lucide-react'
+import { Monitor, RefreshCw, Download } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
 import { api, type Device } from '../api'
@@ -36,10 +36,20 @@ export function DevicesPage() {
           <h1>Devices</h1>
           <p>{devices.length} enrolled device{devices.length !== 1 ? 's' : ''}</p>
         </div>
-        <button className="btn btn-secondary" onClick={load} disabled={loading}>
-          <RefreshCw size={14} className={loading ? 'spin' : ''} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <a className="btn btn-secondary" href="/api/export/devices?format=csv" download>
+            <Download size={14} />
+            Export CSV
+          </a>
+          <a className="btn btn-secondary" href="/api/export/devices?format=json" download>
+            <Download size={14} />
+            Export JSON
+          </a>
+          <button className="btn btn-secondary" onClick={load} disabled={loading}>
+            <RefreshCw size={14} className={loading ? 'spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className="table-wrap">
