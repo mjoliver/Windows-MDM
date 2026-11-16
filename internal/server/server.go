@@ -500,6 +500,8 @@ func (s *Server) routes() {
 			r.With(admin).Put("/lockdown/policy", s.api.HandleUpdateLockdownPolicy)
 			r.Get("/hardening/policy", s.api.HandleGetHardeningPolicy)
 			r.With(admin).Put("/hardening/policy", s.api.HandleUpdateHardeningPolicy)
+			r.Get("/experience/policy", s.api.HandleGetExperiencePolicy)
+			r.With(admin).Put("/experience/policy", s.api.HandleUpdateExperiencePolicy)
 			r.Get("/compliance/automation", s.api.HandleGetComplianceAutomation)
 			r.With(admin).Put("/compliance/automation", s.api.HandleUpdateComplianceAutomation)
 

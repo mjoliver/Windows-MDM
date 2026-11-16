@@ -704,6 +704,27 @@ export interface PKISummary {
   revoked_certs: number
 }
 
+export interface DesktopExperiencePolicy {
+  enabled: boolean
+  telemetry_level: number
+  disable_advertising_id: boolean
+  block_tailored_experiences: boolean
+  disable_widgets_news: boolean
+  edge_smartscreen_enabled: boolean
+  edge_prevent_ss_override: boolean
+  edge_smartscreen_pua: boolean
+  edge_block_password_manager: boolean
+  edge_typosquatting_checker: boolean
+  desktop_wallpaper_url: string
+  lockscreen_image_url: string
+  target_all_devices: boolean
+  group_ids: string[]
+  enforced_devices: number
+  commands_queued?: number
+  updated_by: string
+  updated_at: string | null
+}
+
 export interface IssuedCertificateItem {
   id: number
   cert_type: string
@@ -1138,6 +1159,27 @@ export const api = {
       target_all_devices: boolean
       group_ids: string[]
     }) => put<EndpointHardeningPolicy>('/hardening/policy', data),
+  },
+
+  // Windows 11 Privacy / Debloat, Corporate Branding & Edge Browser Baseline CSPs
+  experience: {
+    policy: () => get<DesktopExperiencePolicy>('/experience/policy'),
+    updatePolicy: (data: {
+      enabled: boolean
+      telemetry_level: number
+      disable_advertising_id: boolean
+      block_tailored_experiences: boolean
+      disable_widgets_news: boolean
+      edge_smartscreen_enabled: boolean
+      edge_prevent_ss_override: boolean
+      edge_smartscreen_pua: boolean
+      edge_block_password_manager: boolean
+      edge_typosquatting_checker: boolean
+      desktop_wallpaper_url: string
+      lockscreen_image_url: string
+      target_all_devices: boolean
+      group_ids: string[]
+    }) => put<DesktopExperiencePolicy>('/experience/policy', data),
   },
 
   // Outbound SIEM / Chat Webhooks, Auto-Remediation & Fleet Exports

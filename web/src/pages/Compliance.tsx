@@ -3,7 +3,7 @@ import { CheckSquare, AlertTriangle, HelpCircle, Monitor, ShieldCheck, KeyRound,
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
-import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type EndpointSecurityPolicy, type FirewallRule, type DeviceLockdownPolicy, type EndpointHardeningPolicy, type WebhookEndpoint, type WebhookDeliveryItem, type ComplianceAutomationSettings, type Group } from '../api'
+import { api, type FleetCompliance, type Device, type FleetPostureSummary, type BitLockerPolicy, type LAPSPolicy, type EndpointSecurityPolicy, type FirewallRule, type DeviceLockdownPolicy, type EndpointHardeningPolicy, type DesktopExperiencePolicy, type WebhookEndpoint, type WebhookDeliveryItem, type ComplianceAutomationSettings, type Group } from '../api'
 import { EmptyState } from '../components/EmptyState'
 import { useToast } from '../hooks/useToast'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
@@ -24,6 +24,8 @@ export function CompliancePage() {
   const [fwRules, setFwRules]   = useState<FirewallRule[]>([])
   const [lockdown, setLockdown] = useState<DeviceLockdownPolicy | null>(null)
   const [hardening, setHardening] = useState<EndpointHardeningPolicy | null>(null)
+  const [experience, setExperience] = useState<DesktopExperiencePolicy | null>(null)
+  const [savingExperience, setSavingExperience] = useState(false)
   const [automation, setAutomation] = useState<ComplianceAutomationSettings | null>(null)
   const [webhooks, setWebhooks] = useState<WebhookEndpoint[]>([])
   const [whDeliveries, setWhDeliveries] = useState<WebhookDeliveryItem[]>([])
@@ -61,11 +63,12 @@ export function CompliancePage() {
       api.security.listFirewallRules().catch(() => []),
       api.lockdown.policy().catch(() => null),
       api.hardening.policy().catch(() => null),
+      api.experience.policy().catch(() => null),
       api.webhooks.automation().catch(() => null),
       api.webhooks.list().catch(() => ({ endpoints: [], supported_events: [] })),
       api.webhooks.deliveries().catch(() => []),
       api.groups.list().catch(() => []),
-    ]).then(([f, d, p, bl, lp, sp, fr, lk, hd, auto, wh, whDeliv, g]) => {
+    ]).then(([f, d, p, bl, lp, sp, fr, lk, hd, exp, auto, wh, whDeliv, g]) => {
       setFleet(f)
       setDevices(d)
       setPosture(p)
@@ -75,6 +78,7 @@ export function CompliancePage() {
       setFwRules(fr)
       setLockdown(lk)
       setHardening(hd)
+      setExperience(exp)
       setAutomation(auto)
       setWebhooks(wh.endpoints)
       setWhDeliveries(whDeliv)
@@ -1387,6 +1391,176 @@ export function CompliancePage() {
           </div>
         )}
       </div>
+
+      {/* Windows 11 Privacy / Debloat, Corporate Branding & Edge Browser Baseline */}
+      {experience && (
+        <div className="card" style={{ marginBottom: 24, padding: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16, marginBottom: 18 }}>
+            <div>
+              <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Monitor size={18} />
+                Windows 11 Privacy / Debloat, Edge Security &amp; Branding CSP
+              </div>
+              <div style={{ fontSize: '0.82rem', opacity: 0.72, marginTop: 4 }}>
+                Agentless <code className="mono">Policy/Config/System</code>, <code className="mono">Privacy</code>, <code className="mono">Dsh</code> (Widgets), inbox <code className="mono">microsoft_edge</code> ADMX baseline, and optional Enterprise wallpaper/lockscreen URLs • Enforced on <strong>{experience.enforced_devices}</strong> device(s)
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.86rem', fontWeight: 600, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={experience.enabled}
+                  onChange={e => setExperience({ ...experience, enabled: e.target.checked })}
+                />
+                Enforce Baseline
+              </label>
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={savingExperience}
+                onClick={async () => {
+                  setSavingExperience(true)
+                  try {
+                    const saved = await api.experience.updatePolicy({
+                      enabled: experience.enabled,
+                      telemetry_level: experience.telemetry_level,
+                      disable_advertising_id: experience.disable_advertising_id,
+                      block_tailored_experiences: experience.block_tailored_experiences,
+                      disable_widgets_news: experience.disable_widgets_news,
+                      edge_smartscreen_enabled: experience.edge_smartscreen_enabled,
+                      edge_prevent_ss_override: experience.edge_prevent_ss_override,
+                      edge_smartscreen_pua: experience.edge_smartscreen_pua,
+                      edge_block_password_manager: experience.edge_block_password_manager,
+                      edge_typosquatting_checker: experience.edge_typosquatting_checker,
+                      desktop_wallpaper_url: experience.desktop_wallpaper_url,
+                      lockscreen_image_url: experience.lockscreen_image_url,
+                      target_all_devices: experience.target_all_devices,
+                      group_ids: experience.group_ids,
+                    })
+                    setExperience(saved)
+                    toast.success(`Saved Windows Privacy & Edge policy (${saved.commands_queued ?? 0} OMA-DM command(s) queued).`)
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : String(e))
+                  } finally {
+                    setSavingExperience(false)
+                  }
+                }}
+              >
+                <Save size={14} />
+                {savingExperience ? 'Saving…' : 'Save & Push'}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontSize: '0.78rem', fontWeight: 700, opacity: 0.7 }}>WINDOWS 11 PRIVACY &amp; DEBLOAT</div>
+              <label className="form-label" style={{ marginBottom: 0 }}>
+                Diagnostic Telemetry Level
+                <select
+                  className="form-input"
+                  style={{ marginTop: 4 }}
+                  value={experience.telemetry_level}
+                  onChange={e => setExperience({ ...experience, telemetry_level: Number(e.target.value) })}
+                >
+                  <option value={1}>1 — Required / Basic Only (Pro &amp; Enterprise)</option>
+                  <option value={0}>0 — Security Off (Enterprise / Education SKU)</option>
+                  <option value={3}>3 — Optional / Full Diagnostic Data</option>
+                </select>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
+                <input
+                  type="checkbox"
+                  checked={experience.disable_advertising_id}
+                  onChange={e => setExperience({ ...experience, disable_advertising_id: e.target.checked })}
+                />
+                Block Windows Advertising ID (<code className="mono">DisableAdvertisingId</code>)
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
+                <input
+                  type="checkbox"
+                  checked={experience.block_tailored_experiences}
+                  onChange={e => setExperience({ ...experience, block_tailored_experiences: e.target.checked })}
+                />
+                Block Tailored Ads &amp; Diagnostic Tips
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
+                <input
+                  type="checkbox"
+                  checked={experience.disable_widgets_news}
+                  onChange={e => setExperience({ ...experience, disable_widgets_news: e.target.checked })}
+                />
+                Disable Taskbar Widgets &amp; MSN News Feed (<code className="mono">Dsh</code>)
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontSize: '0.78rem', fontWeight: 700, opacity: 0.7 }}>MICROSOFT EDGE SECURITY BASELINE</div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
+                <input
+                  type="checkbox"
+                  checked={experience.edge_smartscreen_enabled}
+                  onChange={e => setExperience({ ...experience, edge_smartscreen_enabled: e.target.checked })}
+                />
+                Enforce Edge Defender SmartScreen
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
+                <input
+                  type="checkbox"
+                  checked={experience.edge_prevent_ss_override}
+                  onChange={e => setExperience({ ...experience, edge_prevent_ss_override: e.target.checked })}
+                />
+                Prevent Phishing / Malware Warning Bypass
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
+                <input
+                  type="checkbox"
+                  checked={experience.edge_smartscreen_pua}
+                  onChange={e => setExperience({ ...experience, edge_smartscreen_pua: e.target.checked })}
+                />
+                Block Potentially Unwanted Apps (PUA) in Edge
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
+                <input
+                  type="checkbox"
+                  checked={experience.edge_typosquatting_checker}
+                  onChange={e => setExperience({ ...experience, edge_typosquatting_checker: e.target.checked })}
+                />
+                Enable Edge Typosquatting URL Protection
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
+                <input
+                  type="checkbox"
+                  checked={experience.edge_block_password_manager}
+                  onChange={e => setExperience({ ...experience, edge_block_password_manager: e.target.checked })}
+                />
+                Disable Built-In Edge Password Manager
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ fontSize: '0.78rem', fontWeight: 700, opacity: 0.7 }}>CORPORATE BRANDING (ENTERPRISE / EDU OPTIONAL)</div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Desktop Wallpaper URL (optional)</label>
+                <input
+                  className="form-input mono"
+                  placeholder="https://cdn.example.com/wallpaper.jpg"
+                  value={experience.desktop_wallpaper_url}
+                  onChange={e => setExperience({ ...experience, desktop_wallpaper_url: e.target.value })}
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Lock Screen Image URL (optional)</label>
+                <input
+                  className="form-input mono"
+                  placeholder="https://cdn.example.com/lockscreen.jpg"
+                  value={experience.lockscreen_image_url}
+                  onChange={e => setExperience({ ...experience, lockscreen_image_url: e.target.value })}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Per-device table */}
       <div className="table-wrap">
