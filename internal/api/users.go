@@ -23,6 +23,7 @@ type UserSummary struct {
 	Role         string     `json:"role"`
 	AuthProvider string     `json:"auth_provider"`
 	HasPassword  bool       `json:"has_password"`
+	TOTPEnabled  bool       `json:"totp_enabled"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastLogin    *time.Time `json:"last_login"`
 }
@@ -42,6 +43,7 @@ func (h *Handler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.QueryContext(r.Context(), dbpkg.Rebind(`
 		SELECT id, email, COALESCE(display_name,''), role, auth_provider,
 		       CASE WHEN COALESCE(password_hash,'') <> '' THEN 1 ELSE 0 END,
+		       COALESCE(totp_enabled, 0),
 		       created_at, last_login
 		FROM users
 		ORDER BY created_at ASC
@@ -56,15 +58,16 @@ func (h *Handler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	users := []UserSummary{}
 	for rows.Next() {
 		var u UserSummary
-		var hasPW int
+		var hasPW, totpEn int
 		if err := rows.Scan(
 			&u.ID, &u.Email, &u.DisplayName, &u.Role, &u.AuthProvider,
-			&hasPW, &u.CreatedAt, &u.LastLogin,
+			&hasPW, &totpEn, &u.CreatedAt, &u.LastLogin,
 		); err != nil {
 			slog.Error("api: scanning user row", "err", err)
 			continue
 		}
 		u.HasPassword = hasPW == 1
+		u.TOTPEnabled = totpEn != 0
 		users = append(users, u)
 	}
 	respondOK(w, users)
@@ -315,20 +318,22 @@ func (h *Handler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getUserByID(r *http.Request, id string) (*UserSummary, error) {
 	var u UserSummary
-	var hasPW int
+	var hasPW, totpEn int
 	err := h.db.QueryRowContext(r.Context(), dbpkg.Rebind(`
 		SELECT id, email, COALESCE(display_name,''), role, auth_provider,
 		       CASE WHEN COALESCE(password_hash,'') <> '' THEN 1 ELSE 0 END,
+		       COALESCE(totp_enabled, 0),
 		       created_at, last_login
 		FROM users WHERE id = ?
 	`), id).Scan(
 		&u.ID, &u.Email, &u.DisplayName, &u.Role, &u.AuthProvider,
-		&hasPW, &u.CreatedAt, &u.LastLogin,
+		&hasPW, &totpEn, &u.CreatedAt, &u.LastLogin,
 	)
 	if err != nil {
 		return nil, err
 	}
 	u.HasPassword = hasPW == 1
+	u.TOTPEnabled = totpEn != 0
 	return &u, nil
 }
 

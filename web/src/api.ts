@@ -226,8 +226,28 @@ export interface UserSummary {
   role: 'super_admin' | 'admin' | 'user'
   auth_provider: 'builtin' | 'oidc'
   has_password: boolean
+  totp_enabled: boolean
   created_at: string
   last_login: string | null
+}
+
+export interface APIKeyItem {
+  id: string
+  name: string
+  key_prefix: string
+  key?: string
+  scope: 'read_only' | 'ops' | 'admin'
+  created_by: string
+  expires_at: string | null
+  last_used_at: string | null
+  revoked: boolean
+  created_at: string
+}
+
+export interface SecurityGovernanceSettings {
+  require_reveal_justification: boolean
+  updated_by: string
+  updated_at: string | null
 }
 
 export interface AuditEntry {
@@ -851,7 +871,7 @@ export const api = {
     postureSummary: () => get<FleetPostureSummary>('/posture/summary'),
   },
 
-  // Administration: Users & Roles
+  // Administration: Users, TOTP MFA, Scoped API Keys & Governance
   users: {
     list:   () => get<UserSummary[]>('/users'),
     create: (data: { email: string; display_name?: string; role: string; auth_provider?: string; password?: string }) =>
@@ -859,6 +879,28 @@ export const api = {
     update: (id: string, data: { display_name?: string; role?: string; auth_provider?: string; password?: string }) =>
       put<UserSummary>(`/users/${enc(id)}`, data),
     delete: (id: string) => del<{ status: string; id: string }>(`/users/${enc(id)}`),
+    resetTOTP: (id: string) => post<{ reset: boolean; id: string }>(`/users/${enc(id)}/totp-reset`),
+  },
+
+  totp: {
+    status: () => get<{ enabled: boolean; recovery_codes_remaining: number }>('/me/totp'),
+    setup: () => post<{ secret: string; otpauth_url: string }>('/me/totp/setup'),
+    enable: (code: string) => post<{ enabled: boolean; recovery_codes: string[] }>('/me/totp/enable', { code }),
+    disable: () => post<{ enabled: boolean }>('/me/totp/disable'),
+  },
+
+  apiKeys: {
+    list: () => get<APIKeyItem[]>('/api-keys'),
+    create: (data: { name: string; scope: 'read_only' | 'ops' | 'admin'; expires_in_days: number }) =>
+      post<APIKeyItem>('/api-keys', data),
+    revoke: (id: string, hard = false) =>
+      del<{ deleted: boolean; revoked: boolean; id: string }>(`/api-keys/${enc(id)}${hard ? '?hard=1' : ''}`),
+  },
+
+  governance: {
+    get: () => get<SecurityGovernanceSettings>('/security/governance'),
+    update: (requireRevealJustification: boolean) =>
+      put<SecurityGovernanceSettings>('/security/governance', { require_reveal_justification: requireRevealJustification }),
   },
 
   // Administration: Audit Log
@@ -982,9 +1024,10 @@ export const api = {
     device: (deviceId: string) => get<DeviceBitLocker>(`/devices/${enc(deviceId)}/bitlocker`),
     escrow: (deviceId: string, data: { volume_letter: string; protector_id?: string; recovery_password: string }) =>
       post<RecoveryKeyMeta>(`/devices/${enc(deviceId)}/bitlocker/escrow`, data),
-    revealKey: (deviceId: string, keyId: string) =>
+    revealKey: (deviceId: string, keyId: string, reason?: string) =>
       post<{ id: string; device_id: string; volume_letter: string; protector_id: string; recovery_password: string }>(
-        `/devices/${enc(deviceId)}/bitlocker/keys/${enc(keyId)}/reveal`
+        `/devices/${enc(deviceId)}/bitlocker/keys/${enc(keyId)}/reveal`,
+        reason ? { reason } : undefined
       ),
     deleteKey: (deviceId: string, keyId: string) =>
       del<{ status: string }>(`/devices/${enc(deviceId)}/bitlocker/keys/${enc(keyId)}`),
@@ -1045,7 +1088,8 @@ export const api = {
       group_ids: string[]
     }) => put<LAPSPolicy>('/laps/policy', data),
     device: (deviceId: string) => get<DeviceLAPSStatus>(`/devices/${enc(deviceId)}/laps`),
-    reveal: (deviceId: string) => post<RevealedLAPSCredentials>(`/devices/${enc(deviceId)}/laps/reveal`),
+    reveal: (deviceId: string, reason?: string) =>
+      post<RevealedLAPSCredentials>(`/devices/${enc(deviceId)}/laps/reveal`, reason ? { reason } : undefined),
     rotate: (deviceId: string) =>
       post<{ status: string; pending_account: string; commands_queued: number }>(`/devices/${enc(deviceId)}/laps/rotate`),
   },

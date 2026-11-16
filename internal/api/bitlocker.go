@@ -532,6 +532,10 @@ func (h *Handler) HandleRevealBitLockerKey(w http.ResponseWriter, r *http.Reques
 		respondErr(w, http.StatusInternalServerError, "encryption vault is not initialized")
 		return
 	}
+	reason, ok := h.extractAndValidateRevealReason(w, r)
+	if !ok {
+		return
+	}
 
 	var (
 		vol, prot, enc string
@@ -558,7 +562,7 @@ func (h *Handler) HandleRevealBitLockerKey(w http.ResponseWriter, r *http.Reques
 	}
 
 	h.audit(r, actor, "bitlocker.reveal_key", "device", deviceID,
-		fmt.Sprintf(`{"key_id":%q,"volume":%q,"protector_id":%q}`, keyID, vol, prot))
+		fmt.Sprintf(`{"key_id":%q,"volume":%q,"protector_id":%q,"reason":%q}`, keyID, vol, prot, reason))
 	slog.Info("bitlocker recovery key revealed", "device_id", deviceID, "protector_id", prot, "actor", actor)
 
 	respondOK(w, map[string]string{

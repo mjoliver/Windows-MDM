@@ -369,6 +369,10 @@ func (h *Handler) HandleRevealDeviceLAPS(w http.ResponseWriter, r *http.Request)
 		respondErr(w, http.StatusServiceUnavailable, "secret vault is not configured (set server.master_secret)")
 		return
 	}
+	reason, ok := h.extractAndValidateRevealReason(w, r)
+	if !ok {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	actor := emailFromCtx(r)
 
@@ -445,7 +449,7 @@ func (h *Handler) HandleRevealDeviceLAPS(w http.ResponseWriter, r *http.Request)
 	res.ExpiresAt = finalExp
 
 	h.audit(r, actor, "laps.reveal_password", "device", id,
-		fmt.Sprintf(`{"active_account":%q,"pending_account":%q}`, activeAcct, pendingAcct))
+		fmt.Sprintf(`{"active_account":%q,"pending_account":%q,"reason":%q}`, activeAcct, pendingAcct, reason))
 	slog.Info("Cloud LAPS password revealed", "device_id", id, "account", activeAcct, "actor", actor)
 
 	respondOK(w, res)

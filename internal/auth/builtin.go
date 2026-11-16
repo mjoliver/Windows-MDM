@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
+	"github.com/latchzmdm/latchz/internal/vault"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -26,6 +27,12 @@ type BuiltinProvider struct {
 	jwtSecret      []byte
 	baseURL        string
 	bootstrapAdmin string
+	vault          *vault.Vault
+}
+
+// SetVault attaches the AES-256-GCM secret vault used to decrypt enrolled TOTP 2FA secrets.
+func (p *BuiltinProvider) SetVault(v *vault.Vault) {
+	p.vault = v
 }
 
 // NewBuiltin creates a builtin auth provider and ensures the bootstrap admin
@@ -67,6 +74,7 @@ const csrfCookieName = "latchz_csrf"
 
 type builtinLoginData struct {
 	Flow, Appru, Email, Error, CSRF string
+	NeedTOTP                        bool
 }
 
 func (p *BuiltinProvider) handleLoginForm(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +159,29 @@ func (p *BuiltinProvider) handleLoginSubmit(w http.ResponseWriter, r *http.Reque
 		})
 		return
 	}
+
+	var totpEnabled int
+	_ = p.db.QueryRowContext(r.Context(), dbpkg.Rebind(`SELECT COALESCE(totp_enabled, 0) FROM users WHERE email = ?`), email).Scan(&totpEnabled)
+	if totpEnabled != 0 {
+		totpCode := strings.TrimSpace(r.PostForm.Get("totp_code"))
+		if totpCode == "" {
+			p.renderLoginForm(w, r, http.StatusUnauthorized, builtinLoginData{
+				Flow: flow, Appru: appru, Email: email, NeedTOTP: true,
+				Error: "Two-factor authentication enabled — enter your 6-digit TOTP or recovery code.",
+			})
+			return
+		}
+		mfaOK, err := VerifyUserSecondFactor(p.db, p.vault, email, totpCode, nowFunc())
+		if err != nil || !mfaOK {
+			p.renderLoginForm(w, r, http.StatusUnauthorized, builtinLoginData{
+				Flow: flow, Appru: appru, Email: email, NeedTOTP: true,
+				Error: "Invalid 2FA authenticator or recovery code.",
+			})
+			return
+		}
+	}
+
+	_, _ = p.db.ExecContext(r.Context(), dbpkg.Rebind(`UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE email = ?`), email)
 
 	if flow == "enroll" {
 		token, err := signClaims(p.jwtSecret, newEnrollmentClaims(email, nowFunc()))
@@ -371,6 +402,10 @@ var tmplBuiltinLogin = template.Must(template.New("builtinLogin").Parse(`<!DOCTY
     <div class="field">
       <label for="password">{{if eq .Flow "enroll"}}Password or Bulk Token (lzbt_…){{else}}Password{{end}}</label>
       <input id="password" name="password" type="password" placeholder="••••••••" autocomplete="current-password" required>
+    </div>
+    <div class="field">
+      <label for="totp_code">2FA Code {{if not .NeedTOTP}}(if enabled){{end}}</label>
+      <input id="totp_code" name="totp_code" type="password" placeholder="6-digit TOTP or XXXX-XXXX" autocomplete="one-time-code" {{if .NeedTOTP}}required{{end}}>
     </div>
     <button type="submit">Sign In</button>
   </form>

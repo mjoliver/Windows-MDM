@@ -702,7 +702,20 @@ export function DeviceDetailPage() {
                                     const res = await api.bitlocker.revealKey(id!, k.id)
                                     setRevealedKey(res)
                                   } catch (e) {
-                                    toast.error(e instanceof Error ? e.message : String(e))
+                                    const msg = e instanceof Error ? e.message : String(e)
+                                    if (msg.toLowerCase().includes('justification')) {
+                                      const reason = window.prompt('Audit justification required to reveal BitLocker key (e.g. Ticket INC-1042):')
+                                      if (reason && reason.trim()) {
+                                        try {
+                                          const res2 = await api.bitlocker.revealKey(id!, k.id, reason.trim())
+                                          setRevealedKey(res2)
+                                        } catch (e2) {
+                                          toast.error(e2 instanceof Error ? e2.message : String(e2))
+                                        }
+                                      }
+                                      return
+                                    }
+                                    toast.error(msg)
                                   }
                                 }}
                               >
@@ -786,7 +799,21 @@ export function DeviceDetailPage() {
                           setRevealedLAPS(res)
                           refresh()
                         } catch (e) {
-                          toast.error(e instanceof Error ? e.message : String(e))
+                          const msg = e instanceof Error ? e.message : String(e)
+                          if (msg.toLowerCase().includes('justification')) {
+                            const reason = window.prompt('Audit justification required to reveal Cloud LAPS password (e.g. Ticket INC-1042):')
+                            if (reason && reason.trim()) {
+                              try {
+                                const res2 = await api.laps.reveal(id!, reason.trim())
+                                setRevealedLAPS(res2)
+                                refresh()
+                              } catch (e2) {
+                                toast.error(e2 instanceof Error ? e2.message : String(e2))
+                              }
+                            }
+                            return
+                          }
+                          toast.error(msg)
                         }
                       }}
                     >

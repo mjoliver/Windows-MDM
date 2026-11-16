@@ -109,6 +109,9 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 		}
 		apiHandler.SetVault(secretVault)
 		mdmHandler.SetVault(secretVault)
+		if bp, ok := authProvider.(*auth.BuiltinProvider); ok {
+			bp.SetVault(secretVault)
+		}
 		policy.SetClientCertHandlers(apiHandler.ProvisionDeviceClientCert, apiHandler.RevokeDeviceClientCert)
 	} else {
 		policy.SetClientCertHandlers(nil, nil)
@@ -395,6 +398,10 @@ func (s *Server) routes() {
 			superAdmin := s.requireRole("super_admin")
 
 			r.Get("/me", s.api.HandleMe)
+			r.Get("/me/totp", s.api.HandleGetMyTOTPStatus)
+			r.Post("/me/totp/setup", s.api.HandleSetupMyTOTP)
+			r.Post("/me/totp/enable", s.api.HandleEnableMyTOTP)
+			r.Post("/me/totp/disable", s.api.HandleDisableMyTOTP)
 
 			// Devices
 			r.Get("/devices", s.api.HandleListDevices)
@@ -520,11 +527,17 @@ func (s *Server) routes() {
 			r.With(admin).Delete("/enrollment/tokens/{id}", s.api.HandleDeleteEnrollmentToken)
 			r.Get("/enrollment/bootstrap.ps1", s.api.HandleDownloadEnrollmentBootstrap)
 
-			// Administration: Users & Audit Log
+			// Administration: Users, Scoped API Keys, Governance & Audit Log
 			r.With(admin).Get("/users", s.api.HandleListUsers)
 			r.With(superAdmin).Post("/users", s.api.HandleCreateUser)
 			r.With(superAdmin).Put("/users/{id}", s.api.HandleUpdateUser)
 			r.With(superAdmin).Delete("/users/{id}", s.api.HandleDeleteUser)
+			r.With(superAdmin).Post("/users/{id}/totp-reset", s.api.HandleAdminResetUserTOTP)
+			r.With(admin).Get("/api-keys", s.api.HandleListAPIKeys)
+			r.With(admin).Post("/api-keys", s.api.HandleCreateAPIKey)
+			r.With(admin).Delete("/api-keys/{id}", s.api.HandleDeleteAPIKey)
+			r.Get("/security/governance", s.api.HandleGetSecurityGovernance)
+			r.With(admin).Put("/security/governance", s.api.HandleUpdateSecurityGovernance)
 			r.With(admin).Get("/audit", s.api.HandleListAudit)
 
 			// System
@@ -775,6 +788,24 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check scoped Bearer API key ("Authorization: Bearer lzak_...") first.
+		if rawKey, hasBearer := auth.ExtractBearerAPIKey(r); hasBearer {
+			actor, role, scope, _, err := auth.AuthenticateAPIKey(s.sqlDB(), rawKey)
+			if err != nil {
+				respondJSON(w, http.StatusUnauthorized, `{"error":"invalid or revoked API key"}`)
+				return
+			}
+			if !auth.IsAPIKeyRequestAllowed(scope, r.Method, r.URL.Path) {
+				respondJSON(w, http.StatusForbidden, `{"error":"forbidden: insufficient API key scope"}`)
+				return
+			}
+			ctx := r.Context()
+			ctx = contextWithEmail(ctx, actor)
+			ctx = contextWithRole(ctx, role)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
 		// Fail closed: if no auth provider is wired, reject rather than allow.
 		// (The server refuses to start without one; this is defence in depth.)
 		if s.auth == nil {
