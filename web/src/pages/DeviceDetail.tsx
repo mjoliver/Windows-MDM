@@ -1055,7 +1055,7 @@ export function DeviceDetailPage() {
                   <input
                     className="form-input mono"
                     style={{ flex: 1 }}
-                    placeholder="./Device/Vendor/MSFT/Reboot/RebootRequired"
+                    placeholder="./Device/Vendor/MSFT/Update/PendingRebootUpdates"
                     value={customCspUri}
                     onChange={e => setCustomCspUri(e.target.value)}
                   />
@@ -1115,7 +1115,7 @@ export function DeviceDetailPage() {
                             </button>
                           </div>
                         </div>
-                        {q.result_data && (
+                        {q.result_data ? (
                           <pre
                             className="mono"
                             style={{
@@ -1132,7 +1132,11 @@ export function DeviceDetailPage() {
                           >
                             {q.result_data}
                           </pre>
-                        )}
+                        ) : q.status === 'success' ? (
+                          <div className="mono" style={{ marginTop: 6, fontSize: '0.74rem', opacity: 0.6 }}>
+                            (empty node — 200 OK)
+                          </div>
+                        ) : null}
                       </div>
                     ))}
                   </div>

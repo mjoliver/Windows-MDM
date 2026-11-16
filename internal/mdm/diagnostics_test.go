@@ -7,8 +7,8 @@ import (
 )
 
 func TestValidateCSPExplorerURIAndEditionLabels(t *testing.T) {
-	u, err := ValidateCSPExplorerURI("Device/Vendor/MSFT/Reboot/RebootRequired")
-	if err != nil || u != OMARebootRequired {
+	u, err := ValidateCSPExplorerURI("Device/Vendor/MSFT/Update/PendingRebootUpdates")
+	if err != nil || u != OMAUpdatePendingRebootUpdates {
 		t.Fatalf("ValidateCSPExplorerURI normalized = %q, err = %v", u, err)
 	}
 
@@ -40,20 +40,26 @@ func TestValidateCSPExplorerURIAndEditionLabels(t *testing.T) {
 	if b := ParseOptionalBoolInt("false"); !b.Valid || b.Int64 != 0 {
 		t.Fatalf("ParseOptionalBoolInt(false) = %+v", b)
 	}
+	if b := ParsePendingRebootUpdates(""); !b.Valid || b.Int64 != 0 {
+		t.Fatalf("ParsePendingRebootUpdates(\"\") = %+v, want 0", b)
+	}
+	if b := ParsePendingRebootUpdates("{A1B2C3D4-0000-0000-0000-000000000001}"); !b.Valid || b.Int64 != 1 {
+		t.Fatalf("ParsePendingRebootUpdates(guid) = %+v, want 1", b)
+	}
 }
 
 func TestSyncCSPQueryLifecycleAndPostureRebootTelemetry(t *testing.T) {
 	database := testutil.DB(t)
 	devID := testutil.SeedDevice(t, database, "HW-CSP-EXP")
 
-	qID, err := EnqueueGet(database.DB, devID, OMARebootRequired)
+	qID, err := EnqueueGet(database.DB, devID, OMAUpdatePendingRebootUpdates)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = database.DB.Exec(`
 		INSERT INTO device_csp_queries (id, device_id, queue_id, label, oma_uri, status, queried_by)
 		VALUES ('cspq-1', ?, ?, 'Reboot Check', ?, 'pending', 'admin@lab.local')
-	`, devID, qID, OMARebootRequired)
+	`, devID, qID, OMAUpdatePendingRebootUpdates)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +70,7 @@ func TestSyncCSPQueryLifecycleAndPostureRebootTelemetry(t *testing.T) {
 		{
 			CmdRef: "5",
 			Items: []Item{
-				{Source: &LocURI{LocURI: OMARebootRequired}, Data: "false"},
+				{Source: &LocURI{LocURI: OMAUpdatePendingRebootUpdates}, Data: ""},
 				{Source: &LocURI{LocURI: OMAWindowsLicensingEdition}, Data: "48"},
 				{Source: &LocURI{LocURI: OMADevDetailLocalTime}, Data: "2026-11-15T17:45:00-08:00"},
 			},
@@ -75,7 +81,7 @@ func TestSyncCSPQueryLifecycleAndPostureRebootTelemetry(t *testing.T) {
 	if err := database.DB.QueryRow(`SELECT status, result_code, result_data FROM device_csp_queries WHERE id = 'cspq-1'`).Scan(&st, &code, &data); err != nil {
 		t.Fatal(err)
 	}
-	if st != "success" || code != "200" || data == "" {
+	if st != "success" || code != "200" {
 		t.Fatalf("unexpected csp query row: status=%q code=%q data=%q", st, code, data)
 	}
 

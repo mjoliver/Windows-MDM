@@ -1481,7 +1481,7 @@ export function CompliancePage() {
                   checked={experience.block_tailored_experiences}
                   onChange={e => setExperience({ ...experience, block_tailored_experiences: e.target.checked })}
                 />
-                Block Tailored Ads &amp; Diagnostic Tips
+                Block Cloud-Optimized Consumer Content (<code className="mono">DisableCloudOptimizedContent</code>)
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
                 <input
@@ -1489,7 +1489,7 @@ export function CompliancePage() {
                   checked={experience.disable_widgets_news}
                   onChange={e => setExperience({ ...experience, disable_widgets_news: e.target.checked })}
                 />
-                Disable Taskbar Widgets &amp; MSN News Feed (<code className="mono">Dsh</code>)
+                Disable Taskbar Widgets &amp; MSN News Feed (<code className="mono">NewsAndInterests</code>)
               </label>
             </div>
 
@@ -1501,7 +1501,7 @@ export function CompliancePage() {
                   checked={experience.edge_smartscreen_enabled}
                   onChange={e => setExperience({ ...experience, edge_smartscreen_enabled: e.target.checked })}
                 />
-                Enforce Edge Defender SmartScreen
+                Enforce Edge Defender SmartScreen (<code className="mono">AllowSmartScreen</code>)
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
                 <input
@@ -1509,7 +1509,7 @@ export function CompliancePage() {
                   checked={experience.edge_prevent_ss_override}
                   onChange={e => setExperience({ ...experience, edge_prevent_ss_override: e.target.checked })}
                 />
-                Prevent Phishing / Malware Warning Bypass
+                Prevent Phishing / Site Warning Bypass
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
                 <input
@@ -1517,7 +1517,7 @@ export function CompliancePage() {
                   checked={experience.edge_smartscreen_pua}
                   onChange={e => setExperience({ ...experience, edge_smartscreen_pua: e.target.checked })}
                 />
-                Block Potentially Unwanted Apps (PUA) in Edge
+                Prevent SmartScreen Download Warning Bypass
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
                 <input
@@ -1525,7 +1525,7 @@ export function CompliancePage() {
                   checked={experience.edge_typosquatting_checker}
                   onChange={e => setExperience({ ...experience, edge_typosquatting_checker: e.target.checked })}
                 />
-                Enable Edge Typosquatting URL Protection
+                Prevent TLS Certificate Error Overrides
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.84rem' }}>
                 <input

@@ -44,10 +44,10 @@ func TestDeviceCSPExplorerLifecycle(t *testing.T) {
 		t.Fatalf("expected 400 on restricted Accounts/Users URI, got %d", wBad.Code)
 	}
 
-	// 3. Queue RebootRequired live CSP query
+	// 3. Queue PendingRebootUpdates live CSP query
 	wCreate := httptest.NewRecorder()
 	h.HandleCreateDeviceCSPQuery(wCreate, withDeviceAndKeyRoute("POST", "/api/devices/"+devID+"/csp-explorer", `{
-		"oma_uri": "./Device/Vendor/MSFT/Reboot/RebootRequired"
+		"oma_uri": "./Device/Vendor/MSFT/Update/PendingRebootUpdates"
 	}`, devID, "", "admin@lab.local"))
 	if wCreate.Code != http.StatusCreated {
 		t.Fatalf("POST csp-explorer: want 201, got %d body=%s", wCreate.Code, wCreate.Body.String())

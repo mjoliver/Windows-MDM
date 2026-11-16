@@ -134,7 +134,7 @@ func updateDeviceFromResults(db *sql.DB, deviceID string, sess *Session, results
 		for _, item := range r.Items {
 			if item.Source != nil {
 				hasItem = true
-				if item.Data != "" {
+				if item.Data != "" || normalizePostureURI(item.Source.LocURI) == OMAUpdatePendingRebootUpdates {
 					updates[item.Source.LocURI] = item.Data
 				}
 				if ok && payload.Len() < 65536 {
@@ -317,8 +317,8 @@ func updatePosture(db *sql.DB, deviceID string, values map[string]string) {
 			if n := parseOptionalInt(trimmed); n.Valid {
 				firewall, hasAny = n, true
 			}
-		case OMARebootRequired:
-			if b := ParseOptionalBoolInt(trimmed); b.Valid {
+		case OMAUpdatePendingRebootUpdates:
+			if b := ParsePendingRebootUpdates(trimmed); b.Valid {
 				rebootReq, hasAny = b, true
 			}
 		case OMAWindowsLicensingEdition:

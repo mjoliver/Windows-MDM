@@ -9,18 +9,18 @@ import (
 )
 
 const (
-	// Windows 10/11 Privacy & Consumer Debloat Policy CSPs (supported on Pro, Enterprise & Education)
+	// Windows 10/11 Privacy & Consumer Debloat Policy CSPs (device-scoped, supported on Pro, Enterprise & Education)
 	OMASystemAllowTelemetry     = "./Device/Vendor/MSFT/Policy/Config/System/AllowTelemetry"
 	OMAPrivacyDisableAdvID      = "./Device/Vendor/MSFT/Policy/Config/Privacy/DisableAdvertisingId"
-	OMAExperienceTailoredData   = "./Device/Vendor/MSFT/Policy/Config/Experience/AllowTailoredExperiencesWithDiagnosticData"
-	OMADshAllowNewsAndInterests = "./Device/Vendor/MSFT/Policy/Config/Dsh/AllowNewsAndInterests"
+	OMAExperienceTailoredData   = "./Device/Vendor/MSFT/Policy/Config/Experience/DisableCloudOptimizedContent"
+	OMADshAllowNewsAndInterests = "./Device/Vendor/MSFT/Policy/Config/NewsAndInterests/AllowNewsAndInterests"
 
-	// Microsoft Edge Inbox ADMX-Backed Policy CSPs (supported on Windows 10 21H2+ & Windows 11 Pro/Enterprise)
-	OMAEdgeSmartScreenEnabled     = "./Device/Vendor/MSFT/Policy/Config/microsoft_edge~Policy~microsoft_edge/SmartScreenEnabled"
-	OMAEdgePreventSSOverride      = "./Device/Vendor/MSFT/Policy/Config/microsoft_edge~Policy~microsoft_edge/PreventSmartScreenPromptOverride"
-	OMAEdgeSmartScreenPUA         = "./Device/Vendor/MSFT/Policy/Config/microsoft_edge~Policy~microsoft_edge/SmartScreenPuaEnabled"
-	OMAEdgePasswordManagerEnabled = "./Device/Vendor/MSFT/Policy/Config/microsoft_edge~Policy~microsoft_edge/PasswordManagerEnabled"
-	OMAEdgeTyposquattingChecker   = "./Device/Vendor/MSFT/Policy/Config/microsoft_edge~Policy~microsoft_edge/TyposquattingCheckerEnabled"
+	// Microsoft Edge Inbox Browser Policy CSPs (zero external ADMX ingestion required)
+	OMAEdgeSmartScreenEnabled     = "./Device/Vendor/MSFT/Policy/Config/Browser/AllowSmartScreen"
+	OMAEdgePreventSSOverride      = "./Device/Vendor/MSFT/Policy/Config/Browser/PreventSmartScreenPromptOverride"
+	OMAEdgeSmartScreenPUA         = "./Device/Vendor/MSFT/Policy/Config/Browser/PreventSmartScreenPromptOverrideForFiles"
+	OMAEdgePasswordManagerEnabled = "./Device/Vendor/MSFT/Policy/Config/Browser/AllowPasswordManager"
+	OMAEdgeTyposquattingChecker   = "./Device/Vendor/MSFT/Policy/Config/Browser/PreventCertErrorOverrides"
 
 	// Optional Corporate Branding Personalization CSPs (Windows Enterprise / Education SKUs)
 	OMAPersonalizationDesktopImage    = "./Device/Vendor/MSFT/Policy/Config/Personalization/DesktopImageUrl"
@@ -31,8 +31,8 @@ const (
 type DesktopExperienceSpec struct {
 	TelemetryLevel           int  // 0=Security(Ent), 1=Required/Basic, 3=Optional
 	DisableAdvertisingID     bool // 1=Block Advertising ID
-	BlockTailoredExperiences bool // 0 on AllowTailoredExperiencesWithDiagnosticData
-	DisableWidgetsNews       bool // 0 on AllowNewsAndInterests
+	BlockTailoredExperiences bool // 1 on Experience/DisableCloudOptimizedContent
+	DisableWidgetsNews       bool // 0 on NewsAndInterests/AllowNewsAndInterests
 	EdgeSmartScreenEnabled   bool
 	EdgePreventSSOverride    bool
 	EdgeSmartScreenPUA       bool
@@ -42,11 +42,11 @@ type DesktopExperienceSpec struct {
 	LockScreenImageURL       string
 }
 
-func admxBoolPayload(enabled bool) string {
+func intBoolPayload(enabled bool) string {
 	if enabled {
-		return "<enabled/>"
+		return "1"
 	}
-	return "<disabled/>"
+	return "0"
 }
 
 // ValidateOptionalBrandingURL validates an optional https:// or http:// image URL for Personalization CSP.
@@ -76,18 +76,9 @@ func EnqueueDesktopExperience(dbConn *sql.DB, deviceID string, spec DesktopExper
 	if tel != 0 && tel != 1 && tel != 3 {
 		tel = 1
 	}
-	advVal := "0"
-	if spec.DisableAdvertisingID {
-		advVal = "1"
-	}
-	tailoredVal := "1"
-	if spec.BlockTailoredExperiences {
-		tailoredVal = "0"
-	}
-	widgetsVal := "1"
-	if spec.DisableWidgetsNews {
-		widgetsVal = "0"
-	}
+	advVal := intBoolPayload(spec.DisableAdvertisingID)
+	tailoredVal := intBoolPayload(spec.BlockTailoredExperiences)
+	widgetsVal := intBoolPayload(!spec.DisableWidgetsNews)
 
 	items := []struct {
 		uri string
@@ -97,11 +88,11 @@ func EnqueueDesktopExperience(dbConn *sql.DB, deviceID string, spec DesktopExper
 		{OMAPrivacyDisableAdvID, advVal},
 		{OMAExperienceTailoredData, tailoredVal},
 		{OMADshAllowNewsAndInterests, widgetsVal},
-		{OMAEdgeSmartScreenEnabled, admxBoolPayload(spec.EdgeSmartScreenEnabled)},
-		{OMAEdgePreventSSOverride, admxBoolPayload(spec.EdgePreventSSOverride)},
-		{OMAEdgeSmartScreenPUA, admxBoolPayload(spec.EdgeSmartScreenPUA)},
-		{OMAEdgePasswordManagerEnabled, admxBoolPayload(!spec.EdgeBlockPasswordManager)},
-		{OMAEdgeTyposquattingChecker, admxBoolPayload(spec.EdgeTyposquattingChecker)},
+		{OMAEdgeSmartScreenEnabled, intBoolPayload(spec.EdgeSmartScreenEnabled)},
+		{OMAEdgePreventSSOverride, intBoolPayload(spec.EdgePreventSSOverride)},
+		{OMAEdgeSmartScreenPUA, intBoolPayload(spec.EdgeSmartScreenPUA)},
+		{OMAEdgePasswordManagerEnabled, intBoolPayload(!spec.EdgeBlockPasswordManager)},
+		{OMAEdgeTyposquattingChecker, intBoolPayload(spec.EdgeTyposquattingChecker)},
 	}
 
 	for _, it := range items {

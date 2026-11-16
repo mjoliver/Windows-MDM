@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	// Reboot CSP — reports whether CBS servicing, Windows Update, or policy requires a restart.
-	OMARebootRequired = "./Device/Vendor/MSFT/Reboot/RebootRequired"
+	// Update CSP — lists update GUIDs waiting for a restart (empty when no reboot is pending).
+	OMAUpdatePendingRebootUpdates = "./Device/Vendor/MSFT/Update/PendingRebootUpdates"
+	OMARebootRequired             = OMAUpdatePendingRebootUpdates
 
 	// WindowsLicensing CSP — reports Windows SKU edition integer and activation status.
 	OMAWindowsLicensingEdition = "./Device/Vendor/MSFT/WindowsLicensing/Edition"
@@ -33,8 +34,8 @@ var OfficialCSPPresets = []CSPPreset{
 		ID:          "reboot_required",
 		Category:    "System",
 		Label:       "Reboot Pending Status",
-		OMAURI:      OMARebootRequired,
-		Description: "Checks whether Windows servicing, updates, or rename require a restart (true/false).",
+		OMAURI:      OMAUpdatePendingRebootUpdates,
+		Description: "Checks Windows Update PendingRebootUpdates node (empty when no restart is required).",
 	},
 	{
 		ID:          "windows_edition",
@@ -167,6 +168,19 @@ func ParseOptionalBoolInt(raw string) sql.NullInt64 {
 		return sql.NullInt64{Int64: 0, Valid: true}
 	default:
 		return sql.NullInt64{}
+	}
+}
+
+// ParsePendingRebootUpdates evaluates the Windows Update CSP PendingRebootUpdates node:
+// an empty container ("") or explicit "false"/"0" means no reboot is pending (0);
+// one or more slash-separated update GUIDs (or "true"/"1") means a reboot is pending (1).
+func ParsePendingRebootUpdates(raw string) sql.NullInt64 {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "", "false", "0", "none":
+		return sql.NullInt64{Int64: 0, Valid: true}
+	default:
+		return sql.NullInt64{Int64: 1, Valid: true}
 	}
 }
 

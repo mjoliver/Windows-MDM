@@ -37,7 +37,7 @@ func TestDesktopExperienceEnqueueAndRetract(t *testing.T) {
 	var widgetsVal, edgePwdVal string
 	_ = database.DB.QueryRow(`SELECT payload FROM command_queue WHERE device_id = ? AND oma_uri = ?`, devID, OMADshAllowNewsAndInterests).Scan(&widgetsVal)
 	_ = database.DB.QueryRow(`SELECT payload FROM command_queue WHERE device_id = ? AND oma_uri = ?`, devID, OMAEdgePasswordManagerEnabled).Scan(&edgePwdVal)
-	if widgetsVal != "0" || edgePwdVal != "<disabled/>" {
+	if widgetsVal != "0" || edgePwdVal != "0" {
 		t.Fatalf("unexpected payloads: widgets=%q edgePwd=%q", widgetsVal, edgePwdVal)
 	}
 
