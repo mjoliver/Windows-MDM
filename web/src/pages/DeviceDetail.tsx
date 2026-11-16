@@ -922,6 +922,11 @@ export function DeviceDetailPage() {
                     >
                       <div style={{ fontWeight: 700, fontSize: '0.86rem' }}>{it.profile_name}</div>
                       <div className="mono" style={{ fontSize: '0.7rem', opacity: 0.6 }}>{it.profile_type} • {it.delete_oma_uri}</div>
+                      {it.issued_thumbprint && (
+                        <div className="mono" style={{ fontSize: '0.7rem', color: 'var(--md-sys-color-primary)', marginTop: 4 }}>
+                          {it.issued_subject} • SHA-1 {it.issued_thumbprint.slice(0, 16)}…
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

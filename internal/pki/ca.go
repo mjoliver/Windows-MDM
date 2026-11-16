@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/google/uuid"
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"golang.org/x/crypto/argon2"
+	"software.sslmate.com/src/go-pkcs12"
 )
 
 // nowFunc returns the current time; overridable in tests for deterministic
@@ -273,6 +275,150 @@ func (ca *CA) RevokeDeviceCerts(deviceID string) error {
 	}
 	slog.Info("revoked device certificates", "device_id", deviceID)
 	return nil
+}
+
+// RevokeCertByThumbprint marks a single certificate thumbprint (case-insensitive) as revoked.
+func (ca *CA) RevokeCertByThumbprint(thumbprint string) error {
+	tp := strings.ToLower(strings.TrimSpace(thumbprint))
+	if tp == "" {
+		return nil
+	}
+	_, err := ca.db.Exec(dbpkg.Rebind(`UPDATE certificates SET revoked = 1 WHERE LOWER(thumbprint) = ?`), tp)
+	return err
+}
+
+// IssuedClientPFX holds a freshly minted X.509 client authentication certificate
+// and its password-protected PKCS#12 (.pfx) archive for PFXCertInstall CSP push.
+type IssuedClientPFX struct {
+	ThumbprintSHA1 string
+	SerialNumber   string
+	Subject        string
+	NotBefore      time.Time
+	NotAfter       time.Time
+	PFXBase64      string
+}
+
+// GeneratePFXPassword generates a 24-character CSPRNG alphanumeric password
+// suitable for PKCS#12 shrouding and safe for JSON/SyncML transport without escaping ambiguity.
+func GeneratePFXPassword() (string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+	out := make([]byte, 24)
+	for i := range out {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			return "", fmt.Errorf("generating PFX password: %w", err)
+		}
+		out[i] = alphabet[n.Int64()]
+	}
+	return string(out), nil
+}
+
+// IssueClientPFX mints a per-device RSA-2048 X.509 client authentication certificate
+// signed by the Latchz Root CA, records it in certificates, and packages the leaf
+// certificate + private key as a Base64-encoded PKCS#12 (.pfx) archive.
+func (ca *CA) IssueClientPFX(deviceID, subjectCN string, dnsSANs []string, validityDays int, password string) (*IssuedClientPFX, error) {
+	cn := strings.TrimSpace(subjectCN)
+	if cn == "" {
+		cn = strings.TrimSpace(deviceID)
+	}
+	if cn == "" {
+		return nil, fmt.Errorf("subject CommonName is required")
+	}
+	if strings.TrimSpace(password) == "" {
+		return nil, fmt.Errorf("PFX password is required")
+	}
+	if validityDays <= 0 {
+		validityDays = 365
+	}
+	if validityDays > 3650 {
+		validityDays = 3650
+	}
+
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, fmt.Errorf("generating client RSA-2048 key: %w", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("generating serial: %w", err)
+	}
+
+	var cleanSANs []string
+	seen := make(map[string]bool)
+	for _, raw := range dnsSANs {
+		s := strings.ToLower(strings.TrimSpace(raw))
+		if s != "" && !seen[s] {
+			seen[s] = true
+			cleanSANs = append(cleanSANs, s)
+		}
+	}
+
+	notBefore := nowFunc().Add(-10 * time.Minute).UTC()
+	notAfter := nowFunc().Add(time.Duration(validityDays) * 24 * time.Hour).UTC()
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName:   cn,
+			Organization: []string{"Latchz Managed Endpoint"},
+		},
+		DNSNames:    cleanSANs,
+		NotBefore:   notBefore,
+		NotAfter:    notAfter,
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &privKey.PublicKey, ca.key)
+	if err != nil {
+		return nil, fmt.Errorf("signing client certificate: %w", err)
+	}
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return nil, fmt.Errorf("parsing client certificate: %w", err)
+	}
+
+	pfxDER, err := pkcs12.LegacyDES.Encode(privKey, cert, nil, password)
+	if err != nil {
+		return nil, fmt.Errorf("encoding PKCS#12 archive: %w", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	thumbLower := calculateThumbprint(cert)
+	thumbUpper := strings.ToUpper(thumbLower)
+
+	if ca.db != nil {
+		_, err = ca.db.Exec(dbpkg.Rebind(`
+			INSERT INTO certificates (cert_type, subject, thumbprint, serial_number, not_before, not_after, cert_pem, device_id)
+			VALUES ('client_pfx', ?, ?, ?, ?, ?, ?, ?)
+		`),
+			cert.Subject.String(),
+			thumbLower,
+			cert.SerialNumber.String(),
+			cert.NotBefore,
+			cert.NotAfter,
+			string(certPEM),
+			deviceID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("storing client_pfx certificate: %w", err)
+		}
+	}
+
+	slog.Info("issued per-device client PFX certificate",
+		"device_id", deviceID,
+		"subject", cert.Subject.String(),
+		"thumbprint", thumbUpper,
+		"expires", cert.NotAfter.Format(time.RFC3339),
+	)
+
+	return &IssuedClientPFX{
+		ThumbprintSHA1: thumbUpper,
+		SerialNumber:   cert.SerialNumber.String(),
+		Subject:        cert.Subject.String(),
+		NotBefore:      cert.NotBefore.UTC(),
+		NotAfter:       cert.NotAfter.UTC(),
+		PFXBase64:      base64.StdEncoding.EncodeToString(pfxDER),
+	}, nil
 }
 
 // TLSPool returns an x509.CertPool containing the root CA for TLS verification.

@@ -431,6 +431,40 @@ func (h *Handler) resolveVaultPayloads(deviceID string, pending []PendingCommand
 				pending[i].Payload = strings.ReplaceAll(pending[i].Payload, sentinel, xmlEscapeText(plainPSK))
 			}
 		}
+
+		if strings.Contains(pending[i].Payload, VaultPFXPwdSentinelPrefix) {
+			if idx := strings.Index(pending[i].Payload, VaultPFXPwdSentinelPrefix); idx >= 0 {
+				rest := pending[i].Payload[idx+len(VaultPFXPwdSentinelPrefix):]
+				if end := strings.IndexByte(rest, ']'); end > 0 {
+					tokenBody := rest[:end]
+					devPart, profID, ok := strings.Cut(tokenBody, ":")
+					if ok && devPart == deviceID && profID != "" {
+						var encPwd, encBlob string
+						err := h.db.QueryRow(dbpkg.Rebind(`
+							SELECT pfx_password_encrypted, pfx_b64_encrypted
+							FROM device_issued_client_certs
+							WHERE device_id = ? AND profile_id = ?
+						`), deviceID, profID).Scan(&encPwd, &encBlob)
+						if err != nil {
+							slog.Error("mdm: missing encrypted client PFX material", "device_id", deviceID, "profile_id", profID, "err", err)
+							continue
+						}
+						plainPwd, err := h.vault.Decrypt(encPwd, PFXVaultPwdAAD(deviceID, profID))
+						if err != nil {
+							slog.Error("mdm: decrypting client PFX password for SyncML delivery", "device_id", deviceID, "profile_id", profID, "err", err)
+							continue
+						}
+						plainBlob, err := h.vault.Decrypt(encBlob, PFXVaultBlobAAD(deviceID, profID))
+						if err != nil {
+							slog.Error("mdm: decrypting client PFX blob for SyncML delivery", "device_id", deviceID, "profile_id", profID, "err", err)
+							continue
+						}
+						pending[i].Payload = strings.ReplaceAll(pending[i].Payload, PFXPwdVaultSentinel(deviceID, profID), plainPwd)
+						pending[i].Payload = strings.ReplaceAll(pending[i].Payload, PFXBlobVaultSentinel(deviceID, profID), plainBlob)
+					}
+				}
+			}
+		}
 	}
 }
 

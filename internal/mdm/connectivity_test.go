@@ -157,3 +157,122 @@ func TestTrustedCertWiFiVaultResolutionAndVPNAtomicSyncML(t *testing.T) {
 		t.Fatalf("expected RoutingPolicyType before NativeProtocolType per Microsoft VPNv2 XSD: %s", out)
 	}
 }
+
+func TestPFXClientCertificateAtomicOrderingVaultAndEAPTLSWiFi(t *testing.T) {
+	database := testutil.DB(t)
+	devID := testutil.SeedDevice(t, database, "HW-PFX-1")
+
+	v, err := vault.NewFast("test-master-secret-at-least-16-bytes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(database.DB, nil, "mdm.lab.local", "")
+	h.SetVault(v)
+
+	profID := "pfx-prof-1"
+	thumb := "AABBCCDDEEFF00112233445566778899AABBCCDD"
+	plainPwd := "SecretAlnumPFXPwd2026XYZ"
+	plainBlob := "MIIJ7AIBAzCCCSCgADCCAQACAQBase64PFXTest=="
+
+	encPwd, err := v.Encrypt(plainPwd, PFXVaultPwdAAD(devID, profID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encBlob, err := v.Encrypt(plainBlob, PFXVaultBlobAAD(devID, profID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.DB.Exec(`
+		INSERT INTO network_pki_profiles (id, name, profile_type)
+		VALUES (?, '802.1X Machine Cert', 'client_cert')
+	`, profID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.DB.Exec(`
+		INSERT INTO device_issued_client_certs (
+			device_id, profile_id, thumbprint, serial_number, subject,
+			not_before, not_after, pfx_b64_encrypted, pfx_password_encrypted
+		) VALUES (?, ?, ?, '12345', 'CN=DESKTOP-TEST', ?, ?, ?, ?)
+	`, devID, profID, thumb, time.Now().Add(-time.Hour), time.Now().Add(24*time.Hour), encBlob, encPwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pass keyLocation=2 with exportable=true -> must coerce KeyLocation=3 per Microsoft CSP constraint!
+	delURI, q, err := EnqueuePFXClientCertificate(database.DB, devID, profID, thumb, 2, true)
+	if err != nil || q != 1 {
+		t.Fatalf("EnqueuePFXClientCertificate: q=%d err=%v", q, err)
+	}
+	if delURI != "./Device/Vendor/MSFT/ClientCertificateInstall/PFXCertInstall/"+thumb {
+		t.Fatalf("unexpected deleteURI: %s", delURI)
+	}
+
+	// Verify neither plaintext password nor PFX blob is stored in command_queue
+	var rawQueued string
+	if err := database.DB.QueryRow(`SELECT payload FROM command_queue WHERE device_id = ?`, devID).Scan(&rawQueued); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rawQueued, plainPwd) || strings.Contains(rawQueued, plainBlob) {
+		t.Fatal("plaintext PFX password or blob leaked into command_queue!")
+	}
+
+	// Also verify WPA2Enterprise EAP-TLS WLANProfile XML generation
+	eapXML, err := BuildWLANProfileXML(WiFiProfileSpec{
+		ProfileID:      "wifi-eap-1",
+		SSID:           "Corp-8021X",
+		Security:       "WPA2Enterprise",
+		AutoConnect:    true,
+		EAPServerNames: "radius.lab.local",
+	})
+	if err != nil {
+		t.Fatalf("BuildWLANProfileXML WPA2Enterprise: %v", err)
+	}
+	if !strings.Contains(eapXML, "<useOneX>true</useOneX>") || !strings.Contains(eapXML, "<Type>13</Type>") || !strings.Contains(eapXML, "<ServerNames>radius.lab.local</ServerNames>") {
+		t.Fatalf("unexpected EAP-TLS WLANProfile XML: %s", eapXML)
+	}
+
+	// Resolve vault payloads in-memory and marshal SyncML
+	pending, err := loadPendingCommands(database.DB, devID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("loadPendingCommands: len=%d err=%v", len(pending), err)
+	}
+	h.resolveVaultPayloads(devID, pending)
+
+	sess := &Session{NextCmdID: 1, CmdMap: map[string]int{}}
+	doc := SyncML{
+		SyncBody: SyncBody{
+			Commands: buildSyncMLCommands(sess, pending),
+			Final:    &struct{}{},
+		},
+	}
+	rawSyncML, err := xml.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(rawSyncML)
+
+	if strings.Contains(out, VaultPFXPwdSentinelPrefix) || strings.Contains(out, VaultPFXBlobSentinelPrefix) {
+		t.Fatalf("PFX vault sentinels were not resolved in SyncML: %s", out)
+	}
+	if !strings.Contains(out, plainPwd) || !strings.Contains(out, plainBlob) {
+		t.Fatalf("expected decrypted PFX password and blob in SyncML: %s", out)
+	}
+	if !strings.Contains(out, `KeyLocation</LocURI></Target><Meta><Format xmlns="syncml:metinf">int</Format><Type xmlns="syncml:metinf">text/plain</Type></Meta><Data>3</Data>`) {
+		t.Fatalf("expected KeyLocation=3 (int) in SyncML: %s", out)
+	}
+	if !strings.Contains(out, `PFXKeyExportable</LocURI></Target><Meta><Format xmlns="syncml:metinf">bool</Format><Type xmlns="syncml:metinf">text/plain</Type></Meta><Data>true</Data>`) {
+		t.Fatalf("expected PFXKeyExportable=true (bool) in SyncML: %s", out)
+	}
+
+	// CRITICAL: PFXCertBlob MUST be the LAST <Add> inside <Atomic>!
+	idxKeyLoc := strings.Index(out, "/KeyLocation")
+	idxExport := strings.Index(out, "/PFXKeyExportable")
+	idxEncType := strings.Index(out, "/PFXCertPasswordEncryptionType")
+	idxPwd := strings.Index(out, "/PFXCertPassword")
+	idxBlob := strings.Index(out, "/PFXCertBlob")
+	if !(idxKeyLoc > 0 && idxKeyLoc < idxExport && idxExport < idxEncType && idxEncType < idxPwd && idxPwd < idxBlob) {
+		t.Fatalf("PFXCertBlob MUST be last inside <Atomic>! indices: keyLoc=%d export=%d enc=%d pwd=%d blob=%d",
+			idxKeyLoc, idxExport, idxEncType, idxPwd, idxBlob)
+	}
+}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Wifi, GlobeLock, FileKey2, Plus, Trash2 } from 'lucide-react'
+import { Wifi, GlobeLock, FileKey2, ShieldCheck, Plus, Trash2 } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Badge } from '../components/Badge'
 import { EmptyState } from '../components/EmptyState'
@@ -7,7 +7,7 @@ import { Modal } from '../components/Modal'
 import { api, type ConnectivityProfile, type Group } from '../api'
 import { useToast } from '../hooks/useToast'
 
-type ProfileKind = 'root_ca' | 'intermediate_ca' | 'wifi' | 'vpn'
+type ProfileKind = 'root_ca' | 'intermediate_ca' | 'client_cert' | 'wifi' | 'vpn'
 
 export function ConnectivityPage() {
   const [profiles, setProfiles] = useState<ConnectivityProfile[]>([])
@@ -19,9 +19,14 @@ export function ConnectivityPage() {
   const [kind, setKind] = useState<ProfileKind>('root_ca')
   const [name, setName] = useState('')
   const [certPem, setCertPem] = useState('')
+  const [ccTemplate, setCcTemplate] = useState('CN={{device_name}}')
+  const [ccValidityDays, setCcValidityDays] = useState(365)
+  const [ccExportable, setCcExportable] = useState(false)
+  const [ccKeyLocation, setCcKeyLocation] = useState<2 | 3>(3)
   const [ssid, setSsid] = useState('')
-  const [wifiSec, setWifiSec] = useState<'WPA2PSK' | 'WPA3SAE' | 'Open'>('WPA2PSK')
+  const [wifiSec, setWifiSec] = useState<'WPA2PSK' | 'WPA3SAE' | 'WPA2Enterprise' | 'Open'>('WPA2PSK')
   const [wifiPsk, setWifiPsk] = useState('')
+  const [wifiEapServers, setWifiEapServers] = useState('')
   const [wifiAuto, setWifiAuto] = useState(true)
   const [wifiHidden, setWifiHidden] = useState(false)
   const [vpnServer, setVpnServer] = useState('')
@@ -56,9 +61,14 @@ export function ConnectivityPage() {
   const resetForm = () => {
     setName('')
     setCertPem('')
+    setCcTemplate('CN={{device_name}}')
+    setCcValidityDays(365)
+    setCcExportable(false)
+    setCcKeyLocation(3)
     setSsid('')
     setWifiSec('WPA2PSK')
     setWifiPsk('')
+    setWifiEapServers('')
     setWifiAuto(true)
     setWifiHidden(false)
     setVpnServer('')
@@ -99,11 +109,16 @@ export function ConnectivityPage() {
         name: name.trim(),
         profile_type: kind,
         certificate_pem: kind === 'root_ca' || kind === 'intermediate_ca' ? certPem : undefined,
+        client_cert_subject_template: kind === 'client_cert' ? ccTemplate.trim() : undefined,
+        client_cert_validity_days: kind === 'client_cert' ? ccValidityDays : undefined,
+        client_cert_exportable: kind === 'client_cert' ? ccExportable : undefined,
+        client_cert_key_location: kind === 'client_cert' ? (ccExportable ? 3 : ccKeyLocation) : undefined,
         wifi_ssid: kind === 'wifi' ? ssid.trim() : undefined,
         wifi_security: kind === 'wifi' ? wifiSec : undefined,
         wifi_auto_connect: kind === 'wifi' ? wifiAuto : undefined,
         wifi_hidden: kind === 'wifi' ? wifiHidden : undefined,
-        wifi_psk: kind === 'wifi' && wifiSec !== 'Open' ? wifiPsk : undefined,
+        wifi_psk: kind === 'wifi' && wifiSec !== 'Open' && wifiSec !== 'WPA2Enterprise' ? wifiPsk : undefined,
+        wifi_eap_server_names: kind === 'wifi' && wifiSec === 'WPA2Enterprise' ? wifiEapServers.trim() : undefined,
         vpn_server: kind === 'vpn' ? vpnServer.trim() : undefined,
         vpn_protocol: kind === 'vpn' ? vpnProto : undefined,
         vpn_auth_method: kind === 'vpn' ? vpnAuth : undefined,
@@ -134,6 +149,7 @@ export function ConnectivityPage() {
   }
 
   const certsCount = profiles.filter(p => p.profile_type === 'root_ca' || p.profile_type === 'intermediate_ca').length
+  const clientCertsCount = profiles.filter(p => p.profile_type === 'client_cert').length
   const wifiCount = profiles.filter(p => p.profile_type === 'wifi').length
   const vpnCount = profiles.filter(p => p.profile_type === 'vpn').length
 
@@ -142,7 +158,7 @@ export function ConnectivityPage() {
       <div className="page-header">
         <div className="page-header-left">
           <h1>Connectivity & PKI</h1>
-          <p>Agentless Root/Intermediate CA certificates, WPA2/WPA3 Wi-Fi &amp; IKEv2 VPNv2 CSP provisioning</p>
+          <p>Agentless Root/Intermediate CA certs, per-device PKCS#12 client certs (PFXCertInstall), EAP-TLS Wi-Fi &amp; IKEv2 VPNv2</p>
         </div>
         <button className="btn btn-primary" onClick={() => setOpenModal(true)}>
           <Plus size={16} />
@@ -157,6 +173,13 @@ export function ConnectivityPage() {
           </div>
           <div className="stat-label">Trusted CA Certificates</div>
           <div className="stat-value">{certsCount}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon" style={{ background: 'rgba(192,132,252,0.14)' }}>
+            <ShieldCheck size={18} color="#c084fc" />
+          </div>
+          <div className="stat-label">Device Client Certs (PFX)</div>
+          <div className="stat-value">{clientCertsCount}</div>
         </div>
         <div className="stat-card">
           <div className="stat-icon" style={{ background: 'var(--success-dim)' }}>
@@ -179,7 +202,7 @@ export function ConnectivityPage() {
           <EmptyState
             icon={<GlobeLock size={38} />}
             title="No connectivity or PKI profiles yet"
-            description="Push X.509 Root/Intermediate CA certificates, vault-encrypted Wi-Fi profiles, or Always-On IKEv2 VPN tunnels natively via Windows OMA-DM CSPs."
+            description="Push X.509 Root/Intermediate CA certs, per-device PKCS#12 machine certs, WPA2/WPA3/EAP-TLS Wi-Fi profiles, or Always-On IKEv2 VPN tunnels natively via Windows OMA-DM CSPs."
           />
         ) : (
           <table>
@@ -202,15 +225,23 @@ export function ConnectivityPage() {
                   </td>
                   <td>
                     <Badge
-                      status={p.profile_type === 'vpn' ? 'compliant' : p.profile_type === 'wifi' ? 'pending' : 'unknown'}
+                      status={
+                        p.profile_type === 'vpn' || p.profile_type === 'client_cert'
+                          ? 'compliant'
+                          : p.profile_type === 'wifi'
+                            ? 'pending'
+                            : 'unknown'
+                      }
                       label={
                         p.profile_type === 'root_ca'
                           ? 'Trusted Root CA'
                           : p.profile_type === 'intermediate_ca'
                             ? 'Intermediate CA'
-                            : p.profile_type === 'wifi'
-                              ? 'Wi-Fi (WlanXml)'
-                              : 'VPNv2 (Atomic)'
+                            : p.profile_type === 'client_cert'
+                              ? 'Device PFX Cert'
+                              : p.profile_type === 'wifi'
+                                ? 'Wi-Fi (WlanXml)'
+                                : 'VPNv2 (Atomic)'
                       }
                       dot={false}
                     />
@@ -224,9 +255,25 @@ export function ConnectivityPage() {
                         </div>
                       </div>
                     )}
+                    {p.profile_type === 'client_cert' && (
+                      <div>
+                        <div>
+                          Subject: <code className="mono">{p.client_cert_subject_template || 'CN={{device_name}}'}</code>
+                        </div>
+                        <div style={{ fontSize: '0.72rem', opacity: 0.65 }}>
+                          Latchz Root CA • {p.client_cert_validity_days ?? 365}d •{' '}
+                          {p.client_cert_exportable
+                            ? 'Software KSP (Exportable)'
+                            : p.client_cert_key_location === 2
+                              ? 'TPM / Software KSP (Non-exportable)'
+                              : 'Software KSP (Non-exportable)'}
+                        </div>
+                      </div>
+                    )}
                     {p.profile_type === 'wifi' && (
                       <div>
-                        SSID: <strong className="mono">{p.wifi_ssid}</strong> • {p.wifi_security}
+                        SSID: <strong className="mono">{p.wifi_ssid}</strong> •{' '}
+                        {p.wifi_security === 'WPA2Enterprise' ? '802.1X EAP-TLS' : p.wifi_security}
                         {p.has_wifi_psk ? ' (AES-256-GCM Vault PSK)' : ''}
                       </div>
                     )}
@@ -262,6 +309,7 @@ export function ConnectivityPage() {
             {([
               { id: 'root_ca', label: 'Root CA Cert' },
               { id: 'intermediate_ca', label: 'Intermediate CA' },
+              { id: 'client_cert', label: 'Device Client Cert (PFX)' },
               { id: 'wifi', label: 'Wi-Fi Profile' },
               { id: 'vpn', label: 'VPNv2 Profile' },
             ] as const).map(tab => (
@@ -280,7 +328,15 @@ export function ConnectivityPage() {
             <label className="form-label">Profile Display Name</label>
             <input
               className="form-input"
-              placeholder={kind === 'vpn' ? 'Corp-IKEv2-VPN' : kind === 'wifi' ? 'Corp HQ Wi-Fi' : 'Internal Enterprise Root CA'}
+              placeholder={
+                kind === 'vpn'
+                  ? 'Corp-IKEv2-VPN'
+                  : kind === 'wifi'
+                    ? 'Corp HQ Wi-Fi'
+                    : kind === 'client_cert'
+                      ? '802.1X Machine Identity Cert'
+                      : 'Internal Enterprise Root CA'
+              }
               value={name}
               onChange={e => setName(e.target.value)}
             />
@@ -313,6 +369,52 @@ export function ConnectivityPage() {
             </>
           )}
 
+          {kind === 'client_cert' && (
+            <>
+              <div style={{ fontSize: '0.8rem', opacity: 0.78, marginBottom: 12, lineHeight: 1.5 }}>
+                Mints a unique RSA-2048 X.509 client authentication certificate per device signed by the Latchz Root CA, seals the PKCS#12 archive in the AES-256-GCM vault, and installs into <code className="mono">Cert:\LocalMachine\My</code> via <code className="mono">&lt;Atomic&gt; PFXCertInstall</code>.
+              </div>
+              <div className="grid-2" style={{ gap: 12 }}>
+                <div className="form-group">
+                  <label className="form-label">Subject Template</label>
+                  <input
+                    className="form-input mono"
+                    value={ccTemplate}
+                    onChange={e => setCcTemplate(e.target.value)}
+                    placeholder="CN={{device_name}}"
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Validity (Days)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3650}
+                    className="form-input mono"
+                    value={ccValidityDays}
+                    onChange={e => setCcValidityDays(Number(e.target.value) || 365)}
+                  />
+                </div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Private Key Storage Provider</label>
+                <select
+                  className="form-input"
+                  value={ccExportable ? 3 : ccKeyLocation}
+                  disabled={ccExportable}
+                  onChange={e => setCcKeyLocation(Number(e.target.value) === 2 ? 2 : 3)}
+                >
+                  <option value={3}>Software KSP (Microsoft Software Key Storage Provider)</option>
+                  <option value={2}>TPM KSP if present, fallback to Software KSP</option>
+                </select>
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.84rem', marginBottom: 14 }}>
+                <input type="checkbox" checked={ccExportable} onChange={e => setCcExportable(e.target.checked)} />
+                Mark private key exportable (forces Software KSP per Microsoft CSP specification)
+              </label>
+            </>
+          )}
+
           {kind === 'wifi' && (
             <>
               <div className="grid-2" style={{ gap: 12 }}>
@@ -322,14 +424,30 @@ export function ConnectivityPage() {
                 </div>
                 <div className="form-group">
                   <label className="form-label">Security</label>
-                  <select className="form-input" value={wifiSec} onChange={e => setWifiSec(e.target.value as 'WPA2PSK' | 'WPA3SAE' | 'Open')}>
+                  <select
+                    className="form-input"
+                    value={wifiSec}
+                    onChange={e => setWifiSec(e.target.value as 'WPA2PSK' | 'WPA3SAE' | 'WPA2Enterprise' | 'Open')}
+                  >
                     <option value="WPA2PSK">WPA2-Personal (AES)</option>
                     <option value="WPA3SAE">WPA3-Personal (SAE)</option>
+                    <option value="WPA2Enterprise">WPA2-Enterprise (802.1X EAP-TLS)</option>
                     <option value="Open">Open Network</option>
                   </select>
                 </div>
               </div>
-              {wifiSec !== 'Open' && (
+              {wifiSec === 'WPA2Enterprise' && (
+                <div className="form-group">
+                  <label className="form-label">Trusted RADIUS Server FQDN(s) (Optional, semicolon-separated)</label>
+                  <input
+                    className="form-input mono"
+                    placeholder="radius1.corp.example.com;radius2.corp.example.com"
+                    value={wifiEapServers}
+                    onChange={e => setWifiEapServers(e.target.value)}
+                  />
+                </div>
+              )}
+              {wifiSec !== 'Open' && wifiSec !== 'WPA2Enterprise' && (
                 <div className="form-group">
                   <label className="form-label">Passphrase (Encrypted in AES-256-GCM Vault)</label>
                   <input

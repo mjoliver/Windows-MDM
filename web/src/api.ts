@@ -513,14 +513,19 @@ export interface DeviceSecurityState {
 export interface ConnectivityProfile {
   id: string
   name: string
-  profile_type: 'root_ca' | 'intermediate_ca' | 'wifi' | 'vpn'
+  profile_type: 'root_ca' | 'intermediate_ca' | 'client_cert' | 'wifi' | 'vpn'
   cert_thumbprint?: string
   cert_subject?: string
   cert_not_after?: string | null
+  client_cert_subject_template?: string
+  client_cert_validity_days?: number
+  client_cert_exportable?: boolean
+  client_cert_key_location?: number
   wifi_ssid?: string
   wifi_security?: string
   wifi_auto_connect: boolean
   wifi_hidden: boolean
+  wifi_eap_server_names?: string
   has_wifi_psk: boolean
   vpn_server?: string
   vpn_protocol?: string
@@ -542,6 +547,9 @@ export interface DeviceConnectivityItem {
   profile_name: string
   profile_type: string
   delete_oma_uri: string
+  issued_thumbprint?: string
+  issued_subject?: string
+  issued_not_after?: string | null
   updated_at: string
 }
 
@@ -914,18 +922,23 @@ export const api = {
       del<{ deleted: boolean; rule_key: string; commands_queued: number }>(`/security/firewall-rules/${enc(id)}`),
   },
 
-  // Connectivity & PKI: RootCATrustedCertificates, WiFi & VPNv2 CSPs
+  // Connectivity & PKI: RootCATrustedCertificates, PFXCertInstall, WiFi & VPNv2 CSPs
   connectivity: {
     listProfiles: () => get<ConnectivityProfile[]>('/connectivity/profiles'),
     createProfile: (data: {
       name: string
-      profile_type: 'root_ca' | 'intermediate_ca' | 'wifi' | 'vpn'
+      profile_type: 'root_ca' | 'intermediate_ca' | 'client_cert' | 'wifi' | 'vpn'
       certificate_pem?: string
+      client_cert_subject_template?: string
+      client_cert_validity_days?: number
+      client_cert_exportable?: boolean
+      client_cert_key_location?: number
       wifi_ssid?: string
       wifi_security?: string
       wifi_auto_connect?: boolean
       wifi_hidden?: boolean
       wifi_psk?: string
+      wifi_eap_server_names?: string
       vpn_server?: string
       vpn_protocol?: string
       vpn_auth_method?: string

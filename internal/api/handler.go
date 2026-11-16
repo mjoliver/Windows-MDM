@@ -12,6 +12,7 @@ import (
 	dbpkg "github.com/latchzmdm/latchz/internal/db"
 	"github.com/latchzmdm/latchz/internal/mdm"
 	"github.com/latchzmdm/latchz/internal/msi"
+	"github.com/latchzmdm/latchz/internal/pki"
 	"github.com/latchzmdm/latchz/internal/policy"
 	"github.com/latchzmdm/latchz/internal/vault"
 	"github.com/latchzmdm/latchz/internal/winget"
@@ -23,6 +24,7 @@ type Handler struct {
 	db              *sql.DB
 	wns             *wns.Client
 	vault           *vault.Vault
+	ca              *pki.CA
 	winget          *winget.Client
 	deviceCAPool    *x509.CertPool
 	proxyCertHeader string
@@ -77,6 +79,12 @@ func (h *Handler) SetPackagesDir(dir string) {
 // key escrow and managed local administrator credentials.
 func (h *Handler) SetVault(v *vault.Vault) {
 	h.vault = v
+}
+
+// SetCA attaches the internal Root CA so connectivity profiles can mint per-device
+// PKCS#12 client authentication certificates via PFXCertInstall CSP.
+func (h *Handler) SetCA(ca *pki.CA) {
+	h.ca = ca
 }
 
 // SetDeviceAuth configures X.509 client-certificate trust so enrolled devices

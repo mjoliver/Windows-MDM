@@ -97,6 +97,7 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 	apiHandler.ConfigureContentRelay("https://"+cfg.Server.Domain, jwtSecret)
 	apiHandler.SetPackagesDir(cfg.MDM.PackagesDir)
 	apiHandler.SetDeviceAuth(ca.TLSPool(), proxyCertHeader)
+	apiHandler.SetCA(ca)
 	if len(cfg.Server.MasterSecret) >= vault.MinSecretLen {
 		secretVault, err := vault.New(cfg.Server.MasterSecret)
 		if err != nil {
@@ -104,6 +105,9 @@ func New(cfg *config.Config, database *db.DB, ca *pki.CA) (*Server, error) {
 		}
 		apiHandler.SetVault(secretVault)
 		mdmHandler.SetVault(secretVault)
+		policy.SetClientCertHandlers(apiHandler.ProvisionDeviceClientCert, apiHandler.RevokeDeviceClientCert)
+	} else {
+		policy.SetClientCertHandlers(nil, nil)
 	}
 
 	s := &Server{
